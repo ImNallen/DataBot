@@ -7,14 +7,9 @@ export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
 }
 
-export function PgBadge({ className }: { className?: string }) {
+export function PgBadge() {
   return (
-    <span
-      className={cx(
-        "inline-grid h-4 min-w-[18px] place-items-center rounded-[4px] bg-badge-bg px-[3px] font-mono text-[8.5px] font-bold leading-none tracking-tight text-badge",
-        className,
-      )}
-    >
+    <span className="inline-grid h-4 min-w-[18px] place-items-center rounded-[4px] bg-badge-bg px-[3px] font-mono text-[8.5px] font-bold leading-none tracking-tight text-badge">
       PG
     </span>
   );
@@ -28,15 +23,15 @@ export function Kbd({ children, className }: { children: ReactNode; className?: 
   );
 }
 
-export function StatusDot({ tone, className }: { tone: "live" | "pending" | "off" | "error"; className?: string }) {
+export function StatusDot({ tone }: { tone: "live" | "pending" | "off" | "error" }) {
   const color = { live: "bg-live", pending: "bg-amber animate-pulse", off: "bg-faint", error: "bg-danger" }[tone];
-  return <span className={cx("inline-block size-1.5 shrink-0 rounded-full", color, className)} />;
+  return <span className={cx("inline-block size-1.5 shrink-0 rounded-full", color)} />;
 }
 
-export function Spinner({ className }: { className?: string }) {
+export function Spinner() {
   return (
     <span
-      className={cx("inline-block size-3 rounded-full border-[1.5px] border-dim border-t-transparent", className)}
+      className="inline-block size-3 rounded-full border-[1.5px] border-dim border-t-transparent"
       style={{ animation: "spin 0.8s linear infinite" }}
     />
   );
@@ -78,13 +73,13 @@ export function IconButton({ className, active, ...rest }: ButtonHTMLAttributes<
   );
 }
 
-export function MenuContent({ children, align = "start", className }: { children: ReactNode; align?: "start" | "end"; className?: string }) {
+export function MenuContent({ children, align = "start" }: { children: ReactNode; align?: "start" | "end" }) {
   return (
     <Menu.Portal>
       <Menu.Content
         align={align}
         sideOffset={6}
-        className={cx("z-50 min-w-[180px] rounded-lg border border-control bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.6)]", className)}
+        className="z-50 min-w-[180px] rounded-lg border border-control bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.6)]"
       >
         {children}
       </Menu.Content>

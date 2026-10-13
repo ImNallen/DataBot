@@ -31,7 +31,7 @@ function matchToken(text: string, token: string, from: number): { score: number;
   return { score, end: at };
 }
 
-export function fuzzyScore(query: string, text: string): number | null {
+function fuzzyScore(query: string, text: string): number | null {
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return 0;
   const hay = text.toLowerCase();

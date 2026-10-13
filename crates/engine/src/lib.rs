@@ -180,16 +180,15 @@ impl Shared {
 
     async fn connect(self: &Arc<Self>, id: ConnectionId) -> Result<ServerInfo, ConnectError> {
         loop {
-            let slot_kind = self.connections.read().unwrap().get(&id).map(|e| match &e.slot {
-                ConnSlot::Connecting => 0,
-                ConnSlot::Connected(_) => 1,
-                ConnSlot::Disconnected | ConnSlot::Failed(_) | ConnSlot::Lost(_) => 2,
-            });
-            match slot_kind {
-                Some(0) => tokio::time::sleep(Duration::from_millis(50)).await,
-                Some(1) => return Ok(self.live(id).expect("connected").server.clone()),
-                _ => break,
+            let connecting = match self.connections.read().unwrap().get(&id).map(|e| &e.slot) {
+                Some(ConnSlot::Connected(live)) => return Ok(live.server.clone()),
+                Some(ConnSlot::Connecting) => true,
+                _ => false,
+            };
+            if !connecting {
+                break;
             }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         self.set_connection(id, ConnSlot::Connecting);
         match self.open_live(id).await {
@@ -346,13 +345,15 @@ impl Engine {
         let s = &self.shared;
         let live = s.connections.read().unwrap().iter().map(|(id, e)| e.state(*id)).collect();
         let consoles = s.consoles.read().unwrap().values().map(|c| c.latest.lock().unwrap().clone()).collect();
-        BootSnapshot {
-            connections: s.store.connections().unwrap_or_default(),
-            live,
-            consoles,
-            workspace: s.store.kv_get(KV_WORKSPACE).ok().flatten().unwrap_or_default(),
-            settings: s.settings(),
-        }
+        let connections = s.store.connections().unwrap_or_else(|e| {
+            eprintln!("connections load failed: {e}");
+            Vec::new()
+        });
+        let workspace = s.store.kv_get(KV_WORKSPACE).unwrap_or_else(|e| {
+            eprintln!("workspace load failed: {e}");
+            None
+        });
+        BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings() }
     }
 
     pub async fn save_connection(&self, d: ConnectionDraft) -> Result<ConnectionConfig, SaveError> {
@@ -420,7 +421,7 @@ impl Engine {
             (PasswordInput::Keep, Some(id)) => s.secrets.get(id).map_err(|e| ConnectError::Keychain { message: e.to_string() })?,
         };
         let session = Session::open(&ConnectParams::from_draft(&d, password), None, &s.timezone).await?;
-        Ok(session.server.clone())
+        Ok(session.server)
     }
 
     pub async fn connect(&self, id: ConnectionId) -> Result<ServerInfo, ConnectError> {

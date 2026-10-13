@@ -1,7 +1,7 @@
 import { Check, CircleAlert } from "lucide-react";
 import { useState } from "react";
 import { commands, type ConnectionConfig, type ConnectionDraft, type PasswordInput, type SslMode } from "../../ipc/bindings";
-import { connectErrorText, saveErrorText } from "../../ipc/errors";
+import { connectErrorText } from "../../ipc/errors";
 import { useWorkspace } from "../../state/workspace";
 import { Button, cx, inputClass, Modal, Spinner } from "../../ui/primitives";
 import { connect } from "./connectionActions";
@@ -95,7 +95,7 @@ function ConnectionForm({ existing, onDone }: { existing: ConnectionConfig | und
     const res = await commands.connectionSave(draft());
     setSaving(false);
     if (res.status === "error") {
-      setSaveError(saveErrorText(res.error));
+      setSaveError(res.error.message);
       return;
     }
     upsertConfig(res.data);

@@ -29,7 +29,6 @@ function Row({
   label,
   trailing,
   menu,
-  className,
   quietChevron,
 }: {
   quietChevron?: boolean;
@@ -44,7 +43,6 @@ function Row({
   label: ReactNode;
   trailing?: ReactNode;
   menu?: ReactNode;
-  className?: string;
 }) {
   return (
     <div
@@ -59,7 +57,6 @@ function Row({
       className={cx(
         "group mx-2 flex h-7 cursor-default items-center gap-1.5 rounded-md pr-2.5",
         selected ? "bg-selected" : "hover:bg-hover",
-        className,
       )}
     >
       <span className={cx("shrink-0 place-items-center text-muted", expandable ? "grid w-3.5" : "hidden")}>

@@ -243,11 +243,11 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
     let mut outcome = RunOutcome::Ok;
     let mut fatal = None;
 
-    if session.search_path != plan.schema {
-        if let Err(e) = session.set_search_path(plan.schema.as_deref()).await {
-            let error = e.as_db_error().map_or_else(|| transport_error(&e), |db| query_error(db, None));
-            console.output(&shared, Some(run_id), OutputBody::Error { statement: None, error });
-        }
+    if session.search_path != plan.schema
+        && let Err(e) = session.set_search_path(plan.schema.as_deref()).await
+    {
+        let error = e.as_db_error().map_or_else(|| transport_error(&e), |db| query_error(db, None));
+        console.output(&shared, Some(run_id), OutputBody::Error { statement: None, error });
     }
 
     let mut index = 0;
@@ -315,10 +315,10 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
 
         let cancelled = stop.load(Ordering::Relaxed)
             && matches!(&result, Err(e) if e.sqlstate.as_deref() == Some(QUERY_CANCELED));
-        if let Err(e) = &result {
-            if e.severity == "FATAL" {
-                fatal = Some(e.message.clone());
-            }
+        if let Err(e) = &result
+            && e.severity == "FATAL"
+        {
+            fatal = Some(e.message.clone());
         }
         txn = txn_after(txn, &stmt.kind, if result.is_ok() { StmtOutcome::Ok } else { StmtOutcome::Err });
 

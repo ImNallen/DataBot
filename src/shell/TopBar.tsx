@@ -6,7 +6,7 @@ import { useCatalog } from "../state/catalog";
 import { useLive } from "../state/live";
 import { connectionStatus, hasUncommittedWork, isRunning } from "../state/status";
 import { tabConnectionId, tabLabel, useWorkspace } from "../state/workspace";
-import { Button, cx, IconButton, Kbd, MenuContent, MenuItem, MenuLabel, PgBadge, StatusDot } from "../ui/primitives";
+import { Button, IconButton, Kbd, MenuContent, MenuItem, MenuLabel, PgBadge, StatusDot } from "../ui/primitives";
 
 const MODE_LABEL: Record<TxnMode, string> = { AutoCommit: "Auto-commit", Manual: "Manual" };
 
@@ -145,7 +145,6 @@ export function TopBar() {
         data-testid="toggle-right-panel"
         aria-label="Toggle right panel"
         active={layout.rightPanel !== null}
-        className={cx(layout.rightPanel !== null && "text-fg")}
         onClick={() => setLayout({ rightPanel: layout.rightPanel ? null : "Schema" })}
       >
         <PanelRight size={16} />

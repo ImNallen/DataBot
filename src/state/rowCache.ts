@@ -13,7 +13,7 @@ export type RowSource = {
   cell(ref: ResultRef, row: number, col: number): Promise<string | null | "gone">;
 };
 
-export const ipcRowSource: RowSource = {
+const ipcRowSource: RowSource = {
   async page(ref, start, len) {
     const res = await commands.resultPage(ref, start, len);
     return res.status === "ok" ? res.data : "gone";

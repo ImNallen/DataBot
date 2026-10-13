@@ -49,7 +49,7 @@ const flashField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 });
 
-export function sqlLanguage(schema: SQLNamespace | undefined, defaultSchema: string | undefined): Extension {
+function sqlLanguage(schema: SQLNamespace | undefined, defaultSchema: string | undefined): Extension {
   return sql({ dialect: PostgreSQL, schema, defaultSchema, upperCaseKeywords: true });
 }
 
@@ -106,7 +106,7 @@ export function dropEditor(id: TabId): void {
   if (activeId === id) activeId = null;
 }
 
-export function updateEditor(id: TabId, spec: (state: EditorState) => TransactionSpec): void {
+function updateEditor(id: TabId, spec: (state: EditorState) => TransactionSpec): void {
   if (id === activeId && view) {
     view.dispatch(spec(view.state));
     return;

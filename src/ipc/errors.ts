@@ -1,5 +1,4 @@
-import type { ConfigureError, ConnectError, DisconnectError, ExportError, RunError, SaveError, TxnError } from "./bindings";
-
+import type { ConfigureError, ConnectError, DisconnectError, ExportError, RunError, TxnError } from "./bindings";
 
 export function connectErrorText(e: ConnectError): string {
   switch (e.kind) {
@@ -7,11 +6,10 @@ export function connectErrorText(e: ConnectError): string {
     case "Tls":
     case "Auth":
     case "Keychain":
+    case "Server":
       return e.message;
     case "MissingPassword":
       return "No password is saved for this connection. Edit the connection to set one.";
-    case "Server":
-      return e.message;
     default: {
       const unreachable: never = e;
       return unreachable;
@@ -82,10 +80,6 @@ export function disconnectErrorText(e: DisconnectError): string {
       return unreachable;
     }
   }
-}
-
-export function saveErrorText(e: SaveError): string {
-  return e.message;
 }
 
 export function exportErrorText(e: ExportError): string {

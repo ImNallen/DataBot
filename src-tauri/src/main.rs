@@ -97,7 +97,7 @@ async fn self_check(app: AppHandle, engine: Arc<Engine>) {
 async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Value, (&'static str, serde_json::Value)> {
     use engine::model::*;
     fn fail<E: serde::Serialize>(step: &'static str) -> impl FnOnce(E) -> (&'static str, serde_json::Value) {
-        move |e| (step, serde_json::to_value(e).unwrap_or_default())
+        move |e| (step, serde_json::to_value(e).expect("IPC types serialize to JSON"))
     }
     let draft = engine::draft_from_url(url, "self-check").map_err(fail("parse_url"))?;
     let config = engine.save_connection(draft).await.map_err(fail("connection_save"))?;
@@ -115,13 +115,8 @@ async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Valu
     let finished = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
             match events.recv().await {
-                Ok(AppEvent::ConsoleChanged(state)) if state.tab_id == tab => {
-                    if let RunState::Finished { run_id, outcome, elapsed_ms, .. } = state.run {
-                        if run_id == accepted.run_id {
-                            return Ok((outcome, elapsed_ms));
-                        }
-                    }
-                }
+                Ok(AppEvent::ConsoleChanged(ConsoleState { tab_id, run: RunState::Finished { run_id, outcome, elapsed_ms, .. }, .. }))
+                    if tab_id == tab && run_id == accepted.run_id => return Ok((outcome, elapsed_ms)),
                 Ok(_) => {}
                 Err(e) => return Err(e.to_string()),
             }

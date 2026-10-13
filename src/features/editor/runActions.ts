@@ -12,7 +12,7 @@ import { configureErrorText, disconnectErrorText, runErrorText, txnErrorText } f
 import { useLive } from "../../state/live";
 import { dropRowCaches } from "../../state/rowCache";
 import { isRunning } from "../../state/status";
-import { nextUntitled, useWorkspace, type RelationRef, type Tab } from "../../state/workspace";
+import { nextUntitled, tabConnectionId, useWorkspace, type RelationRef, type Tab } from "../../state/workspace";
 import {
   dropEditor,
   editorStateOf,
@@ -54,7 +54,7 @@ async function ensureConsole(tab: Tab): Promise<boolean> {
 
 const sent = new Map<TabId, { runId: number; text: string }>();
 
-export async function runTab(tabId: TabId): Promise<void> {
+async function runTab(tabId: TabId): Promise<void> {
   const tab = ws().tabs[tabId];
   if (!tab || isRunning(useLive.getState().consoles[tabId])) return;
   if (!(await ensureConsole(tab))) return;
@@ -124,7 +124,7 @@ export const setTabConnection = (tabId: TabId, connectionId: ConnectionId) => re
 function defaultConnection(): ConnectionId | null {
   const s = ws();
   const active = s.active ? s.tabs[s.active] : undefined;
-  if (active) return active.kind === "sql" ? active.console.connectionId : active.connectionId;
+  if (active) return tabConnectionId(active);
   const live = useLive.getState().connections;
   const ids = Object.keys(s.configs);
   return ids.find((id) => live[id]?.status.kind === "Connected") ?? ids[0] ?? null;
