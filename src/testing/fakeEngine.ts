@@ -139,6 +139,8 @@ export class FakeEngine {
   }
 
   async invoke(cmd: string, args: Record<string, unknown>): Promise<unknown> {
+    // The dialog plugin rides the same invoke seam; the fake stands in for the native save panel.
+    if (cmd === "plugin:dialog|save") return "/tmp/databot-fake-export.csv";
     const name = cmd.replace(/_(\w)/g, (_, c: string) => c.toUpperCase()) as keyof Commands;
     const handler = this.handlers[name] as ((a: Record<string, unknown>) => Promise<unknown>) | undefined;
     if (!handler) throw new Error(`fake engine: unknown command \`${cmd}\``);
