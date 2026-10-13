@@ -1,6 +1,6 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { Braces, ChevronRight, Database, Ellipsis, Eye, KeyRound, Table2 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { ColumnInfo, ConnectionConfig, FunctionInfo, Relation, SchemaInfo } from "../../ipc/bindings";
 import { isViewKind, useCatalog } from "../../state/catalog";
 import { connectErrorText } from "../../ipc/errors";
@@ -11,7 +11,7 @@ import { cx, MenuContent, MenuItem, MenuSeparator, PgBadge, Spinner, StatusDot }
 import { connect, confirmDelete, disconnect, refreshCatalog } from "../connections/connectionActions";
 import { insertAtCursor } from "../editor/editorStates";
 import { openSqlTab, openTableTab } from "../editor/runActions";
-import { compactCount } from "../results/format";
+import { compactCount, shortType } from "../results/format";
 
 const INDENT = 12;
 
@@ -90,7 +90,7 @@ function ColumnRow({ path, depth, column }: { path: string; depth: number; colum
       expandable={false}
       icon={column.pk ? <KeyRound size={13} className="text-amber" /> : <span className="size-[3px] rounded-full bg-faint" />}
       label={<span className="text-[13px]">{column.name}</span>}
-      trailing={<span className="shrink-0 pl-2 font-mono text-[10.5px] text-muted">{column.typeDisplay}</span>}
+      trailing={<span className="max-w-[55%] min-w-0 truncate pl-2 font-mono text-[10.5px] text-muted">{shortType(column.typeDisplay)}</span>}
     />
   );
 }
@@ -280,13 +280,20 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         ? `Connection lost: ${state.status.reason}`
         : null;
 
-  const onClick = async () => {
-    if (connected || state?.status.kind === "Connecting") return expanded.toggle(path);
-    if (await connect(config.id)) {
-      expanded.toggle(path, true);
-      expanded.toggle(`${path}/${config.database}`, true);
-      expanded.toggle(`${path}/${config.database}/public`, true);
-    }
+  // The first time a connection goes live, wherever the connect came from, open it down to `public`.
+  const revealed = useRef(false);
+  const { toggle } = expanded;
+  useEffect(() => {
+    if (!connected || revealed.current) return;
+    revealed.current = true;
+    toggle(path, true);
+    toggle(`${path}/${config.database}`, true);
+    toggle(`${path}/${config.database}/public`, true);
+  }, [connected, toggle, path, config.database]);
+
+  const onClick = () => {
+    if (connected || state?.status.kind === "Connecting") expanded.toggle(path);
+    else void connect(config.id);
   };
 
   const db = view?.catalog;
@@ -297,7 +304,7 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         depth={0}
         expandable
         open={open && connected}
-        onClick={() => void onClick()}
+        onClick={onClick}
         icon={<PgBadge />}
         label={<span className="font-medium">{config.name}</span>}
         trailing={
@@ -342,16 +349,17 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
 export function ConnectionTree() {
   const configs = useWorkspace((s) => s.configs);
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
-  const expanded: Expanded = {
-    has: (p) => open.has(p),
-    toggle: (p, force) =>
+  const toggle = useCallback(
+    (p: string, force?: boolean) =>
       setOpen((prev) => {
         const next = new Set(prev);
         if (force ?? !prev.has(p)) next.add(p);
         else next.delete(p);
         return next;
       }),
-  };
+    [],
+  );
+  const expanded: Expanded = { has: (p) => open.has(p), toggle };
   const list = Object.values(configs).sort((a, b) => a.name.localeCompare(b.name));
 
   return (

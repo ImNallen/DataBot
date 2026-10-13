@@ -168,7 +168,16 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
     }),
   setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...patch } })),
   setActiveResult: (id, index) => set((s) => ({ activeResult: { ...s.activeResult, [id]: index } })),
-  upsertConfig: (c) => set((s) => ({ configs: { ...s.configs, [c.id]: c } })),
+  // SQL tabs opened before any connection existed bind to the first one saved.
+  upsertConfig: (c) =>
+    set((s) => ({
+      configs: { ...s.configs, [c.id]: c },
+      tabs: Object.fromEntries(
+        Object.entries(s.tabs).map(([id, t]) =>
+          t.kind === "sql" && t.console.connectionId === null ? [id, { ...t, console: { ...t.console, connectionId: c.id } }] : [id, t],
+        ),
+      ),
+    })),
   removeConfig: (id) =>
     set((s) => {
       const { [id]: _, ...configs } = s.configs;
