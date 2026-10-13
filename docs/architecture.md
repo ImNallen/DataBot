@@ -659,9 +659,9 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - `OffsetMap`: emoji and CJK before the error
    - `type_ref` alias table, `synthesize_tag`, arena paging, CSV quoting
 2. **Engine against real Postgres** (`pnpm db:up && cargo test -p engine --features pg-tests`). `Harness` uses `MemorySecrets`, a temp data dir, and `DATABOT_TEST_PG` (default `postgres://databot:databot@localhost:5433/shop`). Scenarios:
-   - connect reports `version == "16.4"`
-   - catalog of `shop` contains the five mockup tables with PKs and estimates after `ANALYZE`
-   - `types_zoo` row snapshot (insta) of `ColumnMeta` and text cells: numeric, money, timestamptz, interval, json/jsonb, int[], text[][], bytea, uuid, inet, enum, composite, range, NULL
+   - connect reports a 16.x server version
+   - catalog of `shop` contains the mockup's tables with PKs and estimates after `ANALYZE`
+   - every `lab.type_zoo` cell equals Postgres's own text output: numeric, timestamptz, interval, json/jsonb, int[], text[], bytea, uuid, inet, enum, point, range, NULL
    - mockup query returns 6 rows with `orders: bigint`
    - multi-statement run yields `UPDATE n` tags and a `RAISE NOTICE` Output entry
    - error position maps to the right UTF-16 offset
