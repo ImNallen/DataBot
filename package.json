@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "screenshot": "cargo build -q -p dev-bridge -p l1-data && dev/screenshot.sh",
     "bindings": "UPDATE_BINDINGS=1 cargo test -q -p l1-data export_bindings_up_to_date",
+    "icons": "dev/icons.sh",
     "self-check": "cargo build -q -p l1-data && L1_DATA_SELF_CHECK=1 L1_DATA_SECRET_STORE=memory L1_DATA_DATA_DIR=\"$(mktemp -d)\" ./target/debug/l1-data"
   },
   "dependencies": {

@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/l1-logo-white.svg">
+  <img src="docs/images/l1-logo-black.svg" alt="L1 Data logo" width="64">
+</picture>
+
 # L1 Data
 
 L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. The design is in [docs/architecture.md](docs/architecture.md).
@@ -34,6 +39,7 @@ pnpm test                # vitest
 pnpm build               # production frontend bundle
 pnpm self-check          # boots the engine inside the Tauri binary, prints JSON, exits
 pnpm bindings            # rewrites src/ipc/bindings.ts after an IPC type or command changes
+pnpm icons               # rewrites src-tauri/icons from src-tauri/app-icon.svg
 pnpm screenshot          # macOS: rewrites docs/images/l1-data.png from the running app
 ```
 
