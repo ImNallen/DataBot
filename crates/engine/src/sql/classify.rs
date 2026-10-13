@@ -48,7 +48,7 @@ pub fn classify(stmt: &str) -> StmtKind {
         "DELETE" => StmtKind::Dml(DmlVerb::Delete),
         "MERGE" => StmtKind::Dml(DmlVerb::Merge),
         "SELECT" | "WITH" | "TABLE" | "VALUES" | "EXPLAIN" | "SHOW" | "FETCH" | "UNION" | "INTERSECT" | "EXCEPT" => StmtKind::Query,
-        "COPY" if words.iter().any(|x| x == "STDIN" || x == "STDOUT") => StmtKind::CopyStdio,
+        "COPY" => copy_kind(stmt),
         "VACUUM" | "CLUSTER" | "CHECKPOINT" => StmtKind::NoTxnBlock(w(0).to_owned()),
         "ALTER" if w(1) == "SYSTEM" => StmtKind::NoTxnBlock("ALTER SYSTEM".into()),
         "DISCARD" if w(1) == "ALL" => StmtKind::NoTxnBlock("DISCARD ALL".into()),
@@ -69,6 +69,17 @@ pub fn classify(stmt: &str) -> StmtKind {
     }
 }
 
+/// The source or target follows the first `FROM` or `TO`: the table name before it is any number
+/// of words, and a column list or query is parenthesized. A quoted file name yields no keyword.
+fn copy_kind(stmt: &str) -> StmtKind {
+    let mut words = keywords(stmt).map(|w| w.to_ascii_uppercase());
+    let target = words.by_ref().find(|w| w == "FROM" || w == "TO").and_then(|_| words.next());
+    match target.as_deref() {
+        Some("STDIN" | "STDOUT") => StmtKind::CopyStdio,
+        _ => StmtKind::Other("COPY".into()),
+    }
+}
+
 /// Postgres reports `CREATE OR REPLACE FUNCTION` as `CREATE FUNCTION` and `CREATE UNIQUE INDEX`
 /// as `CREATE INDEX`: the verb plus the object word, skipping modifiers between them.
 fn ddl_tag(words: &[String]) -> String {
@@ -85,7 +96,8 @@ fn ddl_tag(words: &[String]) -> String {
     }
 }
 
-/// Identifier-like words of a statement, skipping comments and anything inside parentheses.
+/// Identifier-like words of a statement, skipping comments, quoted strings and identifiers, and
+/// anything inside parentheses.
 fn keywords(stmt: &str) -> impl Iterator<Item = &str> {
     let bytes = stmt.as_bytes();
     let mut i = 0;
@@ -97,6 +109,8 @@ fn keywords(stmt: &str) -> impl Iterator<Item = &str> {
                 i = stmt[i..].find('\n').map_or(bytes.len(), |n| i + n);
             } else if c == b'/' && bytes.get(i + 1) == Some(&b'*') {
                 i = stmt[i..].find("*/").map_or(bytes.len(), |n| i + n + 2);
+            } else if c == b'\'' || c == b'"' {
+                i = stmt[i + 1..].find(c as char).map_or(bytes.len(), |n| i + n + 2);
             } else if c == b'(' {
                 depth += 1;
                 i += 1;
@@ -140,6 +154,8 @@ mod tests {
         assert_eq!(classify("-- note\n/* more */ with x as (select 1) select * from x"), StmtKind::Query);
         assert_eq!(classify("with x as (insert into t values (1)) select 1"), StmtKind::Query);
         assert_eq!(classify("/* update */ select 1"), StmtKind::Query);
+        assert_eq!(classify("create table \"concurrently\" (id int)"), StmtKind::Ddl("CREATE TABLE".into()));
+        assert_eq!(classify("select 'it''s -- not a comment'"), StmtKind::Query);
         assert_eq!(classify("explain analyze select 1"), StmtKind::Query);
         assert_eq!(classify("show search_path"), StmtKind::Query);
     }
