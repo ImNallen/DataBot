@@ -19,6 +19,7 @@
         "minWidth": 960,
         "minHeight": 600,
         "backgroundColor": "#0b0b0c",
+        "decorations": false,
         "create": false
       }
     ],
