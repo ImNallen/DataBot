@@ -725,6 +725,29 @@ Rejected:
 
 ## Implementation reconciliation
 
+Scaffold phase (workspace, contract, shell, dev-bridge, frontend skeleton). Each item is a place the code differs from or adds to the design above.
+
+- **Wire casing.** Struct fields and struct-variant fields are camelCase on the wire (`rename_all = "camelCase"` on structs, `rename_all_fields = "camelCase"` on tagged enums). Enum tags keep the Rust variant name (`"Connected"`, `"Manual"`), except `RunRequest` and `RunTarget`, whose tags are camelCase (`"script"`, `"tablePage"`, `"cursor"`).
+- **`RunError::Connect { error: ConnectError }`** replaces `Connect(ConnectError)`. Both enums are internally tagged on `kind`, so the newtype form serializes two `kind` keys and the inner one wins in JavaScript. `model::tests::nested_connect_error_keeps_its_own_tag` guards this.
+- **`DisconnectError::OpenTransactions { tabs: Vec<OpenTxn> }`**, where `OpenTxn { tabId, hasWrites }` replaces the `(TabId, bool)` tuple, so the frontend reads a named field instead of a positional boolean.
+- **Error types the design named but did not define:**
+  - `SaveError` is `Invalid | Keychain | Store`, each with a `message`.
+  - `DisconnectError` also has `Keychain` and `Store`, for `connection_delete`.
+  - `NotConnected` is `{ connectionId }`.
+  - `ConfigureError` is `TransactionOpen | Busy | UnknownConnection`.
+  - `ExportError` is `Gone | Io { message }`.
+  - `StoreError` is Rust-only, because only `Engine::open` returns it.
+- **Command parameter names** (the camelCase invoke keys) are `draft`, `id`, `force`, `tabId`, `config`, `request`, `resultRef`, `start`, `len`, `row`, `col`, `path`, `query`, `workspace`, and `settings`. `resultRef` replaces `ref` because `ref` is a Rust keyword.
+- **`console_cancel` takes `AppHandle`, not `State`.** Tauri requires async commands that borrow `State` to return `Result`, and `console_cancel` returns `()`.
+- **Pins.** tauri-specta `=2.0.0-rc.25` requires specta `=2.0.0-rc.25` and specta-typescript `=0.0.12`. Bindings use `dangerously_cast_bigints_to_number()`, so `u64` and `i64` (revs, run ids, row counts, epoch millis) export as `number`. All of them stay below 2^53.
+- **Bindings regeneration.** Besides debug-build startup, `pnpm bindings` reruns `export_bindings_up_to_date` with `UPDATE_BINDINGS=1`, which rewrites the file without opening a window.
+- **Dispatch coverage source.** The dev-bridge test parses the generated `bindings.ts`, not a hand-kept constant. The drift test already proves that file equals the Tauri registration. The test compares command names and camelCase argument names.
+- **Dev-bridge protocol.** The route is `/invoke/{cmd}` (axum 0.8 path syntax). A command's own result is 200 `{status:"ok",data}` or 200 `{status:"error",error}`. An unknown command (404), bad argument (400), or engine panic (500) returns `{message}`, and the shim throws it as a real `Error`, so `typedError` rethrows instead of returning a typed error. The body is parsed as JSON whatever the content-type, so a bare `curl -d '{}'` works. `DATABOT_DATA_DIR` overrides the bridge's temporary data directory.
+- **Window creation.** The `main` window is declared in `tauri.conf.json` with `"create": false` and built in `setup`, so `DATABOT_SELF_CHECK=1` runs without a window. The self-check prints `{"ok":false,...,"connect":{"status":"notImplemented"}}` and exits 1 until the engine phase adds the connect, `SELECT 1`, and catalog steps.
+- **Engine additions.** `Engine::data_dir()` lets the self-check report and the bridge log show the directory in use. `KeyringSecrets` and `MemorySecrets` are implemented, not stubbed, and `SecretStore` is keyed by `ConnectionId`.
+- **Defaults the design left open.** `Settings::default()` sets `stop_on_error: true`. `Layout::default()` is sidebar and results shown, no right panel, and `results_height: 320`.
+- **Fonts** come from `@fontsource-variable/inter` and `@fontsource-variable/jetbrains-mono`, the variable-axis builds of the Fontsource packages.
+
 ## Open questions and risks
 
 - Should the tree list every database on the server under a connection (the mockup shows a `shop` node), or only the configured database in v1? This design shows only the configured database and keeps the database name in `Catalog`.
