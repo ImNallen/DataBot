@@ -83,6 +83,7 @@ async function runTab(tabId: TabId): Promise<void> {
   if (tab.kind === "sql") {
     sent.set(tabId, { runId: res.data.runId, text });
     flashRanges(tabId, res.data.statements);
+    showRunErrors(useLive.getState());
   }
 }
 
@@ -193,22 +194,21 @@ export async function closeTab(tabId: TabId): Promise<void> {
   });
 }
 
-function watchRunErrors() {
-  useLive.subscribe((s) => {
-    for (const [tabId, req] of sent) {
-      const run = s.consoles[tabId]?.run;
-      if (run?.kind !== "Finished" || run.runId !== req.runId) continue;
-      sent.delete(tabId);
-      if (textOf(tabId) !== req.text) continue;
-      const failed = run.statements.find((st) => st.status.kind === "Failed");
-      if (failed?.status.kind !== "Failed") continue;
-      const { position, message } = failed.status.error;
-      if (position === null) continue;
-      const word = /^[\w."$]+/.exec(req.text.slice(position))?.[0].length ?? 1;
-      const from = Math.min(position, req.text.length);
-      showDiagnostics(tabId, [{ from, to: Math.min(from + word, req.text.length), severity: "error", message }]);
-    }
-  });
+// The Finished event can arrive before or after consoleRun returns, so both paths call this.
+function showRunErrors(s: ReturnType<typeof useLive.getState>) {
+  for (const [tabId, req] of sent) {
+    const run = s.consoles[tabId]?.run;
+    if (run?.kind !== "Finished" || run.runId !== req.runId) continue;
+    sent.delete(tabId);
+    if (textOf(tabId) !== req.text) continue;
+    const failed = run.statements.find((st) => st.status.kind === "Failed");
+    if (failed?.status.kind !== "Failed") continue;
+    const { position, message } = failed.status.error;
+    if (position === null) continue;
+    const word = /^[\w."$]+/.exec(req.text.slice(position))?.[0].length ?? 1;
+    const from = Math.min(position, req.text.length);
+    showDiagnostics(tabId, [{ from, to: Math.min(from + word, req.text.length), severity: "error", message }]);
+  }
 }
 
 const docListeners: (() => void)[] = [];
@@ -217,7 +217,7 @@ export function onEditorDocChanged(listener: () => void): void {
 }
 
 export function installRunBehavior(): void {
-  watchRunErrors();
+  useLive.subscribe(showRunErrors);
   installEditorBehavior([
     Prec.highest(
       keymap.of([
