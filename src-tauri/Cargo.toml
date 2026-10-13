@@ -1,0 +1,18 @@
+[package]
+name = "databot"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+engine.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+specta-typescript.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-specta.workspace = true
+tokio.workspace = true
