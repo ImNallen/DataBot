@@ -1,13 +1,6 @@
-//! Every type that crosses IPC. `src/ipc/bindings.ts` is generated from this file.
-//!
-//! Struct fields and struct-variant fields are camelCase on the wire. Enum tags keep the
-//! Rust variant name, except `RunRequest` and `RunTarget`, whose tags are camelCase.
-
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use uuid::Uuid;
-
-// ---- identity ---------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 pub struct ConnectionId(pub Uuid);
@@ -31,8 +24,6 @@ pub struct DocRange {
     pub to: DocOffset,
 }
 
-// ---- connection config --------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub enum SslMode {
     Disable,
@@ -42,7 +33,6 @@ pub enum SslMode {
     VerifyFull,
 }
 
-/// Persisted (SQLite). Never contains the password.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionConfig {
@@ -58,7 +48,6 @@ pub struct ConnectionConfig {
     pub color: Option<String>,
 }
 
-/// Edit semantics for the secret are explicit; the frontend never reads a password back.
 #[derive(Debug, Clone, Deserialize, Type)]
 pub enum PasswordInput {
     Keep,
@@ -82,8 +71,6 @@ pub struct ConnectionDraft {
     pub color: Option<String>,
 }
 
-// ---- live connection --------------------------------------------------------
-
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
@@ -99,7 +86,6 @@ pub enum ConnStatus {
     Disconnected,
     Connecting,
     Connected { server: ServerInfo, catalog_version: u64 },
-    /// The connect attempt failed.
     Failed { error: ConnectError },
     /// The metadata session died after being `Connected`.
     Lost { reason: String },
@@ -123,8 +109,6 @@ pub enum ConnectError {
     Server(QueryError),
     Keychain { message: String },
 }
-
-// ---- catalog (one snapshot per connection) -------------------------------------
 
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -191,8 +175,6 @@ pub enum FnKind {
     Aggregate,
     Window,
 }
-
-// ---- console (one per tab) -------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub enum TxnMode {
@@ -280,7 +262,6 @@ pub struct StatementRun {
 pub enum StmtStatus {
     Pending,
     Preparing,
-    /// `done` is false while rows are still streaming.
     Rows { result: ResultMeta, done: bool },
     /// `tag` reads like `"UPDATE 3"`.
     Command { tag: String, elapsed_ms: u32 },
@@ -290,13 +271,10 @@ pub enum StmtStatus {
     Skipped,
 }
 
-// ---- run requests ---------------------------------------------------------------
-
 #[derive(Debug, Clone, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum RunRequest {
     Script { text: String, target: RunTarget },
-    /// The engine builds quoted SQL ordered by the catalog's PK columns (no ORDER BY without a PK).
     TablePage { schema: String, table: String, page: u32 },
 }
 
@@ -314,8 +292,6 @@ pub struct RunAccepted {
     pub run_id: RunId,
     pub statements: Vec<DocRange>,
 }
-
-// ---- results ------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -349,7 +325,6 @@ pub enum TruncateReason {
 pub struct ColumnMeta {
     pub name: String,
     pub r#type: PgTypeRef,
-    /// Hook for future inline editing.
     pub source: Option<ColumnSource>,
 }
 
@@ -386,8 +361,6 @@ pub struct ColumnSource {
     pub attnum: i16,
 }
 
-/// Row-major page. Cells longer than the cell character limit (default 2,000) are cut;
-/// `cut` lists their `(row, col)` so the UI can mark them and fetch the full value.
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RowPage {
@@ -405,7 +378,6 @@ pub struct QueryError {
     pub detail: Option<String>,
     pub hint: Option<String>,
     pub context: Option<String>,
-    /// Mapped from PG's 1-based character position into the document.
     pub position: Option<DocOffset>,
 }
 
@@ -416,8 +388,6 @@ pub struct ExportSummary {
     pub bytes: u64,
     pub truncated: bool,
 }
-
-// ---- output log (append-only) -------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -450,11 +420,8 @@ pub enum OutputBody {
         statement: Option<u16>,
         error: QueryError,
     },
-    /// `"BEGIN (implicit)"`, `"Session reset: connection was lost"`.
     Info { message: String },
 }
-
-// ---- history, workspace, settings -------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -586,8 +553,6 @@ pub struct BootSnapshot {
     pub settings: Settings,
 }
 
-// ---- the one event (emitted as "app-event") -------------------------------------
-
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum AppEvent {
@@ -604,8 +569,6 @@ pub enum AppEvent {
     },
     HistoryAppended(HistoryEntry),
 }
-
-// ---- command errors ---------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]

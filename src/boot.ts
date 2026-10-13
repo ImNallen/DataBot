@@ -35,7 +35,6 @@ function startCatalogSync() {
 
 export async function boot(): Promise<void> {
   installRunBehavior();
-  // Listen first, then snapshot: an event racing the snapshot is harmless because apply keeps the higher rev.
   await listen<AppEvent>("app-event", (e) => useLive.getState().apply(e.payload));
   const snapshot = await commands.appBoot();
   useLive.getState().hydrate(snapshot);

@@ -1,5 +1,3 @@
-//! `Session`: one tokio-postgres client plus its driver task, notices, and death watch.
-
 use std::future::poll_fn;
 use std::time::Duration;
 
@@ -16,15 +14,13 @@ pub struct Session {
     pub client: Client,
     pub backend_pid: i32,
     pub server: ServerInfo,
-    /// The `search_path` this session currently has; the run task re-syncs it to the console.
-    pub schema: Option<String>,
+    pub search_path: Option<String>,
     cancel: CancelToken,
     tls: MakeTlsConnector,
     notices: mpsc::UnboundedReceiver<DbError>,
     closed: watch::Receiver<Option<String>>,
 }
 
-/// Enough to send a CancelRequest from another task while the run owns the `Session`.
 #[derive(Clone)]
 pub struct CancelHandle {
     token: CancelToken,
@@ -40,7 +36,6 @@ impl CancelHandle {
 }
 
 impl Session {
-    /// Connects, sets `TimeZone` and `search_path`, and spawns the driver task.
     pub async fn open(p: &ConnectParams, schema: Option<&str>, timezone: &str) -> Result<Session, ConnectError> {
         let tls = p.tls()?;
         let (client, mut connection) = p.pg_config().connect(tls.clone()).await.map_err(connect_error)?;
@@ -66,22 +61,22 @@ impl Session {
         let mut session = Session {
             backend_pid: server.1,
             server: server.0,
-            schema: None,
+            search_path: None,
             cancel: client.cancel_token(),
             tls,
             notices,
             closed,
             client,
         };
-        session.set_schema(schema).await.map_err(connect_error)?;
+        session.set_search_path(schema).await.map_err(connect_error)?;
         Ok(session)
     }
 
-    pub async fn set_schema(&mut self, schema: Option<&str>) -> Result<(), tokio_postgres::Error> {
+    pub async fn set_search_path(&mut self, schema: Option<&str>) -> Result<(), tokio_postgres::Error> {
         if let Some(s) = schema {
             self.client.batch_execute(&format!("SET search_path TO {}", quote_ident(s))).await?;
         }
-        self.schema = schema.map(str::to_owned);
+        self.search_path = schema.map(str::to_owned);
         Ok(())
     }
 

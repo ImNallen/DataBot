@@ -1,5 +1,3 @@
-//! `ConnectParams`, TLS mapping, error mapping, and the per-connection live state.
-
 use std::error::Error as _;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -95,7 +93,6 @@ impl ConnectParams {
     }
 }
 
-/// A `postgres://user:pass@host:port/db?sslmode=...` URL as a draft, for the self-check and tests.
 pub fn draft_from_url(url: &str, name: &str) -> Result<ConnectionDraft, String> {
     let cfg = tokio_postgres::Config::from_str(url).map_err(|e| error_text(&e))?;
     let host = match cfg.get_hosts().first() {
@@ -166,7 +163,6 @@ pub fn query_error(db: &DbError, position: Option<DocOffset>) -> QueryError {
     }
 }
 
-/// The 1-based character position PG reported for the original query text, if any.
 pub fn original_position(db: &DbError) -> Option<u32> {
     match db.position() {
         Some(ErrorPosition::Original(n)) => Some(*n),
@@ -174,7 +170,6 @@ pub fn original_position(db: &DbError) -> Option<u32> {
     }
 }
 
-/// A non-database failure (socket, protocol) presented in the same shape as a server error.
 pub fn transport_error(e: &tokio_postgres::Error) -> QueryError {
     QueryError {
         severity: "ERROR".into(),
@@ -187,7 +182,6 @@ pub fn transport_error(e: &tokio_postgres::Error) -> QueryError {
     }
 }
 
-/// A connected connection: its metadata session and the current catalog snapshot.
 pub struct Live {
     pub server: ServerInfo,
     pub meta: tokio::sync::Mutex<Session>,

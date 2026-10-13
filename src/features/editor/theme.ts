@@ -57,7 +57,6 @@ const highlight = HighlightStyle.define([
 
 export const editorHighlighting = syntaxHighlighting(highlight);
 
-/** Keywords that take a parenthesis right after them without being function calls. */
 const NOT_CALLS = new Set(["in", "values", "exists", "any", "all", "some", "over", "filter", "within", "using", "not", "and", "or", "on", "as", "from", "into", "table", "returning", "select"]);
 const callMark = Decoration.mark({ class: "cm-call" });
 

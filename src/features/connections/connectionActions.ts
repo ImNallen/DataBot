@@ -4,11 +4,9 @@ import { useWorkspace } from "../../state/workspace";
 
 const ws = () => useWorkspace.getState();
 
-/** Returns whether the connection ended up connected; failures also land in ConnStatus.Failed. */
-export async function connect(id: ConnectionId): Promise<boolean> {
+export async function connect(id: ConnectionId): Promise<void> {
   const res = await commands.connectionConnect(id);
   if (res.status === "error") ws().notify(`${ws().configs[id]?.name ?? "Connection"}: ${connectErrorText(res.error)}`);
-  return res.status === "ok";
 }
 
 export async function disconnect(id: ConnectionId): Promise<void> {

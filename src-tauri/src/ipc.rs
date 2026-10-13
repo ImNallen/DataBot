@@ -1,5 +1,3 @@
-//! Tauri commands: one line each, delegating to `Engine`.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 

@@ -1,7 +1,6 @@
 import type { ConnectionState, ConsoleState, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
 import { formatElapsed, groupDigits, pluralRows } from "../features/results/format";
 
-/** Commit/Rollback visibility and the tab's dot share one rule: a manual transaction holds work. */
 export function hasUncommittedWork(console: ConsoleState | undefined): boolean {
   return console !== undefined && console.config.mode === "Manual" && console.txn !== "Idle";
 }
@@ -46,7 +45,6 @@ export function rowResults(run: RunState): RowResult[] {
   return out;
 }
 
-/** The statement whose result is shown: the user's pick when it still exists, else the last one. */
 export function shownResult(run: RunState, picked: number | undefined): RowResult | undefined {
   const results = rowResults(run);
   return results.find((r) => r.index === picked) ?? results.at(-1);

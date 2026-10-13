@@ -1,6 +1,5 @@
 @import "tailwindcss";
 
-/* Tokens sampled from the mockup (docs: DataBot main window@2x). */
 @theme {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;

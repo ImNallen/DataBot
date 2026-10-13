@@ -1,11 +1,8 @@
-//! Pure UTF-16 offset mapping, `type_ref`, `synthesize_tag`, and `browse_sql`.
-
 use tokio_postgres::types::{Kind, Type};
 
 use crate::model::{DocOffset, DocRange, PgTypeRef, TypeCategory};
 use crate::sql::{DmlVerb, StmtKind, StmtSpan};
 
-/// Converts between the editor's UTF-16 code units and the byte offsets the lexer uses.
 pub struct OffsetMap<'a> {
     text: &'a str,
 }
@@ -20,7 +17,6 @@ impl<'a> OffsetMap<'a> {
         DocOffset(self.text[..byte].encode_utf16().count() as u32)
     }
 
-    /// Clamps to the text length and snaps into the middle of a surrogate pair to its start.
     pub fn from_utf16(&self, off: DocOffset) -> usize {
         let mut units = 0u32;
         for (byte, ch) in self.text.char_indices() {
@@ -67,7 +63,6 @@ fn type_display(t: &Type) -> String {
     }
 }
 
-/// psql's spelling for the internal names that differ from their SQL ones.
 fn builtin_name(internal: &str) -> &str {
     match internal {
         "int8" => "bigint",
@@ -128,7 +123,6 @@ pub fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-/// The page query behind a table tab. Without a primary key the order is whatever the heap gives.
 pub fn browse_sql(schema: &str, table: &str, pk: &[String], limit: u32, offset: u64) -> String {
     let mut sql = format!("SELECT * FROM {}.{}", quote_ident(schema), quote_ident(table));
     if !pk.is_empty() {
@@ -148,7 +142,6 @@ mod tests {
         let text = "select '😀漢'; select x";
         let map = OffsetMap::new(text);
         let x = text.find("select x").unwrap();
-        // "select '" is 8 units, the emoji 2, the CJK char 1, "'; " 3.
         assert_eq!(map.to_utf16(x), DocOffset(14));
         assert_eq!(map.from_utf16(DocOffset(14)), x);
         assert_eq!(map.from_utf16(DocOffset(9)), 8, "inside the surrogate pair snaps to its start");
@@ -161,7 +154,6 @@ mod tests {
         let text = "select 1;\nselect '😀', nope from t";
         let spans = crate::sql::split_statements(text);
         let map = OffsetMap::new(text);
-        // PG reports the position of `nope`: 1-based char index inside statement 2.
         let stmt = spans[1].text(text);
         let nope_char = stmt[..stmt.find("nope").unwrap()].chars().count() as u32 + 1;
         let doc = map.pg_position(&spans[1], nope_char);

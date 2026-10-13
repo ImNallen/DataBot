@@ -1,5 +1,3 @@
-//! SQLite persistence: migrations, connections, history, and the kv table (workspace, settings).
-
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -37,12 +35,10 @@ const MIGRATIONS: [&str; 1] = ["
     CREATE TABLE kv (key TEXT PRIMARY KEY, json TEXT NOT NULL);
 "];
 
-/// Writes are single-row and sub-millisecond, so every call runs inline under one mutex.
 pub struct Store {
     conn: Mutex<Connection>,
 }
 
-/// A history row before it has an id.
 pub struct HistoryInsert {
     pub at_ms: i64,
     pub connection_id: ConnectionId,
@@ -94,8 +90,7 @@ impl Store {
         })
     }
 
-    /// Inserts and prunes to the newest `HISTORY_KEEP` rows.
-    pub fn insert_history(&self, h: HistoryInsert) -> Result<HistoryEntry, StoreError> {
+    pub fn insert_history_and_prune(&self, h: HistoryInsert) -> Result<HistoryEntry, StoreError> {
         self.with(|c| {
             c.execute(
                 "INSERT INTO history (at_ms, connection_id, connection_name, database, sql, elapsed_ms, outcome_json)
@@ -128,7 +123,6 @@ impl Store {
         })
     }
 
-    /// Newest first, keyset-paginated on id.
     pub fn history(&self, q: &HistoryQuery) -> Result<HistoryPage, StoreError> {
         self.with(|c| {
             let limit = i64::from(q.limit.max(1));
@@ -246,7 +240,7 @@ mod tests {
             let s = Store::open(&path).unwrap();
             s.upsert_connection(&config).unwrap();
             s.kv_set("settings", &Settings { max_rows: 7, ..Settings::default() }).unwrap();
-            s.insert_history(entry("select 1")).unwrap();
+            s.insert_history_and_prune(entry("select 1")).unwrap();
         }
         let s = Store::open(&path).unwrap();
         let loaded = s.connections().unwrap();
@@ -263,11 +257,11 @@ mod tests {
     fn history_pages_newest_first_and_filters() {
         let (s, _dir) = store();
         for i in 0..5 {
-            s.insert_history(entry(&format!("select {i}"))).unwrap();
+            s.insert_history_and_prune(entry(&format!("select {i}"))).unwrap();
         }
         let other = HistoryInsert { connection_id: ConnectionId(uuid::Uuid::new_v4()), ..entry("select other") };
         let other_id = other.connection_id;
-        s.insert_history(other).unwrap();
+        s.insert_history_and_prune(other).unwrap();
 
         let page = s.history(&HistoryQuery { text: None, connection_id: None, before_id: None, limit: 2 }).unwrap();
         assert_eq!(page.entries.iter().map(|e| e.sql.as_str()).collect::<Vec<_>>(), ["select other", "select 4"]);
@@ -291,7 +285,7 @@ mod tests {
     fn history_is_pruned_to_the_newest_rows() {
         let (s, _dir) = store();
         for i in 0..(HISTORY_KEEP + 5) {
-            s.insert_history(entry(&format!("q{i}"))).unwrap();
+            s.insert_history_and_prune(entry(&format!("q{i}"))).unwrap();
         }
         let count: i64 = s.with(|c| Ok(c.query_row("SELECT count(*) FROM history", [], |r| r.get(0))?)).unwrap();
         assert_eq!(count, HISTORY_KEEP);

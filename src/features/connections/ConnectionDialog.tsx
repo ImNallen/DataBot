@@ -16,7 +16,6 @@ const SSL_MODES: { value: SslMode; label: string }[] = [
 
 type Fields = { name: string; host: string; port: string; database: string; user: string; sslMode: SslMode };
 
-/** The password edit is one of three explicit intents, matching PasswordInput. */
 type PasswordEdit = { kind: "keep" } | { kind: "set"; value: string } | { kind: "clear" };
 
 function toPasswordInput(edit: PasswordEdit): PasswordInput {

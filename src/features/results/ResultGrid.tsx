@@ -87,8 +87,6 @@ export function ResultGrid({ meta, done }: { meta: ResultMeta; done: boolean }) 
   const { rowCount, columns } = meta;
   const rowNumW = Math.max(ROWNUM_W, String(rowCount).length * MONO_CHAR + 22);
 
-  // Widths are measured once per result from its first rows, so columns never jump while
-  // scrolling or streaming. A result that ends empty sizes from its headers alone.
   const [measured, setMeasured] = useState<number[] | null>(null);
   const sampled = Math.min(rowCount, 64);
   const sampleReady = sampled > 0 ? cache.get(sampled - 1) !== undefined : done;
@@ -99,8 +97,6 @@ export function ResultGrid({ meta, done }: { meta: ResultMeta; done: boolean }) 
   const fitted = useMemo(() => {
     const total = widths.reduce((a, b) => a + b, 0);
     const spare = viewport - rowNumW - total;
-    // Fill the pane like the mockup when columns already cover most of it; a narrow result
-    // (one integer column) keeps its natural width instead of stretching across the screen.
     if (spare <= 0 || spare > total || widths.length === 0) return widths;
     const extra = Math.floor(spare / widths.length);
     return widths.map((w, i) => w + extra + (i === widths.length - 1 ? spare - extra * widths.length : 0));

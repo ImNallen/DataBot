@@ -280,7 +280,6 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         ? `Connection lost: ${state.status.reason}`
         : null;
 
-  // The first time a connection goes live, wherever the connect came from, open it down to `public`.
   const revealed = useRef(false);
   const { toggle } = expanded;
   useEffect(() => {

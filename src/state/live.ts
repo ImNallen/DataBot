@@ -17,9 +17,7 @@ export type LiveData = {
   connections: Record<ConnectionId, ConnectionState>;
   consoles: Record<TabId, ConsoleState>;
   output: Record<TabId, OutputEntry[]>;
-  /** Highest catalog version announced per connection, from either source that carries one. */
   catalogVersions: Record<ConnectionId, number>;
-  /** Entries appended since boot, newest first; the History panel merges them over its fetched page. */
   historyTail: HistoryEntry[];
 };
 

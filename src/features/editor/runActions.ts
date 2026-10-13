@@ -36,7 +36,6 @@ function sameConfig(a: ConsoleConfig, b: ConsoleConfig): boolean {
   return a.connectionId === b.connectionId && a.schema === b.schema && a.mode === b.mode;
 }
 
-/** Upserts the engine console for a tab; restored tabs have none until their first use. */
 async function ensureConsole(tab: Tab): Promise<boolean> {
   const config = consoleConfig(tab);
   if (!config) {
@@ -53,7 +52,6 @@ async function ensureConsole(tab: Tab): Promise<boolean> {
   return true;
 }
 
-/** Text sent per tab, so a diagnostic is placed only if the document is unchanged since the run. */
 const sent = new Map<TabId, { runId: number; text: string }>();
 
 export async function runTab(tabId: TabId): Promise<void> {
@@ -159,7 +157,6 @@ export function openTableTab(ref: RelationRef): void {
 
 const loadedTables = new Set<TabId>();
 
-/** A table tab fetches its page the first time it is shown, including tabs restored from the workspace. */
 export function loadTableOnce(tabId: TabId): void {
   if (loadedTables.has(tabId)) return;
   loadedTables.add(tabId);

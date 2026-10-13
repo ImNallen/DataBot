@@ -40,7 +40,6 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ipc::settings_set,
         ])
         .typ::<AppEvent>()
-        // Row counts, revs, and epoch millis stay far below 2^53.
         .dangerously_cast_bigints_to_number()
 }
 
@@ -50,7 +49,6 @@ fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>, path: &Path) {
         .expect("failed to export TypeScript bindings");
 }
 
-/// Debug builds honor dev and test overrides; release builds ignore the environment.
 fn debug_env(key: &str) -> Option<String> {
     if cfg!(debug_assertions) { std::env::var(key).ok() } else { None }
 }
@@ -85,8 +83,6 @@ fn forward_events(app: AppHandle, mut events: broadcast::Receiver<AppEvent>) {
 
 const SELF_CHECK_URL: &str = "postgres://databot:databot@localhost:5433/shop";
 
-/// `DATABOT_SELF_CHECK=1`: boot the engine inside Tauri, connect to `DATABOT_SELF_CHECK_URL`,
-/// run `SELECT 1`, load the catalog, print a JSON report, and exit 0 on success.
 async fn self_check(app: AppHandle, engine: Arc<Engine>) {
     let url = std::env::var("DATABOT_SELF_CHECK_URL").unwrap_or_else(|_| SELF_CHECK_URL.into());
     let data_dir = engine.data_dir().to_owned();

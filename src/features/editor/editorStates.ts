@@ -18,10 +18,6 @@ import {
 import type { DocRange, TabId } from "../../ipc/bindings";
 import { editorHighlighting, editorTheme, functionCallStyle } from "./theme";
 
-/**
- * SQL text lives only here: one EditorState per tab, swapped into a single EditorView,
- * so each tab keeps its own undo history across switches.
- */
 const states = new Map<TabId, EditorState>();
 let view: EditorView | null = null;
 let activeId: TabId | null = null;
@@ -57,7 +53,6 @@ export function sqlLanguage(schema: SQLNamespace | undefined, defaultSchema: str
   return sql({ dialect: PostgreSQL, schema, defaultSchema, upperCaseKeywords: true });
 }
 
-/** Keymaps and listeners that call back into the app; installed once before any state exists. */
 export function installEditorBehavior(ext: Extension): void {
   behavior = ext;
 }
@@ -111,7 +106,6 @@ export function dropEditor(id: TabId): void {
   if (activeId === id) activeId = null;
 }
 
-/** Applies a transaction to a tab's state whether or not it is the one on screen. */
 export function updateEditor(id: TabId, spec: (state: EditorState) => TransactionSpec): void {
   if (id === activeId && view) {
     view.dispatch(spec(view.state));

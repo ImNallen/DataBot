@@ -30,10 +30,8 @@ export type WorkspaceData = {
   active: TabId | null;
   layout: Layout;
   configs: Record<ConnectionId, ConnectionConfig>;
-  /** Which statement's result each tab shows; absent means the last one. */
   activeResult: Record<TabId, number>;
   settings: Settings;
-  /** The relation picked in the tree, shown by the Schema panel when no table tab is active. */
   selected: RelationRef | null;
   overlay: Overlay;
   toast: { id: number; text: string } | null;
@@ -56,7 +54,6 @@ export function tabFromSnapshot(t: TabSnapshot): Tab {
   }
 }
 
-/** The persisted shape; SQL text comes from the editor states, its only owner. */
 export function workspaceSnapshot(s: Pick<WorkspaceData, "tabs" | "order" | "active" | "layout">, textOf: (id: TabId) => string): Workspace {
   const tabs = s.order.flatMap((id): TabSnapshot[] => {
     const t = s.tabs[id];
@@ -161,7 +158,6 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
     }),
   setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...patch } })),
   setActiveResult: (id, index) => set((s) => ({ activeResult: { ...s.activeResult, [id]: index } })),
-  // SQL tabs opened before any connection existed bind to the first one saved.
   upsertConfig: (c) =>
     set((s) => ({
       configs: { ...s.configs, [c.id]: c },

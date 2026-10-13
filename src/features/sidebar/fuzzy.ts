@@ -16,7 +16,6 @@ function matchToken(text: string, token: string, from: number): { score: number;
   let at = from;
   for (const ch of token) {
     let found = -1;
-    // Prefer the next occurrence that starts a word ("oi" -> o_rder_i_tems).
     for (let i = text.indexOf(ch, at); i !== -1; i = text.indexOf(ch, i + 1)) {
       if (found === -1) found = i;
       if (isWordStart(text, i)) {
@@ -32,10 +31,6 @@ function matchToken(text: string, token: string, from: number): { score: number;
   return { score, end: at };
 }
 
-/**
- * Fuzzy score of `query` against `text`, or null when it does not match.
- * Whitespace splits the query into tokens matched in order, so "ord it" finds order_items.
- */
 export function fuzzyScore(query: string, text: string): number | null {
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return 0;

@@ -1,5 +1,3 @@
-//! Pure transaction state machine: `txn_after` and `needs_implicit_begin`.
-
 use crate::model::{TxnMode, TxnState};
 use crate::sql::StmtKind;
 
@@ -29,8 +27,6 @@ pub fn txn_after(state: TxnState, kind: &StmtKind, outcome: StmtOutcome) -> TxnS
     }
 }
 
-/// Manual mode wraps the first statement of a block in `BEGIN`, except transaction control
-/// and statements that refuse to run inside a block.
 pub fn needs_implicit_begin(mode: TxnMode, state: TxnState, kind: &StmtKind) -> bool {
     use StmtKind::*;
     mode == TxnMode::Manual

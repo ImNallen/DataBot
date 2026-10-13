@@ -1,5 +1,3 @@
-//! `Console`, its `SessionSlot`, and the run task that owns the session during a run.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -19,19 +17,14 @@ use crate::store::HistoryInsert;
 use crate::text::{OffsetMap, synthesize_tag, type_ref};
 use crate::txn::{StmtOutcome, needs_implicit_begin, txn_after};
 
-/// Snapshots while rows stream are rate-limited to this interval per console.
 const STREAM_EMIT_INTERVAL: Duration = Duration::from_millis(100);
 const QUERY_CANCELED: &str = "57014";
 
 pub struct Console {
     pub tab: TabId,
-    /// Held only for state edits, never across a query.
     pub inner: Mutex<ConsoleInner>,
-    /// Results of the current or last run only; dropped on re-run. Read by sync `result_page`.
     pub results: std::sync::Mutex<Vec<Arc<ResultSet>>>,
-    /// The last published state, for `boot()` without taking the async lock.
     pub latest: std::sync::Mutex<ConsoleState>,
-    /// Set by `console_close`; a run that outlives its tab stops publishing.
     pub closed: AtomicBool,
 }
 
@@ -41,15 +34,13 @@ pub struct ConsoleInner {
     pub txn: TxnState,
     pub run: RunState,
     pub rev: u64,
-    /// DDL ran inside an open transaction; the catalog refreshes once it commits.
     pub ddl_pending: bool,
 }
 
 pub enum SessionSlot {
     Empty,
     Idle(Session),
-    /// The `Session` is owned by the run (or commit/rollback) task.
-    InRun {
+    Busy {
         run_id: RunId,
         backend_pid: i32,
         cancel: CancelHandle,
@@ -104,7 +95,7 @@ impl Console {
             session: match &inner.session {
                 SessionSlot::Empty => SessionState::None,
                 SessionSlot::Idle(s) => SessionState::Open { backend_pid: s.backend_pid },
-                SessionSlot::InRun { backend_pid, .. } => SessionState::Open { backend_pid: *backend_pid },
+                SessionSlot::Busy { backend_pid, .. } => SessionState::Open { backend_pid: *backend_pid },
                 SessionSlot::Lost { reason, txn_lost } => SessionState::Lost { reason: reason.clone(), txn_lost: *txn_lost },
             },
             txn: inner.txn,
@@ -112,7 +103,6 @@ impl Console {
         }
     }
 
-    /// Bumps `rev` and emits the whole state.
     pub fn publish(&self, inner: &mut ConsoleInner, shared: &Shared) -> ConsoleState {
         inner.rev += 1;
         let state = self.snapshot(inner);
@@ -133,12 +123,11 @@ impl Console {
         });
     }
 
-    /// Takes the idle session out for a run or a transaction command.
     pub fn take_session(&self, inner: &mut ConsoleInner, run_id: RunId) -> Option<(Session, Arc<AtomicBool>)> {
         let SessionSlot::Idle(_) = inner.session else { return None };
         let SessionSlot::Idle(session) = std::mem::replace(&mut inner.session, SessionSlot::Empty) else { unreachable!() };
         let stop = Arc::new(AtomicBool::new(false));
-        inner.session = SessionSlot::InRun {
+        inner.session = SessionSlot::Busy {
             run_id,
             backend_pid: session.backend_pid,
             cancel: session.cancel_handle(),
@@ -151,7 +140,7 @@ impl Console {
     /// published only while `run_id` still owns the slot; otherwise the task is `Orphaned`.
     pub async fn edit<T>(&self, shared: &Shared, run_id: RunId, edit: impl FnOnce(&mut ConsoleInner) -> T) -> Result<T, Orphaned> {
         let mut inner = self.inner.lock().await;
-        if !matches!(inner.session, SessionSlot::InRun { run_id: r, .. } if r == run_id) {
+        if !matches!(inner.session, SessionSlot::Busy { run_id: r, .. } if r == run_id) {
             return Err(Orphaned);
         }
         let out = edit(&mut inner);
@@ -178,7 +167,7 @@ impl Console {
     /// statement in flight is Cancelled and the rest Skipped.
     pub async fn drop_session(&self, shared: &Shared) {
         let mut inner = self.inner.lock().await;
-        if let SessionSlot::InRun { cancel, stop, .. } = &inner.session {
+        if let SessionSlot::Busy { cancel, stop, .. } = &inner.session {
             stop.store(true, Ordering::Relaxed);
             let cancel = cancel.clone();
             tokio::spawn(async move { cancel.cancel().await });
@@ -254,8 +243,8 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
     let mut outcome = RunOutcome::Ok;
     let mut fatal = None;
 
-    if session.schema != plan.schema {
-        if let Err(e) = session.set_schema(plan.schema.as_deref()).await {
+    if session.search_path != plan.schema {
+        if let Err(e) = session.set_search_path(plan.schema.as_deref()).await {
             let error = e.as_db_error().map_or_else(|| transport_error(&e), |db| query_error(db, None));
             console.output(&shared, Some(run_id), OutputBody::Error { statement: None, error });
         }

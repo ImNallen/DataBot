@@ -38,11 +38,6 @@ export function expectedPageLength(page: number, rowCount: number): number {
 
 const cellKey = (row: number, col: number) => `${row}:${col}`;
 
-/**
- * Rows of one result, held outside React. The grid reads synchronously with `get` and asks
- * for windows with `ensure`; listeners re-render when a page lands. A page that arrived short
- * while the result was still streaming is fetched again once `rowCount` has grown past it.
- */
 export class RowCache {
   readonly ref: ResultRef;
   private readonly source: RowSource;
@@ -66,7 +61,6 @@ export class RowCache {
     return this.pages.get(Math.floor(row / PAGE_SIZE))?.cut.has(cellKey(row, col)) ?? false;
   }
 
-  /** The uncut value once `loadFull` fetched it; undefined until then. */
   fullValue(row: number, col: number): string | null | undefined {
     return this.full.get(cellKey(row, col));
   }
@@ -151,7 +145,6 @@ export class RowCache {
 
 const caches = new Map<string, RowCache>();
 
-/** One cache per result; a re-run of the tab drops the caches of its earlier runs. */
 export function rowCacheFor(ref: ResultRef): RowCache {
   const key = `${ref.tabId}:${ref.runId}:${ref.index}`;
   let cache = caches.get(key);

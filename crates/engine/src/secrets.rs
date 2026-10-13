@@ -1,5 +1,3 @@
-//! Connection passwords: the OS keychain in the app, an in-memory map in tests and the dev bridge.
-
 use std::collections::HashMap;
 use std::sync::Mutex;
 

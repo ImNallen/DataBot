@@ -64,7 +64,6 @@ export type ColumnInfo = {
 export type ColumnMeta = {
 	name: string,
 	type: PgTypeRef,
-	/**  Hook for future inline editing. */
 	source: ColumnSource | null,
 };
 
@@ -77,9 +76,7 @@ export type ConfigureError =
 /**  Mode or connection change requested while a transaction is open. */
 { kind: "TransactionOpen" } | { kind: "Busy" } | { kind: "UnknownConnection" };
 
-export type ConnStatus = { kind: "Disconnected" } | { kind: "Connecting" } | { kind: "Connected"; server: ServerInfo; catalogVersion: number } | 
-/**  The connect attempt failed. */
-{ kind: "Failed"; error: ConnectError } | 
+export type ConnStatus = { kind: "Disconnected" } | { kind: "Connecting" } | { kind: "Connected"; server: ServerInfo; catalogVersion: number } | { kind: "Failed"; error: ConnectError } | 
 /**  The metadata session died after being `Connected`. */
 { kind: "Lost"; reason: string };
 
@@ -87,7 +84,6 @@ export type ConnectError = { kind: "Network"; message: string } | { kind: "Tls";
 	kind: "Server",
 } & QueryError | { kind: "Keychain"; message: string };
 
-/**  Persisted (SQLite). Never contains the password. */
 export type ConnectionConfig = {
 	id: ConnectionId,
 	name: string,
@@ -220,9 +216,7 @@ export type OpenTxn = {
 	hasWrites: boolean,
 };
 
-export type OutputBody = { kind: "Notice"; severity: string; message: string; detail: string | null } | { kind: "Command"; statement: number; tag: string; elapsedMs: number } | { kind: "Rows"; statement: number; rows: number; elapsedMs: number; truncated: boolean } | { kind: "Error"; statement: number | null; error: QueryError } | 
-/**  `"BEGIN (implicit)"`, `"Session reset: connection was lost"`. */
-{ kind: "Info"; message: string };
+export type OutputBody = { kind: "Notice"; severity: string; message: string; detail: string | null } | { kind: "Command"; statement: number; tag: string; elapsedMs: number } | { kind: "Rows"; statement: number; rows: number; elapsedMs: number; truncated: boolean } | { kind: "Error"; statement: number | null; error: QueryError } | { kind: "Info"; message: string };
 
 export type OutputEntry = {
 	atMs: number,
@@ -230,7 +224,6 @@ export type OutputEntry = {
 	body: OutputBody,
 };
 
-/**  Edit semantics for the secret are explicit; the frontend never reads a password back. */
 export type PasswordInput = "Keep" | { Set: string } | "Clear";
 
 export type PgTypeRef = {
@@ -247,7 +240,6 @@ export type QueryError = {
 	detail: string | null,
 	hint: string | null,
 	context: string | null,
-	/**  Mapped from PG's 1-based character position into the document. */
 	position: DocOffset | null,
 };
 
@@ -284,10 +276,6 @@ export type ResultRef = {
 
 export type RightPanel = "Assistant" | "Schema" | "History";
 
-/**
- *  Row-major page. Cells longer than the cell character limit (default 2,000) are cut;
- *  `cut` lists their `(row, col)` so the UI can mark them and fetch the full value.
- */
 export type RowPage = {
 	start: number,
 	rows: ((string | null)[])[],
@@ -308,9 +296,7 @@ export type RunId = number;
 
 export type RunOutcome = "Ok" | "Failed" | "Cancelled";
 
-export type RunRequest = { kind: "script"; text: string; target: RunTarget } | 
-/**  The engine builds quoted SQL ordered by the catalog's PK columns (no ORDER BY without a PK). */
-{ kind: "tablePage"; schema: string; table: string; page: number };
+export type RunRequest = { kind: "script"; text: string; target: RunTarget } | { kind: "tablePage"; schema: string; table: string; page: number };
 
 export type RunState = { kind: "Idle" } | { kind: "Running"; runId: RunId; startedAtMs: number; statements: StatementRun[] } | { kind: "Finished"; runId: RunId; elapsedMs: number; statements: StatementRun[]; outcome: RunOutcome };
 
@@ -348,9 +334,7 @@ export type StatementRun = {
 	status: StmtStatus,
 };
 
-export type StmtStatus = { kind: "Pending" } | { kind: "Preparing" } | 
-/**  `done` is false while rows are still streaming. */
-{ kind: "Rows"; result: ResultMeta; done: boolean } | 
+export type StmtStatus = { kind: "Pending" } | { kind: "Preparing" } | { kind: "Rows"; result: ResultMeta; done: boolean } | 
 /**  `tag` reads like `"UPDATE 3"`. */
 { kind: "Command"; tag: string; elapsedMs: number } | { kind: "Failed"; error: QueryError } | { kind: "Cancelled" } | 
 /**  An earlier statement failed or was cancelled. */

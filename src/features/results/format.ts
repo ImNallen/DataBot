@@ -24,13 +24,11 @@ const UNITS: readonly [number, string][] = [
   [1e3, "k"],
 ];
 
-/** Row estimates as the tree shows them: 18400 -> "18.4k", 241000 -> "241k", 999999 -> "1M". */
 export function compactCount(n: number): string {
   const abs = Math.abs(n);
   if (abs < 1000) return String(Math.round(n));
   let i = UNITS.findIndex(([base]) => abs >= base);
   let text = scaleTo(n, UNITS[i]![0]);
-  // Rounding can carry into the next unit (999_999 -> "1000k"); promote instead.
   if (Math.abs(Number(text)) >= 1000 && i > 0) {
     i -= 1;
     text = scaleTo(n, UNITS[i]![0]);
@@ -56,7 +54,6 @@ function tsvField(value: string | null): string {
   return /[\t\n\r"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
-/** Tab-separated text that spreadsheets paste back into the same cells; NULL becomes empty. */
 export function toTsv(rows: readonly (readonly (string | null)[])[]): string {
   return rows.map((r) => r.map(tsvField).join("\t")).join("\n");
 }
@@ -71,10 +68,6 @@ const TYPE_ALIASES: readonly [RegExp, string][] = [
   [/^bit varying/, "varbit"],
 ];
 
-/**
- * The catalog spells types the way format_type does ("timestamp with time zone"); the result
- * grid's column types already use the short names, so the tree and Schema panel match them.
- */
 export function shortType(display: string): string {
   for (const [long, short] of TYPE_ALIASES) if (long.test(display)) return display.replace(long, short);
   return display;

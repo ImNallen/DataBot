@@ -1,5 +1,3 @@
-//! The bridge's command table: the same names and camelCase argument keys as the Tauri commands.
-
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -11,7 +9,6 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-/// What the command itself returned: `Ok(data)` or its typed error value.
 pub type Reply = Result<Value, Value>;
 
 #[derive(Debug)]
@@ -21,7 +18,6 @@ pub enum BridgeError {
     Panicked(String),
 }
 
-/// Lets commands that cannot fail share the `Result` path with those that can.
 #[derive(Serialize)]
 enum Never {}
 
@@ -76,7 +72,6 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 
 macro_rules! routes {
     ($engine:ident; $( $name:ident ( $( $arg:ident : $ty:ty ),* ) => $call:expr; )*) => {
-        /// Every served command with its Rust parameter names, in registration order.
         #[cfg(test)]
         pub const ROUTES: &[(&str, &[&str])] = &[ $( (stringify!($name), &[ $( stringify!($arg) ),* ]) ),* ];
 
@@ -138,8 +133,6 @@ mod tests {
 
     const BINDINGS: &str = include_str!("../../../src/ipc/bindings.ts");
 
-    /// `{ command: [camelCase arg, ...] }` from each `__TAURI_INVOKE("name", { a, b })` call
-    /// in the generated bindings, which the drift test proves match the Tauri registration.
     fn tauri_commands() -> BTreeMap<String, Vec<String>> {
         BINDINGS
             .lines()

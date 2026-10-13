@@ -1,15 +1,9 @@
 import type { Catalog, ColumnInfo, ConnectionId, FunctionInfo, Relation, RelKind } from "../ipc/bindings";
 
-/**
- * A Catalog fixture shaped like the seeded `shop` database (dev/seed.sql), with types spelled
- * the way the engine's catalog query reports them.
- */
-
 type TableSpec = { name: string; kind?: RelKind; rows: number | null; columns: string[] };
 
 const TSTZ = "timestamp with time zone";
 
-/** Columns as `name|type|flags`, where flags is any of `pk` and `null`. */
 const SHOP: TableSpec[] = [
   { name: "addresses", rows: 18_400, columns: ["id|bigint|pk", "customer_id|bigint", "line1|text", "city|text", "postal_code|text|null"] },
   { name: "categories", rows: 20, columns: ["id|bigint|pk", "name|text", "parent_id|bigint|null"] },
