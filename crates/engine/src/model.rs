@@ -496,13 +496,15 @@ pub struct ConsoleConfigSnapshot {
     pub mode: TxnMode,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Layout {
     pub sidebar: bool,
     pub results: bool,
     pub right_panel: Option<RightPanel>,
     pub results_height: u16,
+    pub sidebar_width: u16,
+    pub right_panel_width: u16,
 }
 
 impl Default for Layout {
@@ -512,7 +514,36 @@ impl Default for Layout {
             results: true,
             right_panel: None,
             results_height: 320,
+            sidebar_width: 256,
+            right_panel_width: 341,
         }
+    }
+}
+
+// Hand-written so workspaces saved before the panel widths existed still load. `#[serde(default)]`
+// would do it too, but specta would then mark every Layout field optional in the TS bindings.
+impl<'de> Deserialize<'de> for Layout {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Saved {
+            sidebar: bool,
+            results: bool,
+            right_panel: Option<RightPanel>,
+            results_height: u16,
+            sidebar_width: Option<u16>,
+            right_panel_width: Option<u16>,
+        }
+        let s = Saved::deserialize(d)?;
+        let default = Self::default();
+        Ok(Self {
+            sidebar: s.sidebar,
+            results: s.results,
+            right_panel: s.right_panel,
+            results_height: s.results_height,
+            sidebar_width: s.sidebar_width.unwrap_or(default.sidebar_width),
+            right_panel_width: s.right_panel_width.unwrap_or(default.right_panel_width),
+        })
     }
 }
 
@@ -590,7 +621,6 @@ pub struct OpenTxn {
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum DisconnectError {
     OpenTransactions { tabs: Vec<OpenTxn> },
-    Keychain { message: String },
     Store { message: String },
 }
 
@@ -682,5 +712,19 @@ mod tests {
             serde_json::to_value(err).unwrap(),
             json!({ "kind": "Connect", "error": { "kind": "MissingPassword" } })
         );
+    }
+
+    #[test]
+    fn layout_saved_before_panel_widths_existed_still_loads() {
+        let layout: Layout = serde_json::from_value(json!({
+            "sidebar": false, "results": false, "rightPanel": "History", "resultsHeight": 280
+        }))
+        .unwrap();
+        assert!(!layout.sidebar);
+        assert!(!layout.results);
+        assert_eq!(layout.right_panel, Some(RightPanel::History));
+        assert_eq!(layout.results_height, 280);
+        assert_eq!(layout.sidebar_width, 256);
+        assert_eq!(layout.right_panel_width, 341);
     }
 }

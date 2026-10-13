@@ -21,16 +21,17 @@ use tokio::sync::broadcast;
 use connection::{ConnEntry, ConnSlot, ConnectParams, Live};
 use console::{Console, PlannedStmt, RunPlan, SessionSlot};
 use model::*;
+use secrets::Vault;
 use session::Session;
 use store::{HistoryInsert, Store};
 
 pub use connection::draft_from_url;
-pub use secrets::{KeyringSecrets, MemorySecrets, SecretError, SecretStore};
+pub use secrets::{KeyStore, KeyringKeyStore, MemoryKeyStore, SecretError};
 pub use store::StoreError;
 
 pub struct EngineConfig {
     pub data_dir: PathBuf,
-    pub secrets: Arc<dyn SecretStore>,
+    pub keys: Arc<dyn KeyStore>,
 }
 
 pub struct Engine {
@@ -39,7 +40,7 @@ pub struct Engine {
 
 pub(crate) struct Shared {
     data_dir: PathBuf,
-    secrets: Arc<dyn SecretStore>,
+    vault: Vault,
     store: Store,
     settings: RwLock<Settings>,
     connections: RwLock<HashMap<ConnectionId, ConnEntry>>,
@@ -99,12 +100,18 @@ impl Shared {
     fn connect_params(&self, id: ConnectionId) -> Result<(ConnectionConfig, ConnectParams), ConnectError> {
         let config = self.config(id).ok_or_else(|| ConnectError::Network { message: "unknown connection".into() })?;
         let password = if config.has_password {
-            self.secrets.get(id).map_err(|e| ConnectError::Keychain { message: e.to_string() })?
+            self.saved_password(id)?
         } else {
             None
         };
         let params = ConnectParams::from_config(&config, password);
         Ok((config, params))
+    }
+
+    fn saved_password(&self, id: ConnectionId) -> Result<Option<String>, ConnectError> {
+        let keychain = |message: String| ConnectError::Keychain { message };
+        let Some(sealed) = self.store.secret(id).map_err(|e| keychain(e.to_string()))? else { return Ok(None) };
+        self.vault.open(id, &sealed).map_err(|e| keychain(e.to_string()))
     }
 
     fn all_consoles(&self) -> Vec<Arc<Console>> {
@@ -321,7 +328,7 @@ impl Engine {
         Ok(Arc::new(Self {
             shared: Arc::new(Shared {
                 data_dir: cfg.data_dir,
-                secrets: cfg.secrets,
+                vault: Vault::new(cfg.keys),
                 store,
                 settings: RwLock::new(settings),
                 connections: RwLock::new(HashMap::new()),
@@ -376,14 +383,15 @@ impl Engine {
         }
         let existing = d.id.and_then(|id| s.config(id));
         let id = d.id.unwrap_or_else(|| ConnectionId(uuid::Uuid::new_v4()));
-        let keychain = |e: SecretError| SaveError::Keychain { message: e.to_string() };
+        let store = |e: StoreError| SaveError::Store { message: e.to_string() };
         let has_password = match &d.password {
             PasswordInput::Set(pw) => {
-                s.secrets.set(id, pw).map_err(keychain)?;
+                let sealed = s.vault.seal(id, pw).map_err(|e| SaveError::Keychain { message: e.to_string() })?;
+                s.store.set_secret(id, &sealed).map_err(store)?;
                 true
             }
             PasswordInput::Clear => {
-                s.secrets.delete(id).map_err(keychain)?;
+                s.store.delete_secret(id).map_err(store)?;
                 false
             }
             PasswordInput::Keep => existing.as_ref().is_some_and(|c| c.has_password),
@@ -400,7 +408,7 @@ impl Engine {
             has_password,
             color: d.color,
         };
-        s.store.upsert_connection(&config).map_err(|e| SaveError::Store { message: e.to_string() })?;
+        s.store.upsert_connection(&config).map_err(store)?;
         Ok(config)
     }
 
@@ -408,7 +416,6 @@ impl Engine {
         self.disconnect(id, false).await?;
         let s = &self.shared;
         s.store.delete_connection(id).map_err(|e| DisconnectError::Store { message: e.to_string() })?;
-        s.secrets.delete(id).map_err(|e| DisconnectError::Keychain { message: e.to_string() })?;
         s.connections.write().unwrap().remove(&id);
         Ok(())
     }
@@ -418,7 +425,7 @@ impl Engine {
         let password = match (&d.password, d.id) {
             (PasswordInput::Set(pw), _) => Some(pw.clone()),
             (PasswordInput::Clear, _) | (PasswordInput::Keep, None) => None,
-            (PasswordInput::Keep, Some(id)) => s.secrets.get(id).map_err(|e| ConnectError::Keychain { message: e.to_string() })?,
+            (PasswordInput::Keep, Some(id)) => s.saved_password(id)?,
         };
         let session = Session::open(&ConnectParams::from_draft(&d, password), None, &s.timezone).await?;
         Ok(session.server)
@@ -671,7 +678,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = Engine::open(EngineConfig {
             data_dir: dir.path().join("nested"),
-            secrets: Arc::new(MemorySecrets::default()),
+            keys: Arc::new(MemoryKeyStore::default()),
         })
         .await
         .unwrap();
@@ -702,16 +709,58 @@ mod tests {
         assert_eq!(boot.settings.max_rows, 200_000);
     }
 
+    const PLAINTEXT: &str = "plaintext-hunter2";
+
+    fn db_bytes(dir: &Path) -> Vec<u8> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(DB_FILE))
+            .flat_map(|p| std::fs::read(p).unwrap())
+            .collect()
+    }
+
+    struct NoKeychain;
+
+    impl KeyStore for NoKeychain {
+        fn load(&self) -> Result<Option<[u8; 32]>, SecretError> {
+            Err(SecretError("keychain touched".into()))
+        }
+
+        fn save(&self, _: &[u8; 32]) -> Result<(), SecretError> {
+            Err(SecretError("keychain touched".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn passwordless_save_clear_and_delete_never_touch_the_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(NoKeychain) }).await.unwrap();
+        let saved = engine.save_connection(ConnectionDraft { password: PasswordInput::Clear, ..draft("dev") }).await.unwrap();
+        let kept = engine
+            .save_connection(ConnectionDraft { id: Some(saved.id), password: PasswordInput::Keep, ..draft("dev") })
+            .await
+            .unwrap();
+        assert!(!kept.has_password);
+        engine.delete_connection(saved.id).await.unwrap();
+        let err = engine.save_connection(draft("dev")).await.unwrap_err();
+        assert!(matches!(err, SaveError::Keychain { ref message } if message == "keychain touched"));
+    }
+
     #[tokio::test]
     async fn connections_settings_and_workspace_persist_across_open() {
         let dir = tempfile::tempdir().unwrap();
-        let secrets = Arc::new(MemorySecrets::default());
-        let cfg = || EngineConfig { data_dir: dir.path().to_owned(), secrets: secrets.clone() };
+        let keys = Arc::new(MemoryKeyStore::default());
+        let cfg = || EngineConfig { data_dir: dir.path().to_owned(), keys: keys.clone() };
+        let password = |engine: &Engine, id| engine.shared.saved_password(id).unwrap();
         let saved = {
             let engine = Engine::open(cfg()).await.unwrap();
-            let saved = engine.save_connection(draft("dev")).await.unwrap();
+            let saved = engine
+                .save_connection(ConnectionDraft { password: PasswordInput::Set(PLAINTEXT.into()), ..draft("dev") })
+                .await
+                .unwrap();
             assert!(saved.has_password);
-            assert_eq!(secrets.get(saved.id).unwrap().as_deref(), Some("pw"));
+            assert_eq!(password(&engine, saved.id).as_deref(), Some(PLAINTEXT));
             engine.set_settings(Settings { max_rows: 10, ..Settings::default() });
             engine.save_workspace(Workspace { tabs: vec![], active: None, layout: Layout { sidebar: false, ..Layout::default() } });
             saved
@@ -722,18 +771,22 @@ mod tests {
         assert_eq!(boot.connections[0].id, saved.id);
         assert_eq!(boot.settings.max_rows, 10);
         assert!(!boot.workspace.layout.sidebar);
+        assert_eq!(password(&engine, saved.id).as_deref(), Some(PLAINTEXT));
+        assert!(!db_bytes(dir.path()).windows(PLAINTEXT.len()).any(|w| w == PLAINTEXT.as_bytes()));
 
         let renamed = engine
             .save_connection(ConnectionDraft { id: Some(saved.id), name: "renamed".into(), password: PasswordInput::Keep, ..draft("x") })
             .await
             .unwrap();
         assert!(renamed.has_password && renamed.name == "renamed");
+        assert_eq!(password(&engine, saved.id).as_deref(), Some(PLAINTEXT));
         let cleared = engine
             .save_connection(ConnectionDraft { id: Some(saved.id), password: PasswordInput::Clear, ..draft("x") })
             .await
             .unwrap();
         assert!(!cleared.has_password);
-        assert_eq!(secrets.get(saved.id).unwrap(), None);
+        assert_eq!(engine.shared.store.secret(saved.id).unwrap(), None);
+        assert_eq!(password(&engine, saved.id), None);
         assert_eq!(engine.boot().connections.len(), 1);
 
         engine.delete_connection(saved.id).await.unwrap();

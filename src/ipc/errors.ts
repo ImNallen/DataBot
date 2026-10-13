@@ -72,7 +72,6 @@ export function disconnectErrorText(e: DisconnectError): string {
   switch (e.kind) {
     case "OpenTransactions":
       return `${e.tabs.length} ${e.tabs.length === 1 ? "tab has" : "tabs have"} an open transaction.`;
-    case "Keychain":
     case "Store":
       return e.message;
     default: {

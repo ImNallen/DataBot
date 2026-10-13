@@ -11,7 +11,7 @@ use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
-use engine::{Engine, EngineConfig, MemorySecrets};
+use engine::{Engine, EngineConfig, MemoryKeyStore};
 use futures_util::Stream;
 use serde_json::{Map, Value, json};
 use tokio_stream::StreamExt;
@@ -87,7 +87,7 @@ async fn main() {
     let data_dir = std::env::var_os("DATABOT_DATA_DIR").map_or_else(|| temp_dir.path().to_owned(), Into::into);
     let engine = Engine::open(EngineConfig {
         data_dir,
-        secrets: Arc::new(MemorySecrets::default()),
+        keys: Arc::new(MemoryKeyStore::default()),
     })
     .await
     .expect("open engine");

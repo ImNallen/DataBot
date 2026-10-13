@@ -48,7 +48,7 @@ describe("live.apply", () => {
       connections: [],
       live: [{ id: CONN, rev: 4, status: { kind: "Connecting" } }],
       consoles: [consoleAt(1)],
-      workspace: { tabs: [], active: null, layout: { sidebar: true, results: true, rightPanel: null, resultsHeight: 320 } },
+      workspace: { tabs: [], active: null, layout: { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341 } },
       settings: { maxRows: 1, maxResultBytes: 1, tablePageSize: 1, stopOnError: true },
     };
     const s = hydrateLive(early, boot);

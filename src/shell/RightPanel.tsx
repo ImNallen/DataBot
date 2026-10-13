@@ -1,37 +1,21 @@
-import { X } from "lucide-react";
-import type { RightPanel as Panel } from "../ipc/bindings";
-import { HistoryPanel } from "../features/history/HistoryPanel";
-import { SchemaPanel } from "../features/schema/SchemaPanel";
-import { useWorkspace } from "../state/workspace";
-import { cx, IconButton } from "../ui/primitives";
+import { cx } from "../ui/primitives";
+import type { HostedWindow } from "./hostedWindow";
+import { WindowEdgeActions, windowEdgeInset } from "./WindowEdgeActions";
 
-const TABS = [
-  { panel: "Schema", label: "Schema" },
-  { panel: "History", label: "History" },
-] as const satisfies readonly { panel: Panel; label: string }[];
-
-export function RightPanel({ panel }: { panel: Panel }) {
-  const setLayout = useWorkspace((s) => s.setLayout);
+export function RightPanel({ hosted }: { hosted: HostedWindow | null }) {
   return (
-    <aside data-testid="right-panel" className="flex w-[341px] shrink-0 flex-col border-l border-border bg-bg">
-      <div className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border pr-3 pl-3">
-        {TABS.map((t) => (
-          <button
-            key={t.panel}
-            type="button"
-            data-testid={`right-tab-${t.panel}`}
-            onClick={() => setLayout({ rightPanel: t.panel })}
-            className={cx("h-8 rounded-lg px-3 text-[14px]", panel === t.panel ? "bg-border text-fg" : "text-dim hover:text-muted")}
-          >
-            {t.label}
-          </button>
-        ))}
+    <aside data-testid="right-panel" className="flex h-full flex-col bg-bg">
+      <div
+        data-tauri-drag-region="deep"
+        className={cx("flex h-[52px] shrink-0 items-center gap-1 border-b border-border pl-3", windowEdgeInset(hosted))}
+      >
+        <span className="px-3 text-[14px] text-fg">Assistant</span>
         <div className="flex-1" />
-        <IconButton aria-label="Close panel" onClick={() => setLayout({ rightPanel: null })}>
-          <X size={16} />
-        </IconButton>
+        <WindowEdgeActions hosted={hosted} />
       </div>
-      {panel === "History" ? <HistoryPanel /> : <SchemaPanel />}
+      <div data-testid="assistant-placeholder" className="grid flex-1 place-items-center px-6 text-center text-[13px] text-dim">
+        AI chat is coming soon.
+      </div>
     </aside>
   );
 }

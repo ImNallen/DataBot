@@ -1,68 +1,221 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
+use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 
 use crate::model::ConnectionId;
 
 const KEYCHAIN_SERVICE: &str = "dev.databot.app";
+const KEYCHAIN_USER: &str = "master-key";
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct SecretError(pub String);
 
-pub trait SecretStore: Send + Sync {
-    fn get(&self, id: ConnectionId) -> Result<Option<String>, SecretError>;
-    fn set(&self, id: ConnectionId, password: &str) -> Result<(), SecretError>;
-    fn delete(&self, id: ConnectionId) -> Result<(), SecretError>;
+/// Holds the one master key that seals every saved password. The sealed passwords live in SQLite
+/// rather than as one keychain blob because Windows Credential Manager caps a blob at 2560 bytes.
+pub trait KeyStore: Send + Sync {
+    fn load(&self) -> Result<Option<[u8; 32]>, SecretError>;
+    fn save(&self, key: &[u8; 32]) -> Result<(), SecretError>;
 }
 
 #[derive(Debug, Default)]
-pub struct KeyringSecrets;
+pub struct KeyringKeyStore;
 
-impl KeyringSecrets {
-    fn entry(id: ConnectionId) -> Result<keyring::Entry, SecretError> {
-        keyring::Entry::new(KEYCHAIN_SERVICE, &format!("connection:{}", id.0))
-            .map_err(|e| SecretError(e.to_string()))
+impl KeyringKeyStore {
+    fn entry() -> Result<keyring::Entry, SecretError> {
+        keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).map_err(|e| SecretError(e.to_string()))
     }
 }
 
-impl SecretStore for KeyringSecrets {
-    fn get(&self, id: ConnectionId) -> Result<Option<String>, SecretError> {
-        match Self::entry(id)?.get_password() {
-            Ok(pw) => Ok(Some(pw)),
+impl KeyStore for KeyringKeyStore {
+    fn load(&self) -> Result<Option<[u8; 32]>, SecretError> {
+        match Self::entry()?.get_secret() {
+            Ok(bytes) => {
+                bytes.try_into().map(Some).map_err(|b: Vec<u8>| SecretError(format!("master key is {} bytes, expected 32", b.len())))
+            }
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(SecretError(e.to_string())),
         }
     }
 
-    fn set(&self, id: ConnectionId, password: &str) -> Result<(), SecretError> {
-        Self::entry(id)?
-            .set_password(password)
-            .map_err(|e| SecretError(e.to_string()))
-    }
-
-    fn delete(&self, id: ConnectionId) -> Result<(), SecretError> {
-        match Self::entry(id)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(SecretError(e.to_string())),
-        }
+    fn save(&self, key: &[u8; 32]) -> Result<(), SecretError> {
+        Self::entry()?.set_secret(key).map_err(|e| SecretError(e.to_string()))
     }
 }
 
 #[derive(Debug, Default)]
-pub struct MemorySecrets(Mutex<HashMap<ConnectionId, String>>);
+pub struct MemoryKeyStore(Mutex<Option<[u8; 32]>>);
 
-impl SecretStore for MemorySecrets {
-    fn get(&self, id: ConnectionId) -> Result<Option<String>, SecretError> {
-        Ok(self.0.lock().unwrap().get(&id).cloned())
+impl KeyStore for MemoryKeyStore {
+    fn load(&self) -> Result<Option<[u8; 32]>, SecretError> {
+        Ok(*self.0.lock().unwrap())
     }
 
-    fn set(&self, id: ConnectionId, password: &str) -> Result<(), SecretError> {
-        self.0.lock().unwrap().insert(id, password.to_owned());
+    fn save(&self, key: &[u8; 32]) -> Result<(), SecretError> {
+        *self.0.lock().unwrap() = Some(*key);
         Ok(())
     }
+}
 
-    fn delete(&self, id: ConnectionId) -> Result<(), SecretError> {
-        self.0.lock().unwrap().remove(&id);
-        Ok(())
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sealed {
+    pub nonce: [u8; 24],
+    pub ciphertext: Vec<u8>,
+}
+
+pub struct Vault {
+    keys: Arc<dyn KeyStore>,
+    key: Mutex<Option<Key>>,
+}
+
+impl Vault {
+    pub fn new(keys: Arc<dyn KeyStore>) -> Self {
+        Self { keys, key: Mutex::new(None) }
+    }
+
+    fn loaded(&self) -> Result<MutexGuard<'_, Option<Key>>, SecretError> {
+        let mut key = self.key.lock().unwrap_or_else(|e| e.into_inner());
+        if key.is_none() {
+            *key = self.keys.load()?.map(Key::from);
+        }
+        Ok(key)
+    }
+
+    pub fn seal(&self, id: ConnectionId, password: &str) -> Result<Sealed, SecretError> {
+        let mut slot = self.loaded()?;
+        let key = match *slot {
+            Some(key) => key,
+            None => {
+                let key = XChaCha20Poly1305::generate_key(&mut OsRng);
+                self.keys.save(&key.into())?;
+                *slot.insert(key)
+            }
+        };
+        drop(slot);
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let aad = id.0.to_string();
+        let ciphertext = XChaCha20Poly1305::new(&key)
+            .encrypt(&nonce, Payload { msg: password.as_bytes(), aad: aad.as_bytes() })
+            .map_err(|e| SecretError(e.to_string()))?;
+        Ok(Sealed { nonce: nonce.into(), ciphertext })
+    }
+
+    /// `None` when the password cannot be recovered, so the caller asks for it again. Never creates
+    /// a key: a missing one means it was lost (wiped keychain, copied data dir, memory store restart).
+    pub fn open(&self, id: ConnectionId, sealed: &Sealed) -> Result<Option<String>, SecretError> {
+        let Some(key) = *self.loaded()? else {
+            return Ok(None);
+        };
+        let aad = id.0.to_string();
+        let plain = XChaCha20Poly1305::new(&key)
+            .decrypt(XNonce::from_slice(&sealed.nonce), Payload { msg: &sealed.ciphertext, aad: aad.as_bytes() })
+            .ok();
+        Ok(plain.and_then(|p| String::from_utf8(p).ok()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct CountingKeys {
+        inner: MemoryKeyStore,
+        loads: AtomicUsize,
+        saves: AtomicUsize,
+    }
+
+    impl KeyStore for CountingKeys {
+        fn load(&self) -> Result<Option<[u8; 32]>, SecretError> {
+            self.loads.fetch_add(1, Ordering::Relaxed);
+            self.inner.load()
+        }
+
+        fn save(&self, key: &[u8; 32]) -> Result<(), SecretError> {
+            self.saves.fetch_add(1, Ordering::Relaxed);
+            self.inner.save(key)
+        }
+    }
+
+    fn id() -> ConnectionId {
+        ConnectionId(uuid::Uuid::new_v4())
+    }
+
+    #[test]
+    fn seal_then_open_returns_the_password() {
+        let vault = Vault::new(Arc::new(MemoryKeyStore::default()));
+        let id = id();
+        let sealed = vault.seal(id, "hunter2").unwrap();
+        assert!(!sealed.ciphertext.windows(7).any(|w| w == b"hunter2"));
+        assert_eq!(vault.open(id, &sealed).unwrap().as_deref(), Some("hunter2"));
+    }
+
+    #[test]
+    fn a_reopened_vault_on_the_same_key_store_opens_the_password() {
+        let keys = Arc::new(MemoryKeyStore::default());
+        let id = id();
+        let sealed = Vault::new(keys.clone()).seal(id, "hunter2").unwrap();
+        assert_eq!(Vault::new(keys).open(id, &sealed).unwrap().as_deref(), Some("hunter2"));
+    }
+
+    #[test]
+    fn the_key_is_read_from_the_os_store_once_per_vault() {
+        let keys = Arc::new(CountingKeys::default());
+        let sealed: Vec<_> = (0..3)
+            .map(|_| {
+                let id = id();
+                (id, Vault::new(keys.clone()).seal(id, "pw").unwrap())
+            })
+            .collect();
+        let loads_before = keys.loads.load(Ordering::Relaxed);
+        let vault = Vault::new(keys.clone());
+        for _ in 0..4 {
+            for (id, s) in &sealed {
+                assert_eq!(vault.open(*id, s).unwrap().as_deref(), Some("pw"));
+            }
+        }
+        assert_eq!(keys.loads.load(Ordering::Relaxed) - loads_before, 1);
+    }
+
+    #[test]
+    fn a_password_sealed_for_another_connection_does_not_open() {
+        let vault = Vault::new(Arc::new(MemoryKeyStore::default()));
+        let sealed = vault.seal(id(), "hunter2").unwrap();
+        assert_eq!(vault.open(id(), &sealed).unwrap(), None);
+    }
+
+    #[test]
+    fn a_lost_key_opens_nothing_and_creates_no_key() {
+        let id = id();
+        let sealed = Vault::new(Arc::new(MemoryKeyStore::default())).seal(id, "hunter2").unwrap();
+        let keys = Arc::new(CountingKeys::default());
+        assert_eq!(Vault::new(keys.clone()).open(id, &sealed).unwrap(), None);
+        assert_eq!(keys.saves.load(Ordering::Relaxed), 0);
+        assert_eq!(keys.load().unwrap(), None);
+    }
+
+    #[test]
+    fn concurrent_first_seals_share_one_key() {
+        let keys = Arc::new(CountingKeys::default());
+        let vault = Arc::new(Vault::new(keys.clone()));
+        let sealed: Vec<_> = (0..8)
+            .map(|_| {
+                let vault = vault.clone();
+                std::thread::spawn(move || {
+                    let id = id();
+                    (id, vault.seal(id, "pw").unwrap())
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect();
+        assert_eq!(keys.saves.load(Ordering::Relaxed), 1);
+        let fresh = Vault::new(keys.clone());
+        for (id, s) in &sealed {
+            assert_eq!(fresh.open(*id, s).unwrap().as_deref(), Some("pw"));
+        }
     }
 }

@@ -4,6 +4,7 @@ import { Braces, Columns3, Eye, Search, Table2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useCatalog, type SearchItem } from "../../state/catalog";
 import { useWorkspace } from "../../state/workspace";
+import { DialogBackdrop } from "../../ui/primitives";
 import { insertAtCursor } from "../editor/editorStates";
 import { openTableTab } from "../editor/runActions";
 import { fuzzyRank } from "./fuzzy";
@@ -62,7 +63,7 @@ export function SearchPalette() {
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50" />
+        <DialogBackdrop />
         <Dialog.Content
           aria-describedby={undefined}
           className="fixed top-[14%] left-1/2 z-50 w-[560px] -translate-x-1/2 overflow-hidden rounded-xl border border-control bg-raised shadow-[0_24px_64px_rgba(0,0,0,0.7)] outline-none"

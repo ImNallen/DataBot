@@ -126,7 +126,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use engine::{EngineConfig, MemorySecrets};
+    use engine::{EngineConfig, MemoryKeyStore};
     use serde_json::json;
 
     use super::*;
@@ -165,7 +165,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = Engine::open(EngineConfig {
             data_dir: dir.path().to_owned(),
-            secrets: Arc::new(MemorySecrets::default()),
+            keys: Arc::new(MemoryKeyStore::default()),
         })
         .await
         .unwrap();
