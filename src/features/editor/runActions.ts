@@ -66,10 +66,17 @@ export function isBrowsing(tab: TableTab): boolean {
 
 type PageTarget = { page: number; exactRowCount?: number };
 
-// A page change is saved on the tab only once the engine accepts the run, so a skipped run leaves the pager unchanged.
+// A page change is saved on the tab only once the engine accepts the run. One that arrives mid-run waits for that
+// run to finish, and the latest one wins.
+const queuedPages = new Map<TabId, PageTarget>();
+
 async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
   const tab = ws().tabs[tabId];
-  if (!tab || isRunning(useLive.getState().consoles[tabId])) return;
+  if (!tab) return;
+  if (isRunning(useLive.getState().consoles[tabId])) {
+    if (target) queuedPages.set(tabId, target);
+    return;
+  }
   if (!(await ensureConsole(tab))) return;
 
   let request: RunRequest;
@@ -205,6 +212,7 @@ export function setTablePage(tabId: TabId, page: number, exactRowCount?: number)
 
 function forgetTab(tabId: TabId) {
   sent.delete(tabId);
+  queuedPages.delete(tabId);
   loadedTables.delete(tabId);
   dropRowCaches(tabId);
   dropEditor(tabId);
@@ -251,8 +259,17 @@ export function onEditorDocChanged(listener: () => void): () => void {
   return () => docListeners.delete(listener);
 }
 
+function runQueuedPages(s: ReturnType<typeof useLive.getState>) {
+  for (const [tabId, target] of queuedPages) {
+    if (isRunning(s.consoles[tabId])) continue;
+    queuedPages.delete(tabId);
+    void runTab(tabId, target);
+  }
+}
+
 export function installRunBehavior(): void {
   useLive.subscribe(showRunErrors);
+  useLive.subscribe(runQueuedPages);
   installEditorBehavior([
     Prec.highest(
       keymap.of([
