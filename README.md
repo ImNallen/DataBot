@@ -1,8 +1,17 @@
 # L1 Data
 
-L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. It has a connection tree, SQL editor tabs, a results grid, an output log, and per-tab transactions. The design is in [docs/architecture.md](docs/architecture.md).
+L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. The design is in [docs/architecture.md](docs/architecture.md).
 
 ![L1 Data running the revenue-by-region query against the seeded shop database](docs/images/l1-data.png)
+
+## What it does
+
+- The connection tree lists each server's schemas, tables with row counts, views, and functions. Double-click a table to browse its rows in a tab.
+- SQL tabs complete table and column names from the live catalog. `⌘↵` runs the statement under the cursor or the selection.
+- The results grid streams large results in pages, and **Export** writes them to CSV. The **Output** tab logs notices, command results, and errors.
+- Each tab runs in auto-commit or manual-transaction mode on its own session, so `SET` and temp tables stay with the tab.
+- `⌘P` searches tables and columns across connections. **Query history** opens a past statement in a new SQL tab.
+- The OS credential store holds one master key, and saved passwords are sealed under it. macOS asks for keychain access once per launch.
 
 ## Quickstart
 
@@ -25,6 +34,7 @@ pnpm test                # vitest
 pnpm build               # production frontend bundle
 pnpm self-check          # boots the engine inside the Tauri binary, prints JSON, exits
 pnpm bindings            # rewrites src/ipc/bindings.ts after an IPC type or command changes
+pnpm screenshot          # macOS: rewrites docs/images/l1-data.png from the running app
 ```
 
 ## Layout
@@ -33,3 +43,4 @@ pnpm bindings            # rewrites src/ipc/bindings.ts after an IPC type or com
 - `src-tauri` is the app shell. Each command is a one-line call into the engine.
 - `crates/dev-bridge` serves the same engine over HTTP for browser-driven UI work.
 - `src` is the React frontend. `src/ipc/bindings.ts` is generated; do not edit it.
+- `dev` holds the Docker database, its seed, and the bridge smoke and screenshot scripts.
