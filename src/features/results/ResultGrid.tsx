@@ -99,7 +99,9 @@ export function ResultGrid({ meta, done }: { meta: ResultMeta; done: boolean }) 
   const fitted = useMemo(() => {
     const total = widths.reduce((a, b) => a + b, 0);
     const spare = viewport - rowNumW - total;
-    if (spare <= 0 || widths.length === 0) return widths;
+    // Fill the pane like the mockup when columns already cover most of it; a narrow result
+    // (one integer column) keeps its natural width instead of stretching across the screen.
+    if (spare <= 0 || spare > total || widths.length === 0) return widths;
     const extra = Math.floor(spare / widths.length);
     return widths.map((w, i) => w + extra + (i === widths.length - 1 ? spare - extra * widths.length : 0));
   }, [widths, viewport, rowNumW]);
