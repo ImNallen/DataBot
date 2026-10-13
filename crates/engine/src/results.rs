@@ -1,17 +1,13 @@
-//! `ResultSet` arenas: append-only text cells, row pages, and the CSV writer.
-
 use std::io::{self, Write};
 use std::sync::RwLock;
 
 use crate::model::{ColumnMeta, ResultMeta, ResultRef, RowPage, TruncateReason};
 
-/// Cells longer than this are cut in a `RowPage`; `result_cell` returns the full value.
 pub const CELL_CHAR_LIMIT: usize = 2_000;
 pub const PAGE_LEN_MAX: u32 = 2_000;
 
 const NULL: u32 = u32::MAX;
 
-/// Single writer (the run task), many readers (`result_page`); append-only.
 pub struct ResultSet {
     pub r#ref: ResultRef,
     pub columns: Vec<ColumnMeta>,
@@ -20,7 +16,6 @@ pub struct ResultSet {
 
 struct Arena {
     text: String,
-    /// `(start, len)` into `text`, row-major; `len == NULL` marks SQL NULL.
     cells: Vec<(u32, u32)>,
     ncols: usize,
     rows_seen: u64,
@@ -50,7 +45,6 @@ impl ResultSet {
         }
     }
 
-    /// Stores the row unless a cap is hit; past the cap only `rows_seen` grows (drain, never cancel).
     pub fn push_row<'a>(&self, cells: impl Iterator<Item = Option<&'a str>>, caps: &Caps) {
         let mut a = self.data.write().unwrap();
         a.rows_seen += 1;
@@ -96,7 +90,6 @@ impl ResultSet {
         }
     }
 
-    /// `None` when `start` lies past the stored rows. `len` is clamped to `PAGE_LEN_MAX`.
     pub fn page(&self, start: u32, len: u32) -> Option<RowPage> {
         let a = self.data.read().unwrap();
         let count = a.row_count();
@@ -124,7 +117,6 @@ impl ResultSet {
         Some(RowPage { start, rows, cut })
     }
 
-    /// `None` when the coordinates are out of range; `Some(None)` is SQL NULL.
     pub fn cell(&self, row: u32, col: u16) -> Option<Option<String>> {
         let a = self.data.read().unwrap();
         if row >= a.row_count() || col as usize >= a.ncols {
@@ -133,8 +125,6 @@ impl ResultSet {
         Some(a.cell(row as usize, col as usize).map(str::to_owned))
     }
 
-    /// RFC 4180 with a header row: CRLF records, quotes around fields that need them, NULL as
-    /// an empty field and the empty string as `""` so the two stay distinguishable.
     pub fn write_csv(&self, out: &mut impl Write) -> io::Result<CsvSummary> {
         let a = self.data.read().unwrap();
         let mut w = CountingWriter { inner: out, bytes: 0 };

@@ -23,7 +23,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** Routes every command to the dev-bridge and replays its SSE stream as `app-event`. */
 export function installBridgeShim(): void {
   mockIPC(
     async (cmd, args) => {

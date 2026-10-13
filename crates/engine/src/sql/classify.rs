@@ -1,5 +1,3 @@
-//! `classify`: the statement kind that drives transaction tracking and catalog refresh.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmlVerb {
     Insert,
@@ -16,13 +14,11 @@ pub enum StmtKind {
     Savepoint,
     RollbackTo,
     Release,
-    /// Changes the catalog. Carries the command tag Postgres would report (`"CREATE TABLE"`).
     Ddl(String),
     Dml(DmlVerb),
     Query,
     /// `COPY ... FROM STDIN` / `TO STDOUT`: the simple protocol cannot carry the data.
     CopyStdio,
-    /// Refuses to run inside a transaction block (`VACUUM`, `CREATE DATABASE`, ...).
     NoTxnBlock(String),
     Other(String),
 }
@@ -63,7 +59,6 @@ pub fn classify(stmt: &str) -> StmtKind {
         }
         "TRUNCATE" => StmtKind::Other("TRUNCATE TABLE".into()),
         "LOCK" => StmtKind::Other("LOCK TABLE".into()),
-        // A parenthesized query: `(select 1) union (select 2)`.
         "" if stmt.contains('(') => StmtKind::Query,
         other => StmtKind::Other(other.to_owned()),
     }

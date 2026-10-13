@@ -1,7 +1,3 @@
-//! `split_statements` and `pick`: dollar quotes, E-strings, nested comments, quoted identifiers.
-
-/// One statement's text as UTF-8 byte offsets into the source, trimmed of surrounding
-/// whitespace and of the terminating semicolon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StmtSpan {
     pub start: usize,
@@ -14,7 +10,6 @@ impl StmtSpan {
     }
 }
 
-/// Byte-offset form of `RunTarget`; the UTF-16 conversion happens at the IPC boundary.
 #[derive(Debug, Clone, Copy)]
 pub enum ByteTarget {
     Cursor(usize),
@@ -26,7 +21,6 @@ pub fn split_statements(sql: &str) -> Vec<StmtSpan> {
     let bytes = sql.as_bytes();
     let mut spans = Vec::new();
     let mut stmt_start = 0;
-    // `BEGIN ATOMIC ... END` bodies and the `CASE ... END` expressions inside them nest.
     let mut body_depth = 0usize;
     let mut last_word: Option<&str> = None;
     let mut i = 0;
@@ -69,8 +63,6 @@ pub fn split_statements(sql: &str) -> Vec<StmtSpan> {
     spans
 }
 
-/// The statements a run target selects. A cursor picks the statement under it, or the previous
-/// one when it sits in whitespace after a statement, or the next one when nothing precedes it.
 pub fn pick(spans: &[StmtSpan], sql: &str, target: ByteTarget) -> Vec<StmtSpan> {
     match target {
         ByteTarget::All => spans.to_vec(),
@@ -83,7 +75,6 @@ pub fn pick(spans: &[StmtSpan], sql: &str, target: ByteTarget) -> Vec<StmtSpan> 
             .collect(),
         ByteTarget::Selection { from, .. } => pick(spans, sql, ByteTarget::Cursor(from)),
         ByteTarget::Cursor(off) => {
-            // A statement reaches up to and including its terminating semicolon.
             let under = spans.iter().find(|s| s.start <= off && off <= terminator_end(sql, s));
             let previous = || spans.iter().rev().find(|s| s.end <= off);
             let next = || spans.iter().find(|s| s.start > off);
@@ -135,7 +126,6 @@ fn word_end(bytes: &[u8], start: usize) -> usize {
     i
 }
 
-/// Returns the index just past the comment that starts at `i`, honoring nesting.
 fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
     let mut depth = 0usize;
     while i < bytes.len() {
@@ -155,8 +145,6 @@ fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
     bytes.len()
 }
 
-/// Skips a `'...'` or `"..."` token starting at `i`. A doubled quote stays inside the token.
-/// Backslashes inside `E'...'` strings escape the next byte; the `E` prefix is the byte before `i`.
 fn skip_quoted(bytes: &[u8], i: usize, quote: u8) -> usize {
     let escapes = quote == b'\'' && i > 0 && (bytes[i - 1] == b'E' || bytes[i - 1] == b'e')
         && (i < 2 || !(bytes[i - 2].is_ascii_alphanumeric() || bytes[i - 2] == b'_'));
@@ -177,7 +165,6 @@ fn skip_quoted(bytes: &[u8], i: usize, quote: u8) -> usize {
     bytes.len()
 }
 
-/// Length of the `$tag$` opener at `i` (2 for `$$`), or `None` when `$` is not a quote here.
 fn dollar_tag(bytes: &[u8], i: usize) -> Option<usize> {
     let mut j = i + 1;
     if j < bytes.len() && bytes[j].is_ascii_digit() {
@@ -266,10 +253,10 @@ mod tests {
         let spans = split_statements(sql);
         let at = |off: usize| pick(&spans, sql, ByteTarget::Cursor(off)).iter().map(|s| s.text(sql)).collect::<Vec<_>>();
         assert_eq!(at(0), vec!["select 1"]);
-        assert_eq!(at(8), vec!["select 1"]); // on the semicolon
-        assert_eq!(at(10), vec!["select 1"]); // blank line after it
+        assert_eq!(at(8), vec!["select 1"]);
+        assert_eq!(at(10), vec!["select 1"]);
         assert_eq!(at(13), vec!["select 2"]);
-        assert_eq!(at(sql.len()), vec!["select 2"]); // trailing whitespace
+        assert_eq!(at(sql.len()), vec!["select 2"]);
     }
 
     #[test]

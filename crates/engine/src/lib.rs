@@ -1,5 +1,3 @@
-//! The DataBot engine: every behavior behind the IPC commands, with no Tauri dependency.
-
 mod catalog;
 mod connection;
 mod console;
@@ -39,7 +37,6 @@ pub struct Engine {
     shared: Arc<Shared>,
 }
 
-/// Everything a run task needs after `console_run` has returned.
 pub(crate) struct Shared {
     data_dir: PathBuf,
     secrets: Arc<dyn SecretStore>,
@@ -71,7 +68,7 @@ impl Shared {
     }
 
     pub(crate) fn record_history(&self, h: HistoryInsert) {
-        match self.store.insert_history(h) {
+        match self.store.insert_history_and_prune(h) {
             Ok(entry) => self.emit(AppEvent::HistoryAppended(entry)),
             Err(e) => eprintln!("history insert failed: {e}"),
         }
@@ -132,7 +129,7 @@ impl Shared {
         match result {
             Ok(catalog) => {
                 *live.catalog.write().unwrap() = Arc::new(catalog);
-                self.touch_connection(id);
+                self.republish_connection(id);
                 self.emit(AppEvent::CatalogChanged { connection_id: id, version });
                 Ok(version)
             }
@@ -147,8 +144,7 @@ impl Shared {
         }
     }
 
-    /// Re-emits the connection state (its `catalog_version` is read from the live catalog).
-    fn touch_connection(&self, id: ConnectionId) {
+    fn republish_connection(&self, id: ConnectionId) {
         let mut map = self.connections.write().unwrap();
         let Some(entry) = map.get_mut(&id) else { return };
         entry.rev += 1;
@@ -184,16 +180,15 @@ impl Shared {
 
     async fn connect(self: &Arc<Self>, id: ConnectionId) -> Result<ServerInfo, ConnectError> {
         loop {
-            let slot_kind = self.connections.read().unwrap().get(&id).map(|e| match &e.slot {
-                ConnSlot::Connecting => 0,
-                ConnSlot::Connected(_) => 1,
-                ConnSlot::Disconnected | ConnSlot::Failed(_) | ConnSlot::Lost(_) => 2,
-            });
-            match slot_kind {
-                Some(0) => tokio::time::sleep(Duration::from_millis(50)).await,
-                Some(1) => return Ok(self.live(id).expect("connected").server.clone()),
-                _ => break,
+            let connecting = match self.connections.read().unwrap().get(&id).map(|e| &e.slot) {
+                Some(ConnSlot::Connected(live)) => return Ok(live.server.clone()),
+                Some(ConnSlot::Connecting) => true,
+                _ => false,
+            };
+            if !connecting {
+                break;
             }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         self.set_connection(id, ConnSlot::Connecting);
         match self.open_live(id).await {
@@ -264,7 +259,7 @@ impl Shared {
         let (mut session, aborted) = {
             let mut inner = console.inner.lock().await;
             match &inner.session {
-                SessionSlot::InRun { .. } => return Err(TxnError::Busy),
+                SessionSlot::Busy { .. } => return Err(TxnError::Busy),
                 SessionSlot::Empty | SessionSlot::Lost { .. } => return Err(TxnError::NoTransaction),
                 SessionSlot::Idle(_) if inner.txn == TxnState::Idle => return Err(TxnError::NoTransaction),
                 SessionSlot::Idle(_) => {}
@@ -350,13 +345,15 @@ impl Engine {
         let s = &self.shared;
         let live = s.connections.read().unwrap().iter().map(|(id, e)| e.state(*id)).collect();
         let consoles = s.consoles.read().unwrap().values().map(|c| c.latest.lock().unwrap().clone()).collect();
-        BootSnapshot {
-            connections: s.store.connections().unwrap_or_default(),
-            live,
-            consoles,
-            workspace: s.store.kv_get(KV_WORKSPACE).ok().flatten().unwrap_or_default(),
-            settings: s.settings(),
-        }
+        let connections = s.store.connections().unwrap_or_else(|e| {
+            eprintln!("connections load failed: {e}");
+            Vec::new()
+        });
+        let workspace = s.store.kv_get(KV_WORKSPACE).unwrap_or_else(|e| {
+            eprintln!("workspace load failed: {e}");
+            None
+        });
+        BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings() }
     }
 
     pub async fn save_connection(&self, d: ConnectionDraft) -> Result<ConnectionConfig, SaveError> {
@@ -424,7 +421,7 @@ impl Engine {
             (PasswordInput::Keep, Some(id)) => s.secrets.get(id).map_err(|e| ConnectError::Keychain { message: e.to_string() })?,
         };
         let session = Session::open(&ConnectParams::from_draft(&d, password), None, &s.timezone).await?;
-        Ok(session.server.clone())
+        Ok(session.server)
     }
 
     pub async fn connect(&self, id: ConnectionId) -> Result<ServerInfo, ConnectError> {
@@ -482,7 +479,7 @@ impl Engine {
         let connection_changed = inner.config.connection_id != view.connection_id;
         let mode_changed = inner.config.mode != view.mode;
         if connection_changed || mode_changed {
-            if matches!(inner.session, SessionSlot::InRun { .. }) {
+            if matches!(inner.session, SessionSlot::Busy { .. }) {
                 return Err(ConfigureError::Busy);
             }
             if inner.txn != TxnState::Idle {
@@ -492,7 +489,6 @@ impl Engine {
         if connection_changed {
             inner.session = SessionSlot::Empty;
         }
-        // A schema change is applied by the next run, which re-syncs `search_path`.
         inner.config = view;
         Ok(console.publish(&mut inner, s))
     }
@@ -502,7 +498,7 @@ impl Engine {
         let console = s.console(tab).ok_or(RunError::NotConfigured)?;
         let (config, busy) = {
             let inner = console.inner.lock().await;
-            (inner.config.clone(), matches!(inner.session, SessionSlot::InRun { .. }))
+            (inner.config.clone(), matches!(inner.session, SessionSlot::Busy { .. }))
         };
         if busy {
             return Err(RunError::Busy);
@@ -540,7 +536,6 @@ impl Engine {
         let map = text::OffsetMap::new(&text);
         let ranges: Vec<DocRange> = spans.iter().map(|span| map.range(span)).collect();
 
-        // Open a session outside the lock, then re-check the slot: a concurrent run may have won.
         let mut fresh = None;
         let needs_session = matches!(console.inner.lock().await.session, SessionSlot::Empty | SessionSlot::Lost { .. });
         if needs_session {
@@ -555,7 +550,7 @@ impl Engine {
             match inner.session {
                 SessionSlot::Empty | SessionSlot::Lost { .. } => inner.session = SessionSlot::Idle(session),
                 SessionSlot::Idle(_) => {}
-                SessionSlot::InRun { .. } => return Err(RunError::Busy),
+                SessionSlot::Busy { .. } => return Err(RunError::Busy),
             }
         }
         let Some((session, stop)) = console.take_session(&mut inner, run_id) else { return Err(RunError::Busy) };
@@ -583,7 +578,7 @@ impl Engine {
         let cancel = {
             let inner = console.inner.lock().await;
             match &inner.session {
-                SessionSlot::InRun { cancel, stop, .. } => {
+                SessionSlot::Busy { cancel, stop, .. } => {
                     stop.store(true, Ordering::Relaxed);
                     Some(cancel.clone())
                 }
@@ -728,7 +723,6 @@ mod tests {
         assert_eq!(boot.settings.max_rows, 10);
         assert!(!boot.workspace.layout.sidebar);
 
-        // Keep leaves the secret alone; Clear removes it and flips has_password.
         let renamed = engine
             .save_connection(ConnectionDraft { id: Some(saved.id), name: "renamed".into(), password: PasswordInput::Keep, ..draft("x") })
             .await

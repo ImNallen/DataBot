@@ -1,9 +1,3 @@
-//! Dev-only HTTP host for the real `Engine`, so the UI runs against it from a plain browser.
-//!
-//! `POST /invoke/{cmd}` takes the Tauri command's JSON args. A command's own result comes back
-//! as 200 `{status:"ok",data}` or `{status:"error",error}`; a malformed request is a 4xx/5xx
-//! `{message}`. `GET /events` streams every `AppEvent` as an SSE `data:` frame.
-
 mod dispatch;
 
 use std::convert::Infallible;

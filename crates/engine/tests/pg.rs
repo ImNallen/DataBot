@@ -1,5 +1,3 @@
-//! Engine scenarios against the Docker Postgres (`pnpm db:up`). Run with `--features pg-tests`.
-//! Nothing here writes to seed tables: writers create their own uniquely named tables.
 #![cfg(feature = "pg-tests")]
 
 use std::sync::Arc;
@@ -24,7 +22,6 @@ fn url() -> String {
 struct Harness {
     engine: Arc<Engine>,
     events: broadcast::Receiver<AppEvent>,
-    /// Every event observed while waiting, for assertions on outputs and catalog changes.
     seen: Vec<AppEvent>,
     conn: ConnectionId,
     dir: tempfile::TempDir,

@@ -1,12 +1,9 @@
-//! The 4 catalog queries that build a `Catalog` snapshot per connection.
-
 use std::collections::HashMap;
 
 use tokio_postgres::Client;
 
 use crate::model::{Catalog, ColumnInfo, ConnectionId, FnKind, FunctionInfo, RelKind, Relation, SchemaInfo};
 
-/// Visible user schemas: everything except the system and temp namespaces.
 const SCHEMA_FILTER: &str = "n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
     AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'";
 
