@@ -1,7 +1,7 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { save } from "@tauri-apps/plugin-dialog";
 import { IconAlertCircle, IconCheck, IconChevronDown, IconChevronLeft, IconChevronLeftPipe, IconChevronRight, IconChevronRightPipe, IconDownload, IconUpload } from "@tabler/icons-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { commands, type QueryError, type ResultMeta, type RunState, type TabId } from "../../ipc/bindings";
 import { exportErrorText } from "../../ipc/errors";
 import { useLive } from "../../state/live";
@@ -9,7 +9,7 @@ import { rowResults, runStatements, runSummary, shownResult, type Summary } from
 import { useCatalog } from "../../state/catalog";
 import { useWorkspace, type TableTab } from "../../state/workspace";
 import { cx, IconButton, MenuContent, MenuItem, Spinner } from "../../ui/primitives";
-import { isBrowsing, lastTablePage, loadTableOnce, setTablePage, setTablePageSize } from "../editor/runActions";
+import { isBrowsing, lastTablePage, loadTableOnce, onEditorDocChanged, saveSettings, setTablePage } from "../editor/runActions";
 import { groupDigits, pageStatus, pluralRows } from "./format";
 import { ResultGrid } from "./ResultGrid";
 
@@ -53,7 +53,7 @@ function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
         </Menu.Trigger>
         <MenuContent align="end">
           {PAGE_SIZES.map((n) => (
-            <MenuItem key={n} testId={`page-size-${n}`} checked={n === size} onSelect={() => void setTablePageSize(tab.id, n)}>
+            <MenuItem key={n} testId={`page-size-${n}`} checked={n === size} onSelect={() => void saveSettings({ ...useWorkspace.getState().settings, tablePageSize: n })}>
               {groupDigits(String(n))} per page
             </MenuItem>
           ))}
@@ -156,7 +156,9 @@ export function ResultsPane({ tabId }: { tabId: TabId }) {
   const summary = runSummary(run, picked, now);
 
   const isTable = tab?.kind === "table";
-  const pager = tab?.kind === "table" && isBrowsing(tab) && shown ? tab : null;
+  const browsingNow = () => tab?.kind === "table" && isBrowsing(tab);
+  const browsing = useSyncExternalStore(onEditorDocChanged, browsingNow, browsingNow);
+  const pager = tab?.kind === "table" && browsing && shown ? tab : null;
   useEffect(() => {
     if (isTable) loadTableOnce(tabId);
   }, [tabId, isTable]);

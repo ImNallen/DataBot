@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { commands, type Settings } from "../ipc/bindings";
+import type { Settings } from "../ipc/bindings";
+import { saveSettings } from "../features/editor/runActions";
 import { useWorkspace } from "../state/workspace";
 import { Button, inputClass, Modal } from "../ui/primitives";
 
@@ -25,11 +26,9 @@ function Toast() {
 }
 
 function SettingsForm({ initial, onDone }: { initial: Settings; onDone: () => void }) {
-  const setSettings = useWorkspace((s) => s.setSettings);
   const [draft, setDraft] = useState(initial);
   const save = async () => {
-    await commands.settingsSet(draft);
-    setSettings(draft);
+    await saveSettings(draft);
     onDone();
   };
   const numberField = (label: string, key: "maxRows" | "tablePageSize", hint: string) => (

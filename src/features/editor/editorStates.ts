@@ -109,10 +109,6 @@ export function seedEditor(id: TabId, text: string): void {
   states.set(id, createState(text));
 }
 
-export function setEditorText(id: TabId, text: string): void {
-  updateEditor(id, (state) => ({ changes: { from: 0, to: state.doc.length, insert: text } }));
-}
-
 export function editorStateOf(id: TabId): EditorState {
   if (id === activeId && view) return view.state;
   let state = states.get(id);

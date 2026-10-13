@@ -5,6 +5,7 @@ import {
   type ConnectionId,
   type ConsoleConfig,
   type RunRequest,
+  type Settings,
   type TabId,
   type TxnMode,
 } from "../../ipc/bindings";
@@ -19,7 +20,6 @@ import {
   flashRanges,
   installEditorBehavior,
   seedEditor,
-  setEditorText,
   showDiagnostics,
   textOf,
 } from "./editorStates";
@@ -64,7 +64,10 @@ export function isBrowsing(tab: TableTab): boolean {
   return textOf(tab.id).trim().replace(/;$/, "") === browseQuery(tab.schema, tab.table);
 }
 
-async function runTab(tabId: TabId): Promise<void> {
+type PageTarget = { page: number; exactRowCount?: number };
+
+// A page change is saved on the tab only once the engine accepts the run, so a skipped run leaves the pager unchanged.
+async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
   const tab = ws().tabs[tabId];
   if (!tab || isRunning(useLive.getState().consoles[tabId])) return;
   if (!(await ensureConsole(tab))) return;
@@ -72,7 +75,7 @@ async function runTab(tabId: TabId): Promise<void> {
   let request: RunRequest;
   let text = "";
   if (tab.kind === "table" && isBrowsing(tab)) {
-    request = { kind: "tablePage", schema: tab.schema, table: tab.table, page: tab.page };
+    request = { kind: "tablePage", schema: tab.schema, table: tab.table, page: target?.page ?? tab.page };
   } else {
     const state = editorStateOf(tabId);
     const sel = state.selection.main;
@@ -90,6 +93,7 @@ async function runTab(tabId: TabId): Promise<void> {
     notify(runErrorText(res.error));
     return;
   }
+  if (target && request.kind === "tablePage") ws().setTablePage(tabId, target.page, target.exactRowCount);
   if (request.kind === "script") {
     sent.set(tabId, { runId: res.data.runId, text });
     flashRanges(tabId, res.data.statements);
@@ -174,11 +178,12 @@ export function loadTableOnce(tabId: TabId): void {
   if (useLive.getState().consoles[tabId]?.run.kind !== "Finished") void runTab(tabId);
 }
 
-export async function setTablePageSize(tabId: TabId, size: number): Promise<void> {
-  const settings = { ...ws().settings, tablePageSize: size };
-  await commands.settingsSet(settings);
-  ws().setSettings(settings);
-  setTablePage(tabId, 0);
+export async function saveSettings(next: Settings): Promise<void> {
+  const resized = next.tablePageSize !== ws().settings.tablePageSize;
+  await commands.settingsSet(next);
+  ws().setSettings(next);
+  if (!resized) return;
+  for (const tab of Object.values(ws().tabs)) if (tab.kind === "table") setTablePage(tab.id, 0);
 }
 
 export async function lastTablePage(tabId: TabId): Promise<void> {
@@ -194,10 +199,8 @@ export async function lastTablePage(tabId: TabId): Promise<void> {
 
 export function setTablePage(tabId: TabId, page: number, exactRowCount?: number): void {
   const tab = ws().tabs[tabId];
-  if (tab?.kind !== "table") return;
-  setEditorText(tabId, browseQuery(tab.schema, tab.table));
-  ws().setTablePage(tabId, page, exactRowCount);
-  void runTab(tabId);
+  if (tab?.kind !== "table" || !isBrowsing(tab)) return;
+  void runTab(tabId, { page, exactRowCount });
 }
 
 function forgetTab(tabId: TabId) {
@@ -242,9 +245,10 @@ function showRunErrors(s: ReturnType<typeof useLive.getState>) {
   }
 }
 
-const docListeners: (() => void)[] = [];
-export function onEditorDocChanged(listener: () => void): void {
-  docListeners.push(listener);
+const docListeners = new Set<() => void>();
+export function onEditorDocChanged(listener: () => void): () => void {
+  docListeners.add(listener);
+  return () => docListeners.delete(listener);
 }
 
 export function installRunBehavior(): void {
