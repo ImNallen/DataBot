@@ -43,7 +43,7 @@ pub enum SslMode {
 }
 
 /// Persisted (SQLite). Never contains the password.
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionConfig {
     pub id: ConnectionId,
@@ -469,7 +469,7 @@ pub struct HistoryEntry {
     pub outcome: HistoryOutcome,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum HistoryOutcome {
     Rows { rows: u64 },

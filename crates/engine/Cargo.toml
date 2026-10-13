@@ -4,13 +4,25 @@ edition.workspace = true
 version.workspace = true
 publish.workspace = true
 
+[features]
+# Integration tests against the Docker Postgres (`pnpm db:up`).
+pg-tests = []
+
 [dependencies]
+futures-util = "0.3"
+iana-time-zone = "0.1"
 keyring = "4.2"
+native-tls = "0.2"
+postgres-native-tls = "0.5"
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde.workspace = true
+serde_json.workspace = true
 specta.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tokio-postgres = "0.7.18"
 uuid.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+bytes = "1"
+tempfile = "3"

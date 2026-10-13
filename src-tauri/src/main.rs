@@ -83,18 +83,75 @@ fn forward_events(app: AppHandle, mut events: broadcast::Receiver<AppEvent>) {
     });
 }
 
-/// `DATABOT_SELF_CHECK=1`: boot the engine inside Tauri, print a JSON report, exit.
+const SELF_CHECK_URL: &str = "postgres://databot:databot@localhost:5433/shop";
+
+/// `DATABOT_SELF_CHECK=1`: boot the engine inside Tauri, connect to `DATABOT_SELF_CHECK_URL`,
+/// run `SELECT 1`, load the catalog, print a JSON report, and exit 0 on success.
 async fn self_check(app: AppHandle, engine: Arc<Engine>) {
-    // Connecting, `SELECT 1`, and the catalog load arrive with the engine phase; until then
-    // the report says so and the check fails.
-    let report = serde_json::json!({
-        "ok": false,
-        "dataDir": engine.data_dir(),
-        "boot": engine.boot(),
-        "connect": { "status": "notImplemented" },
-    });
-    println!("{report}");
-    app.exit(1);
+    let url = std::env::var("DATABOT_SELF_CHECK_URL").unwrap_or_else(|_| SELF_CHECK_URL.into());
+    let data_dir = engine.data_dir().to_owned();
+    let (ok, report) = match self_check_steps(&engine, &url).await {
+        Ok(report) => (true, report),
+        Err((step, error)) => (false, serde_json::json!({ "step": step, "error": error })),
+    };
+    println!("{}", serde_json::json!({ "ok": ok, "dataDir": data_dir, "report": report }));
+    app.exit(if ok { 0 } else { 1 });
+}
+
+async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Value, (&'static str, serde_json::Value)> {
+    use engine::model::*;
+    fn fail<E: serde::Serialize>(step: &'static str) -> impl FnOnce(E) -> (&'static str, serde_json::Value) {
+        move |e| (step, serde_json::to_value(e).unwrap_or_default())
+    }
+    let draft = engine::draft_from_url(url, "self-check").map_err(fail("parse_url"))?;
+    let config = engine.save_connection(draft).await.map_err(fail("connection_save"))?;
+    let mut events = engine.subscribe();
+    let server = engine.connect(config.id).await.map_err(fail("connection_connect"))?;
+    let tab = TabId(uuid::Uuid::new_v4());
+    engine
+        .console_configure(tab, ConsoleConfig { connection_id: config.id, schema: None, mode: TxnMode::AutoCommit })
+        .await
+        .map_err(fail("console_configure"))?;
+    let accepted = engine
+        .console_run(tab, RunRequest::Script { text: "SELECT 1".into(), target: RunTarget::All })
+        .await
+        .map_err(fail("console_run"))?;
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::ConsoleChanged(state)) if state.tab_id == tab => {
+                    if let RunState::Finished { run_id, outcome, elapsed_ms, .. } = state.run {
+                        if run_id == accepted.run_id {
+                            return Ok((outcome, elapsed_ms));
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+    })
+    .await
+    .map_err(|_| ("console_run", serde_json::json!("no Finished event within 30s")))?
+    .map_err(fail("console_run"))?;
+    if finished.0 != RunOutcome::Ok {
+        return Err(("console_run", serde_json::json!({ "outcome": finished.0 })));
+    }
+    let page = engine
+        .result_page(ResultRef { tab_id: tab, run_id: accepted.run_id, index: 0 }, 0, 1)
+        .map_err(fail("result_page"))?;
+    let catalog = engine.catalog(config.id).map_err(fail("catalog_get"))?;
+    Ok(serde_json::json!({
+        "server": server,
+        "select1": { "rows": page.rows, "elapsedMs": finished.1 },
+        "catalog": {
+            "version": catalog.version,
+            "database": catalog.database,
+            "schemas": catalog.schemas.iter().map(|s| serde_json::json!({
+                "name": s.name, "relations": s.relations.len(), "functions": s.functions.len(),
+            })).collect::<Vec<_>>(),
+        },
+    }))
 }
 
 fn main() {
