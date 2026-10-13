@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactCount, formatElapsed, groupDigits } from "./format";
+import { compactCount, formatElapsed, groupDigits, toTsv } from "./format";
 
 describe("groupDigits", () => {
   it("groups the integer part and keeps sign and fraction verbatim", () => {
@@ -43,6 +43,16 @@ describe("compactCount", () => {
     expect(compactCount(999_999)).toBe("1M");
     expect(compactCount(1_234_567)).toBe("1.2M");
     expect(compactCount(2_500_000_000)).toBe("2.5B");
+  });
+});
+
+describe("toTsv", () => {
+  it("joins cells with tabs, rows with newlines, and empties NULL", () => {
+    expect(toTsv([["a", null, "3"], ["b", "x", "4"]])).toBe("a\t\t3\nb\tx\t4");
+  });
+
+  it("quotes values that contain tabs, newlines, or quotes", () => {
+    expect(toTsv([['say "hi"', "two\nlines", "a\tb"]])).toBe('"say ""hi"""\t"two\nlines"\t"a\tb"');
   });
 });
 

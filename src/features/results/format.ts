@@ -51,6 +51,16 @@ export function formatElapsed(ms: number): string {
   return `${m}m ${s}s`;
 }
 
+function tsvField(value: string | null): string {
+  if (value === null) return "";
+  return /[\t\n\r"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+/** Tab-separated text that spreadsheets paste back into the same cells; NULL becomes empty. */
+export function toTsv(rows: readonly (readonly (string | null)[])[]): string {
+  return rows.map((r) => r.map(tsvField).join("\t")).join("\n");
+}
+
 export function pluralRows(n: number): string {
   return `${groupDigits(String(n))} ${n === 1 ? "row" : "rows"}`;
 }
