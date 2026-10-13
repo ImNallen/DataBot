@@ -10,11 +10,18 @@ OUT=docs/images/l1-data.png
 DATA_DIR=$(mktemp -d)
 PIDS=()
 cleanup() {
-	kill "${PIDS[@]}" 2>/dev/null || true
+	kill ${PIDS[@]+"${PIDS[@]}"} 2>/dev/null || true
 	wait 2>/dev/null || true
 	docker rm -f l1-data-screenshot >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+
+for port in 7077 5173 "$PG_PORT"; do
+	if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null; then
+		echo "port $port is in use; stop pnpm bridge, vite, or the other process first" >&2
+		exit 1
+	fi
+done
 
 # Trust auth lets the app connect without a saved password, which a memory key store can't carry across processes.
 docker run -d --rm --name l1-data-screenshot -p "$PG_PORT:5432" \
@@ -61,13 +68,15 @@ PIDS+=($!)
 until curl -s http://localhost:5173 >/dev/null; do sleep 0.2; done
 
 L1_DATA_DATA_DIR="$DATA_DIR" L1_DATA_SECRET_STORE=memory ./target/debug/l1-data >"$DATA_DIR/app.log" 2>&1 &
-PIDS+=($!)
+APP_PID=$!
+PIDS+=("$APP_PID")
 
 window() {
-	swift - <<'EOF'
+	swift - "$APP_PID" <<'EOF'
 import CoreGraphics
+let pid = Int(CommandLine.arguments[1])!
 let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]
-for w in windows where w[kCGWindowOwnerName as String] as? String == "l1-data" && w[kCGWindowLayer as String] as? Int == 0 {
+for w in windows where w[kCGWindowOwnerPID as String] as? Int == pid && w[kCGWindowLayer as String] as? Int == 0 {
 	let b = w[kCGWindowBounds as String] as! [String: Double]
 	print(w[kCGWindowNumber as String] as! Int, Int(b["X"]!), Int(b["Y"]!))
 	break
@@ -78,7 +87,7 @@ until [ -n "$(window)" ]; do sleep 0.5; done
 sleep 3
 read -r WINDOW_ID WIN_X WIN_Y <<<"$(window)"
 
-osascript -e 'tell application "System Events" to set frontmost of process "l1-data" to true'
+osascript -e 'tell application "System Events" to set frontmost of first process whose unix id is '"$APP_PID"' to true'
 cliclick "c:$((WIN_X + 640)),$((WIN_Y + 300))"
 osascript -e 'tell application "System Events" to keystroke return using command down'
 sleep 3
