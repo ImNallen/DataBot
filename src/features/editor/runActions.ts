@@ -67,12 +67,13 @@ export function isBrowsing(tab: TableTab): boolean {
 type PageTarget = { page: number; exactRowCount?: number };
 
 // A page change is saved on the tab only once the engine accepts the run. One that arrives mid-run waits for that
-// run to finish, and the latest one wins.
+// run to finish, and the latest one wins. It runs only as a page load, never as the editor's script.
 const queuedPages = new Map<TabId, PageTarget>();
 
 async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
   const tab = ws().tabs[tabId];
   if (!tab) return;
+  if (target && (tab.kind !== "table" || !isBrowsing(tab))) return;
   if (isRunning(useLive.getState().consoles[tabId])) {
     if (target) queuedPages.set(tabId, target);
     return;
@@ -205,8 +206,6 @@ export async function lastTablePage(tabId: TabId): Promise<void> {
 }
 
 export function setTablePage(tabId: TabId, page: number, exactRowCount?: number): void {
-  const tab = ws().tabs[tabId];
-  if (tab?.kind !== "table" || !isBrowsing(tab)) return;
   void runTab(tabId, { page, exactRowCount });
 }
 
