@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactCount, formatElapsed, groupDigits, toTsv } from "./format";
+import { compactCount, formatElapsed, groupDigits, shortType, toTsv } from "./format";
 
 describe("groupDigits", () => {
   it("groups the integer part and keeps sign and fraction verbatim", () => {
@@ -53,6 +53,18 @@ describe("toTsv", () => {
 
   it("quotes values that contain tabs, newlines, or quotes", () => {
     expect(toTsv([['say "hi"', "two\nlines", "a\tb"]])).toBe('"say ""hi"""\t"two\nlines"\t"a\tb"');
+  });
+});
+
+describe("shortType", () => {
+  it("uses the short names the grid shows, keeping modifiers and array brackets", () => {
+    expect(shortType("timestamp with time zone")).toBe("timestamptz");
+    expect(shortType("timestamp(3) with time zone[]")).toBe("timestamptz(3)[]");
+    expect(shortType("timestamp without time zone")).toBe("timestamp");
+    expect(shortType("character varying(20)")).toBe("varchar(20)");
+    expect(shortType("character(3)")).toBe("char(3)");
+    expect(shortType("numeric(12,2)")).toBe("numeric(12,2)");
+    expect(shortType("lab.mood")).toBe("lab.mood");
   });
 });
 

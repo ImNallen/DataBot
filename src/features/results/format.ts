@@ -61,6 +61,25 @@ export function toTsv(rows: readonly (readonly (string | null)[])[]): string {
   return rows.map((r) => r.map(tsvField).join("\t")).join("\n");
 }
 
+const TYPE_ALIASES: readonly [RegExp, string][] = [
+  [/^timestamp(\(\d+\))? with time zone/, "timestamptz$1"],
+  [/^timestamp(\(\d+\))? without time zone/, "timestamp$1"],
+  [/^time(\(\d+\))? with time zone/, "timetz$1"],
+  [/^time(\(\d+\))? without time zone/, "time$1"],
+  [/^character varying/, "varchar"],
+  [/^character\b/, "char"],
+  [/^bit varying/, "varbit"],
+];
+
+/**
+ * The catalog spells types the way format_type does ("timestamp with time zone"); the result
+ * grid's column types already use the short names, so the tree and Schema panel match them.
+ */
+export function shortType(display: string): string {
+  for (const [long, short] of TYPE_ALIASES) if (long.test(display)) return display.replace(long, short);
+  return display;
+}
+
 export function pluralRows(n: number): string {
   return `${groupDigits(String(n))} ${n === 1 ? "row" : "rows"}`;
 }

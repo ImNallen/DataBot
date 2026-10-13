@@ -1,7 +1,7 @@
 import { KeyRound, Table2 } from "lucide-react";
 import { findRelation, isViewKind, useCatalog } from "../../state/catalog";
 import { useWorkspace, type RelationRef } from "../../state/workspace";
-import { compactCount, groupDigits } from "../results/format";
+import { compactCount, groupDigits, shortType } from "../results/format";
 
 function useSchemaTarget(): RelationRef | null {
   const active = useWorkspace((s) => (s.active ? s.tabs[s.active] : undefined));
@@ -43,7 +43,7 @@ export function SchemaPanel() {
               {c.pk && <KeyRound size={13} className="text-amber" aria-label="Primary key" />}
             </span>
             <span className="min-w-0 flex-1 truncate text-fg">{c.name}</span>
-            <span className="shrink-0 font-mono text-[11.5px] text-muted">{c.typeDisplay}</span>
+            <span className="max-w-[45%] min-w-0 truncate font-mono text-[11.5px] text-muted">{shortType(c.typeDisplay)}</span>
             <span className="w-14 shrink-0 text-right text-[11.5px] text-faint">{c.notNull ? "not null" : "null"}</span>
           </li>
         ))}

@@ -1,6 +1,7 @@
 import type { Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { create } from "zustand";
+import { shortType } from "../features/results/format";
 import { commands, type Catalog, type ConnectionId, type RelKind, type Relation } from "../ipc/bindings";
 
 export type SearchItem =
@@ -36,7 +37,7 @@ export function buildCatalogView(catalog: Catalog): CatalogView {
       const view = isViewKind(rel.kind);
       tables[rel.name] = {
         self: { label: rel.name, type: view ? "type" : "class", detail: view ? "view" : "table" },
-        children: rel.columns.map((c): Completion => ({ label: c.name, type: "property", detail: c.typeDisplay })),
+        children: rel.columns.map((c): Completion => ({ label: c.name, type: "property", detail: shortType(c.typeDisplay) })),
       };
       (view ? views : relations).push({
         kind: view ? "view" : "table",
@@ -54,7 +55,7 @@ export function buildCatalogView(catalog: Catalog): CatalogView {
           schema: schema.name,
           relation: rel.name,
           column: c.name,
-          detail: c.typeDisplay,
+          detail: shortType(c.typeDisplay),
         });
       }
     }
