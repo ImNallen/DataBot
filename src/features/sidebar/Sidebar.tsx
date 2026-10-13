@@ -1,17 +1,25 @@
 import { Clock, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { useWorkspace } from "../../state/workspace";
-import { IconButton, Kbd } from "../../ui/primitives";
+import { cx, IconButton, Kbd } from "../../ui/primitives";
+import type { AppTitleAlign } from "../../shell/hostedWindow";
 import { ConnectionTree } from "./ConnectionTree";
 
-export function Sidebar() {
+export function Sidebar({ titleAlign }: { titleAlign: AppTitleAlign }) {
   const count = useWorkspace((s) => Object.keys(s.configs).length);
   const open = useWorkspace((s) => s.open);
   const setLayout = useWorkspace((s) => s.setLayout);
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-hover bg-sidebar">
-      <div className="relative flex h-[52px] shrink-0 items-center justify-center">
-        <span className="text-[14px] font-semibold tracking-[-0.01em] text-tree">DataBot</span>
+      <div
+        className={cx(
+          "relative flex h-[52px] shrink-0 items-center",
+          titleAlign === "center" ? "justify-center" : "justify-start pr-12 pl-[18px]",
+        )}
+      >
+        <span data-testid="app-title" data-align={titleAlign} className="truncate text-[14px] font-semibold tracking-[-0.01em] text-tree">
+          DataBot
+        </span>
         <IconButton
           data-testid="new-connection"
           aria-label="New connection"

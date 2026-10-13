@@ -6,7 +6,9 @@ import { useCatalog } from "../state/catalog";
 import { useLive } from "../state/live";
 import { connectionStatus, hasUncommittedWork, isRunning } from "../state/status";
 import { tabConnectionId, tabLabel, useWorkspace } from "../state/workspace";
-import { Button, IconButton, Kbd, MenuContent, MenuItem, MenuLabel, PgBadge, StatusDot } from "../ui/primitives";
+import { Button, IconButton, Kbd, MenuContent, MenuItem, MenuLabel, PgBadge, StatusDot, cx } from "../ui/primitives";
+import { WindowControls } from "./WindowChrome";
+import type { HostedWindow } from "./hostedWindow";
 
 const MODE_LABEL: Record<TxnMode, string> = { AutoCommit: "Auto-commit", Manual: "Manual" };
 
@@ -26,7 +28,7 @@ function Dropdown({ children, testId, label, disabled }: { children: React.React
   );
 }
 
-export function TopBar() {
+export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
   const tab = useWorkspace((s) => (s.active ? s.tabs[s.active] : undefined));
   const configs = useWorkspace((s) => s.configs);
   const layout = useWorkspace((s) => s.layout);
@@ -43,7 +45,19 @@ export function TopBar() {
   const database = catalog?.database ?? config?.database;
 
   return (
-    <header className="flex h-[52px] shrink-0 items-center gap-2 border-b border-border pr-3 pl-4">
+    <header
+      data-tauri-drag-region="deep"
+      className={cx(
+        "flex h-[52px] shrink-0 items-center gap-2 border-b border-border",
+        hosted?.side === "left" ? "pr-3 pl-2" : hosted ? "pr-2 pl-4" : "pr-3 pl-4",
+      )}
+    >
+      {hosted?.side === "left" && (
+        <>
+          <WindowControls hosted={hosted} />
+          <div className="mx-1 h-5 w-px bg-border" />
+        </>
+      )}
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <PgBadge />
         {sql ? (
@@ -149,6 +163,12 @@ export function TopBar() {
       >
         <PanelRight size={16} />
       </IconButton>
+      {hosted?.side === "right" && (
+        <>
+          <div className="mx-1 h-5 w-px bg-border" />
+          <WindowControls hosted={hosted} />
+        </>
+      )}
     </header>
   );
 }

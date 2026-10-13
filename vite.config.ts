@@ -8,5 +8,5 @@ export default defineConfig({
   server: { port: 5173, strictPort: true, watch: { ignored: ["**/src-tauri/**", "**/crates/**", "**/target/**"] } },
   clearScreen: false,
   envPrefix: ["VITE_", "TAURI_ENV_"],
-  test: { include: ["src/**/*.test.ts"] },
+  test: { include: ["src/**/*.test.ts", "src/**/*.test.tsx"] },
 });
