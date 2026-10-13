@@ -1,25 +1,95 @@
 @import "tailwindcss";
 
+/* Tokens sampled from the mockup (docs: DataBot main window@2x). */
 @theme {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
 
-  --color-bg: #0b0b0c;
-  --color-panel: #111113;
-  --color-raised: #17171a;
-  --color-border: #232327;
-  --color-fg: #e6e6e9;
-  --color-muted: #8b8b93;
-  --color-accent: #5eead4;
+  --color-bg: #0a0a0a;
+  --color-sidebar: #000000;
+  --color-results: #0d0d0d;
+  --color-raised: #111111;
+  --color-hover: #141414;
+  --color-selected: #1a1b1b;
+  --color-pill: #1b1b1b;
+  --color-border: #181818;
+  --color-grid: #1b1b1b;
+  --color-control: #1d1d1d;
+  --color-fg: #f5f5f5;
+  --color-tree: #f1f3f7;
+  --color-muted: #a3a3a3;
+  --color-dim: #818181;
+  --color-faint: #5c5c5c;
+  --color-green: #00d492;
+  --color-live: #00bc7d;
+  --color-amber: #ffb900;
+  --color-keyword: #50a2ff;
+  --color-badge: #60a5fa;
+  --color-badge-bg: #0e1723;
+  --color-run: #346bf1;
+  --color-run-hover: #4a7cf3;
+  --color-danger: #ff6467;
+  --color-cell-select: #172338;
 }
 
 html,
 body,
 #root {
   height: 100%;
+  overflow: hidden;
 }
 
 body {
   @apply bg-bg font-sans text-fg antialiased;
   font-size: 13px;
+  font-feature-settings: "cv11", "ss01";
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.font-mono,
+.cm-scroller,
+.cm-tooltip-autocomplete {
+  font-variant-ligatures: none;
+  font-feature-settings: "calt" 0, "liga" 0;
+}
+
+input,
+textarea,
+.cm-content,
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+@layer base {
+  :where(button, [tabindex], [role="tab"]):focus-visible {
+    outline: 1px solid #3a5f9e;
+    outline-offset: -1px;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #262626;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #333333;
+  background-clip: padding-box;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
