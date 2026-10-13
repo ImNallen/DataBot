@@ -399,6 +399,68 @@ async fn terminated_backend_becomes_lost_and_the_next_run_reopens() {
 }
 
 #[tokio::test]
+async fn forced_disconnect_during_a_manual_run_leaves_the_tab_idle() {
+    let mut h = Harness::start().await;
+    let tab = h.sql_tab(TxnMode::Manual).await;
+    let accepted = h.start_run(tab, "select pg_sleep(3)").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    h.engine.disconnect(h.conn, true).await.unwrap();
+    let state = h.wait_finished(tab, accepted.run_id).await;
+    assert!(matches!(state.run, RunState::Finished { outcome: RunOutcome::Cancelled, .. }), "{:?}", state.run);
+    assert!(matches!(statuses(&state)[..], [StmtStatus::Cancelled]));
+    assert!(matches!(state.session, SessionState::None), "{:?}", state.session);
+
+    // The orphaned task sees its sleep cancelled now; it must not write that failure into the tab.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let state = h.console(tab);
+    assert_eq!(state.txn, TxnState::Idle, "the orphaned run wrote its transaction state");
+    assert!(matches!(state.session, SessionState::None), "{:?}", state.session);
+
+    let first = h.scalar(tab, "select pg_current_xact_id()::text").await;
+    let second = h.scalar(tab, "select pg_current_xact_id()::text").await;
+    assert_eq!(h.console(tab).txn, TxnState::Active, "manual mode opened a block again");
+    assert_eq!(first, second, "both statements ran inside one transaction");
+    assert!(h.outputs(tab).iter().any(|o| matches!(o, OutputBody::Info { message } if message == "BEGIN (implicit)")));
+    h.engine.console_rollback(tab).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_run_orphaned_by_disconnect_never_writes_into_the_next_run() {
+    let mut h = Harness::start().await;
+    let tab = h.sql_tab(TxnMode::AutoCommit).await;
+    let survives_cancel = "select 1; select 2; do $$ begin perform pg_sleep(2); exception when query_canceled then perform pg_sleep(2); end $$";
+    let old = h.start_run(tab, survives_cancel).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    h.engine.disconnect(h.conn, true).await.unwrap();
+    let new = h.start_run(tab, "select pg_sleep(3); select 'b1'; select 'b2'; select 'b3'").await;
+    let state = h.wait_finished(tab, new.run_id).await;
+
+    // The DO block outlives the cancel by two seconds, so the orphaned task ends during the new run.
+    let runs: Vec<(RunId, bool)> = h
+        .seen
+        .iter()
+        .filter_map(|e| match e {
+            AppEvent::ConsoleChanged(s) if s.tab_id == tab => match &s.run {
+                RunState::Running { run_id, .. } => Some((*run_id, false)),
+                RunState::Finished { run_id, outcome, statements, .. } => {
+                    Some((*run_id, *outcome == RunOutcome::Cancelled && statements.get(2).is_some_and(|s| matches!(s.status, StmtStatus::Cancelled))))
+                }
+                RunState::Idle => None,
+            },
+            _ => None,
+        })
+        .collect();
+    let first_new = runs.iter().position(|(r, _)| *r == new.run_id).unwrap();
+    let stale: Vec<RunId> = runs[first_new..].iter().map(|(r, _)| *r).filter(|r| *r != new.run_id).collect();
+    assert!(stale.is_empty(), "stale run {stale:?} published after run {:?} was accepted", new.run_id);
+    assert!(runs[..first_new].iter().any(|(r, cancelled)| *r == old.run_id && *cancelled), "disconnect finished the old run as Cancelled: {runs:?}");
+    assert!(matches!(state.run, RunState::Finished { outcome: RunOutcome::Ok, .. }), "{:?}", state.run);
+    assert_eq!(statuses(&state).len(), 4);
+    assert!(statuses(&state).iter().all(|s| matches!(s, StmtStatus::Rows { done: true, .. })), "{:?}", state.run);
+    assert_eq!(h.page(&Harness::result(&state, 3), 0, 1)[0][0].as_deref(), Some("b3"));
+}
+
+#[tokio::test]
 async fn big_result_truncates_at_max_rows_and_keeps_counting() {
     let mut h = Harness::start().await;
     let tab = h.sql_tab(TxnMode::AutoCommit).await;
