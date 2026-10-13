@@ -20,7 +20,6 @@ export function isViewKind(kind: RelKind): boolean {
   return kind === "View" || kind === "MaterializedView";
 }
 
-/** Pure derivation of everything the tree, ⌘P, and completion need from one snapshot. */
 export function buildCatalogView(catalog: Catalog): CatalogView {
   const completion: Record<string, SQLNamespace> = {};
   const relationsById = new Map<number, { schema: string; rel: Relation }>();
@@ -77,7 +76,6 @@ export function buildCatalogView(catalog: Catalog): CatalogView {
 
 type CatalogStore = {
   views: Record<ConnectionId, CatalogView>;
-  /** Fetches the snapshot unless the loaded one is already at `version` or newer. */
   ensure(id: ConnectionId, version: number): Promise<void>;
 };
 

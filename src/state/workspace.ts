@@ -40,7 +40,7 @@ export type WorkspaceData = {
   cursor: { line: number; col: number };
 };
 
-export const DEFAULT_LAYOUT: Layout = { sidebar: true, results: true, rightPanel: null, resultsHeight: 320 };
+const DEFAULT_LAYOUT: Layout = { sidebar: true, results: true, rightPanel: null, resultsHeight: 320 };
 const DEFAULT_SETTINGS: Settings = { maxRows: 200_000, maxResultBytes: 512 * 1024 * 1024, tablePageSize: 500, stopOnError: true };
 
 export function tabFromSnapshot(t: TabSnapshot): Tab {
@@ -91,7 +91,6 @@ type WorkspaceActions = {
   addTab(tab: Tab): void;
   closeTab(id: TabId): void;
   setActive(id: TabId): void;
-  moveTab(id: TabId, toIndex: number): void;
   renameTab(id: TabId, title: string): void;
   patchSqlConsole(id: TabId, patch: Partial<ConsoleConfigSnapshot>): void;
   setTablePage(id: TabId, page: number): void;
@@ -145,12 +144,6 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
       return { tabs, order, active, activeResult };
     }),
   setActive: (id) => set({ active: id }),
-  moveTab: (id, toIndex) =>
-    set((s) => {
-      const order = s.order.filter((t) => t !== id);
-      order.splice(toIndex, 0, id);
-      return { order };
-    }),
   renameTab: (id, title) =>
     set((s) => {
       const t = s.tabs[id];

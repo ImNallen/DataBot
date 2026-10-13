@@ -20,7 +20,6 @@ function startPersistence() {
   onEditorDocChanged(schedule);
 }
 
-/** Keeps each connected connection's catalog at the newest announced version. */
 function startCatalogSync() {
   const sync = (s: LiveData) => {
     for (const [id, conn] of Object.entries(s.connections)) {

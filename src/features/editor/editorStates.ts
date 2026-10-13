@@ -111,14 +111,6 @@ export function dropEditor(id: TabId): void {
   if (activeId === id) activeId = null;
 }
 
-export function editorView(): EditorView | null {
-  return view;
-}
-
-export function activeEditorTab(): TabId | null {
-  return activeId;
-}
-
 /** Applies a transaction to a tab's state whether or not it is the one on screen. */
 export function updateEditor(id: TabId, spec: (state: EditorState) => TransactionSpec): void {
   if (id === activeId && view) {

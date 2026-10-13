@@ -4,7 +4,6 @@ function isWordStart(text: string, i: number): boolean {
   return i === 0 || BOUNDARY.test(text[i - 1]!);
 }
 
-/** Scores one token against `text` starting at `from`; returns the score and the end index. */
 function matchToken(text: string, token: string, from: number): { score: number; end: number } | null {
   let substring = -1;
   for (let i = text.indexOf(token, from); i !== -1; i = text.indexOf(token, i + 1)) {

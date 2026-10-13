@@ -24,7 +24,6 @@ export const ipcRowSource: RowSource = {
   },
 };
 
-/** Page indexes covering rows [start, end), clipped to `rowCount`. */
 export function pagesFor(range: RowRange, rowCount: number): number[] {
   const end = Math.min(range.end, rowCount);
   if (end <= range.start) return [];
@@ -33,7 +32,6 @@ export function pagesFor(range: RowRange, rowCount: number): number[] {
   return pages;
 }
 
-/** Rows a page should hold once complete; less than PAGE_SIZE only for the last page. */
 export function expectedPageLength(page: number, rowCount: number): number {
   return Math.max(0, Math.min(PAGE_SIZE, rowCount - page * PAGE_SIZE));
 }

@@ -1,6 +1,5 @@
 import type { ConfigureError, ConnectError, DisconnectError, ExportError, RunError, SaveError, TxnError } from "./bindings";
 
-/** User-facing text for each typed command error. Exhaustive so a new variant fails the build. */
 
 export function connectErrorText(e: ConnectError): string {
   switch (e.kind) {

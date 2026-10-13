@@ -105,7 +105,6 @@ export async function endTransaction(tabId: TabId, verb: "commit" | "rollback"):
   if (res.status === "error") notify(txnErrorText(res.error));
 }
 
-/** Changes a SQL tab's console config, asking the engine first when a console exists. */
 async function reconfigure(tabId: TabId, patch: { connectionId?: ConnectionId; schema?: string | null; mode?: TxnMode }) {
   const tab = ws().tabs[tabId];
   if (tab?.kind !== "sql") return;
@@ -197,7 +196,6 @@ export async function closeTab(tabId: TabId): Promise<void> {
   });
 }
 
-/** Places a diagnostic at QueryError.position once the run that produced it finishes. */
 function watchRunErrors() {
   useLive.subscribe((s) => {
     for (const [tabId, req] of sent) {

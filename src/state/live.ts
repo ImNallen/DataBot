@@ -52,7 +52,6 @@ function withConnection(s: LiveData, state: ConnectionState): Partial<LiveData> 
   };
 }
 
-/** The reducer, exported pure so tests and the fake engine can drive it without the store. */
 export function applyEvent(s: LiveData, e: AppEvent): LiveData {
   switch (e.kind) {
     case "ConnectionChanged": {
