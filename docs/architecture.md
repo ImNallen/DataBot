@@ -1,8 +1,8 @@
-# DataBot v1 architecture
+# L1 Data v1 architecture
 
 ## Problem
 
-DataBot is a greenfield Tauri 2 desktop IDE for PostgreSQL, built to match the mockup: a connection tree, SQL editor tabs, a results grid, an output log, and per-tab transactions. The shape isn't obvious for five reasons:
+L1 Data is a greenfield Tauri 2 desktop IDE for PostgreSQL, built to match the mockup: a connection tree, SQL editor tabs, a results grid, an output log, and per-tab transactions. The shape isn't obvious for five reasons:
 
 - **Arbitrary PG values must cross IPC.** These include numeric, timestamptz, arrays, enums, composites, bytea, and extension types. Showing them correctly normally means one decoder per type. The long tail (ranges, tsvector, PostGIS, user composites) never ends.
 - **Large results** (tens of thousands of rows, sometimes millions by accident) must stay fast without exhausting the webview's memory.
@@ -473,7 +473,7 @@ pub(crate) struct Session {
     closed: watch::Receiver<Option<String>>,     // Some(reason) once the driver task exits
 }
 impl Session {
-    /// Connects, sets TimeZone, application_name='DataBot', search_path; spawns the driver task.
+    /// Connects, sets TimeZone, application_name='L1 Data', search_path; spawns the driver task.
     pub async fn open(p: &ConnectParams, schema: Option<&str>) -> Result<Session, ConnectError>;
 }
 
@@ -603,14 +603,14 @@ The UI derives its status values instead of storing them:
 
 ### Persistence
 
-Everything lives under `app_data_dir()` (override with `DATABOT_DATA_DIR` in debug builds), in one SQLite file `databot.sqlite3` (rusqlite, bundled) with `PRAGMA user_version` migrations:
+Everything lives under `app_data_dir()` (override with `L1_DATA_DATA_DIR` in debug builds), in one SQLite file `l1-data.sqlite3` (rusqlite, bundled) with `PRAGMA user_version` migrations:
 
 - `connections(id TEXT PK, json TEXT)`. Configs only.
 - `history(id INTEGER PK, at_ms, connection_id, connection_name, database, sql, elapsed_ms, outcome_json)`, indexed on `(connection_id, id)`. Search is `LIKE`; FTS5 can come later. Pruned to the newest 10,000 entries on insert.
 - `kv(key TEXT PK, json TEXT)`. Holds `workspace` and `settings`.
 - `secrets(connection_id TEXT PK, nonce BLOB, ciphertext BLOB)`. One sealed password per connection.
 
-The OS credential store holds one item, a random 32-byte master key, with service `dev.databot.app` and user `master-key`. macOS therefore asks for keychain access once, not once per connection. Each password is sealed with XChaCha20-Poly1305 under that key, with a random nonce and the connection id as associated data, and the result is stored in the `secrets` table. All passwords do not go into one keychain item because Windows Credential Manager caps an item at 2560 bytes. The first saved password creates the key. Reading a password never creates one. If the key is missing or a password fails to open (wiped keychain, copied data dir, memory store restart), the connection behaves as if it had no password, and the user enters it again at the `MissingPassword` prompt. `trait KeyStore { load, save }` has two implementations: `KeyringKeyStore` and `MemoryKeyStore`. The second exists for tests and e2e, selected by `DATABOT_SECRET_STORE=memory` in debug builds only. SQLite access is a `std::sync::Mutex<rusqlite::Connection>`. Writes are single-row and sub-millisecond, so they run inline.
+The OS credential store holds one item, a random 32-byte master key, with service `dev.l1data.app` and user `master-key`. macOS therefore asks for keychain access once, not once per connection. Each password is sealed with XChaCha20-Poly1305 under that key, with a random nonce and the connection id as associated data, and the result is stored in the `secrets` table. All passwords do not go into one keychain item because Windows Credential Manager caps an item at 2560 bytes. The first saved password creates the key. Reading a password never creates one. If the key is missing or a password fails to open (wiped keychain, copied data dir, memory store restart), the connection behaves as if it had no password, and the user enters it again at the `MissingPassword` prompt. `trait KeyStore { load, save }` has two implementations: `KeyringKeyStore` and `MemoryKeyStore`. The second exists for tests and e2e, selected by `L1_DATA_SECRET_STORE=memory` in debug builds only. SQLite access is a `std::sync::Mutex<rusqlite::Connection>`. Writes are single-row and sub-millisecond, so they run inline.
 
 ### Repo layout
 
@@ -660,7 +660,7 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - `txn_after`: every transition in a table test
    - `OffsetMap`: emoji and CJK before the error
    - `type_ref` alias table, `synthesize_tag`, arena paging, CSV quoting
-2. **Engine against real Postgres** (`pnpm db:up && cargo test -p engine --features pg-tests`). `Harness` uses `MemoryKeyStore`, a temp data dir, and `DATABOT_TEST_PG` (default `postgres://databot:databot@localhost:5433/shop`). Scenarios:
+2. **Engine against real Postgres** (`pnpm db:up && cargo test -p engine --features pg-tests`). `Harness` uses `MemoryKeyStore`, a temp data dir, and `L1_DATA_TEST_PG` (default `postgres://l1data:l1data@localhost:5433/shop`). Scenarios:
    - connect reports a 16.x server version
    - catalog of `shop` contains the mockup's tables with PKs and estimates after `ANALYZE`
    - every `lab.type_zoo` cell equals Postgres's own text output: numeric, timestamptz, interval, json/jsonb, int[], text[], bytea, uuid, inet, enum, point, range, NULL
@@ -680,21 +680,21 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - catalog → `SQLNamespace` and search items
    - `RowCache` page math
 4. **Contract drift**: a `src-tauri` test (`export_bindings_up_to_date`) renders bindings to a string and asserts equality with `src/ipc/bindings.ts`. A second test asserts the dev-bridge dispatch table covers exactly the registered command names.
-5. **UI against the real engine** (`pnpm bridge`). `crates/dev-bridge` hosts the same `Engine` (MemoryKeyStore, temp `DATABOT_DATA_DIR`) behind `POST /invoke/:cmd` and an SSE stream of `AppEvent`. In vite dev outside Tauri, `src/dev/bridgeShim.ts` installs `mockIPC` from `@tauri-apps/api/mocks` (with `shouldMockEvents`) that forwards every command to the bridge and re-emits SSE frames as `app-event`. The generated bindings run unchanged. An agent drives it with agent-browser or Playwright, selecting by `data-testid`:
+5. **UI against the real engine** (`pnpm bridge`). `crates/dev-bridge` hosts the same `Engine` (MemoryKeyStore, temp `L1_DATA_DATA_DIR`) behind `POST /invoke/:cmd` and an SSE stream of `AppEvent`. In vite dev outside Tauri, `src/dev/bridgeShim.ts` installs `mockIPC` from `@tauri-apps/api/mocks` (with `shouldMockEvents`) that forwards every command to the bridge and re-emits SSE frames as `app-event`. The generated bindings run unchanged. An agent drives it with agent-browser or Playwright, selecting by `data-testid`:
    - create connection via the dialog, test it, save it, and see "Live" plus `customers 18.4k`-style estimates in the tree
    - ⌘P "ord it" opens `order_items`; the table tab shows 500 rows
    - new tab: type the mockup query, ⌘↵, see status "6 rows ·", headers `region text`, `orders bigint`, right-aligned numbers
    - run `select slow_echo(30)`, click Cancel, see Output show `canceling statement due to user request`
    - switch to Manual: insert, then a second tab's count is unchanged; Commit, and the count changes
    - reload the page: tabs, text, and history are restored
-6. **Real shell.** `pnpm self-check` launches the debug binary with `DATABOT_SELF_CHECK=1`: it boots `Engine` inside Tauri, connects to the dev DB, runs `SELECT 1` and loads the catalog, prints JSON, and exits 0. A macOS `screencapture` of `pnpm tauri dev` against the mockup covers WKWebView rendering. Driving the real webview with `@wdio/tauri-service` (embedded provider, verified to support macOS) is the planned follow-up.
+6. **Real shell.** `pnpm self-check` launches the debug binary with `L1_DATA_SELF_CHECK=1`: it boots `Engine` inside Tauri, connects to the dev DB, runs `SELECT 1` and loads the catalog, prints JSON, and exits 0. A macOS `screencapture` of `pnpm tauri dev` against the mockup covers WKWebView rendering. Driving the real webview with `@wdio/tauri-service` (embedded provider, verified to support macOS) is the planned follow-up.
 
 ## Synthesis decision
 
 Arena over three runners (opus, fable, sonnet), cross-judged by fable. Base: the opus candidate, scored 29/30 by the judge against 21 for each of the others, and picked independently by the orchestrator. It was the only candidate right on all three load-bearing questions: server text output for every value (no per-type decoders), the session moving into the run task so concurrent use cannot be expressed, and a row cap that drains instead of cancelling so a big SELECT cannot abort a manual transaction.
 
 Grafted:
-- From sonnet: the dev-bridge plus `mockIPC` shim, so an agent drives the real UI against the real engine from a browser; the `DATABOT_SELF_CHECK` shell smoke; history pruning at 10,000 entries; splitter cases for `BEGIN ATOMIC` bodies and a cursor in trailing whitespace; events as a plain specta type sent with `app.emit`.
+- From sonnet: the dev-bridge plus `mockIPC` shim, so an agent drives the real UI against the real engine from a browser; the `L1_DATA_SELF_CHECK` shell smoke; history pruning at 10,000 entries; splitter cases for `BEGIN ATOMIC` bodies and a cursor in trailing whitespace; events as a plain specta type sent with `app.emit`.
 - From fable: table-page SQL built in Rust (`RunRequest::TablePage`), so SQL text has one interpreter; elapsed time measured around execution only, excluding the describe round trip.
 
 Rejected:
@@ -744,9 +744,9 @@ Scaffold phase (workspace, contract, shell, dev-bridge, frontend skeleton). Each
 - **Pins.** tauri-specta `=2.0.0-rc.25` requires specta `=2.0.0-rc.25` and specta-typescript `=0.0.12`. Bindings use `dangerously_cast_bigints_to_number()`, so `u64` and `i64` (revs, run ids, row counts, epoch millis) export as `number`. All of them stay below 2^53.
 - **Bindings regeneration.** Besides debug-build startup, `pnpm bindings` reruns `export_bindings_up_to_date` with `UPDATE_BINDINGS=1`, which rewrites the file without opening a window.
 - **Dispatch coverage source.** The dev-bridge test parses the generated `bindings.ts`, not a hand-kept constant. The drift test already proves that file equals the Tauri registration. The test compares command names and camelCase argument names.
-- **Dev-bridge protocol.** The route is `/invoke/{cmd}` (axum 0.8 path syntax). A command's own result is 200 `{status:"ok",data}` or 200 `{status:"error",error}`. An unknown command (404), bad argument (400), or engine panic (500) returns `{message}`, and the shim throws it as a real `Error`, so `typedError` rethrows instead of returning a typed error. The body is parsed as JSON whatever the content-type, so a bare `curl -d '{}'` works. `DATABOT_DATA_DIR` overrides the bridge's temporary data directory.
-- **Window creation.** The `main` window is declared in `tauri.conf.json` with `"create": false` and built in `setup`, so `DATABOT_SELF_CHECK=1` runs without a window. The self-check prints `{"ok":false,...,"connect":{"status":"notImplemented"}}` and exits 1 until the engine phase adds the connect, `SELECT 1`, and catalog steps.
-- **Window chrome.** On macOS, `main.rs` turns decorations back on with an overlay title bar and a hidden title. The native traffic lights sit over the sidebar header, and macOS handles resizing. On Windows and Linux, `tauri.conf.json` sets `decorations` to false, and the webview draws the resize edges and the minimize, maximize, and close buttons at the right of the toolbar. The toolbar and the sidebar header are drag regions on every platform. `hostedWindow()` returns `{ chrome: "native" }` on macOS, the custom controls elsewhere, and null in the dev-bridge browser, where no window controls show. The sidebar toggle leads whichever header touches the window's left edge. That is the sidebar header while the sidebar is open and the toolbar while it is hidden. `windowLeadingInset()` gives both headers the same left padding, so the toggle stays put. On macOS that padding clears the traffic lights. The "DataBot" title follows the toggle on every platform.
+- **Dev-bridge protocol.** The route is `/invoke/{cmd}` (axum 0.8 path syntax). A command's own result is 200 `{status:"ok",data}` or 200 `{status:"error",error}`. An unknown command (404), bad argument (400), or engine panic (500) returns `{message}`, and the shim throws it as a real `Error`, so `typedError` rethrows instead of returning a typed error. The body is parsed as JSON whatever the content-type, so a bare `curl -d '{}'` works. `L1_DATA_DATA_DIR` overrides the bridge's temporary data directory.
+- **Window creation.** The `main` window is declared in `tauri.conf.json` with `"create": false` and built in `setup`, so `L1_DATA_SELF_CHECK=1` runs without a window. The self-check prints `{"ok":false,...,"connect":{"status":"notImplemented"}}` and exits 1 until the engine phase adds the connect, `SELECT 1`, and catalog steps.
+- **Window chrome.** On macOS, `main.rs` turns decorations back on with an overlay title bar and a hidden title. The native traffic lights sit over the sidebar header, and macOS handles resizing. On Windows and Linux, `tauri.conf.json` sets `decorations` to false, and the webview draws the resize edges and the minimize, maximize, and close buttons at the right of the toolbar. The toolbar and the sidebar header are drag regions on every platform. `hostedWindow()` returns `{ chrome: "native" }` on macOS, the custom controls elsewhere, and null in the dev-bridge browser, where no window controls show. The sidebar toggle leads whichever header touches the window's left edge. That is the sidebar header while the sidebar is open and the toolbar while it is hidden. `windowLeadingInset()` gives both headers the same left padding, so the toggle stays put. On macOS that padding clears the traffic lights. The "L1 Data" title follows the toggle on every platform.
 - **Engine additions.** `Engine::data_dir()` lets the self-check report and the bridge log show the directory in use. `KeyringKeyStore` and `MemoryKeyStore` are implemented, not stubbed, and sealed passwords are keyed by `ConnectionId`.
 - **Defaults the design left open.** `Settings::default()` sets `stop_on_error: true`. `Layout::default()` is sidebar and results shown, no right panel, and `results_height: 320`.
 - **Fonts** come from `@fontsource-variable/inter` and `@fontsource-variable/jetbrains-mono`, the variable-axis builds of the Fontsource packages.

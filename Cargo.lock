@@ -901,23 +901,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "databot"
-version = "0.1.0"
-dependencies = [
- "engine",
- "serde",
- "serde_json",
- "specta",
- "specta-typescript",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-specta",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "dbus"
 version = "0.9.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2333,6 +2316,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29fbf4b551298c67925f38cf341a1ada797a75f1837bdf8ae1fc8e2ebc6efb59"
 dependencies = [
  "log",
+]
+
+[[package]]
+name = "l1-data"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "serde",
+ "serde_json",
+ "specta",
+ "specta-typescript",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-specta",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

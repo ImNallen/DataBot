@@ -54,11 +54,11 @@ fn debug_env(key: &str) -> Option<String> {
 }
 
 fn engine_config(app: &tauri::App) -> Result<EngineConfig, Box<dyn Error>> {
-    let data_dir = match debug_env("DATABOT_DATA_DIR") {
+    let data_dir = match debug_env("L1_DATA_DATA_DIR") {
         Some(dir) => dir.into(),
         None => app.path().app_data_dir()?,
     };
-    let keys: Arc<dyn KeyStore> = match debug_env("DATABOT_SECRET_STORE").as_deref() {
+    let keys: Arc<dyn KeyStore> = match debug_env("L1_DATA_SECRET_STORE").as_deref() {
         Some("memory") => Arc::new(MemoryKeyStore::default()),
         _ => Arc::new(KeyringKeyStore),
     };
@@ -81,10 +81,10 @@ fn forward_events(app: AppHandle, mut events: broadcast::Receiver<AppEvent>) {
     });
 }
 
-const SELF_CHECK_URL: &str = "postgres://databot:databot@localhost:5433/shop";
+const SELF_CHECK_URL: &str = "postgres://l1data:l1data@localhost:5433/shop";
 
 async fn self_check(app: AppHandle, engine: Arc<Engine>) {
-    let url = std::env::var("DATABOT_SELF_CHECK_URL").unwrap_or_else(|_| SELF_CHECK_URL.into());
+    let url = std::env::var("L1_DATA_SELF_CHECK_URL").unwrap_or_else(|_| SELF_CHECK_URL.into());
     let data_dir = engine.data_dir().to_owned();
     let (ok, report) = match self_check_steps(&engine, &url).await {
         Ok(report) => (true, report),
@@ -150,7 +150,7 @@ fn main() {
     #[cfg(debug_assertions)]
     export_bindings(&builder, Path::new(BINDINGS_PATH));
 
-    let self_checking = std::env::var("DATABOT_SELF_CHECK").as_deref() == Ok("1");
+    let self_checking = std::env::var("L1_DATA_SELF_CHECK").as_deref() == Ok("1");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -175,7 +175,7 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running DataBot");
+        .expect("error while running L1 Data");
 }
 
 #[cfg(test)]
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn export_bindings_up_to_date() {
-        let fresh_path = std::env::temp_dir().join(format!("databot-bindings-{}.ts", std::process::id()));
+        let fresh_path = std::env::temp_dir().join(format!("l1-data-bindings-{}.ts", std::process::id()));
         export_bindings(&specta_builder(), &fresh_path);
         let fresh = std::fs::read_to_string(&fresh_path).unwrap();
         std::fs::remove_file(&fresh_path).unwrap();

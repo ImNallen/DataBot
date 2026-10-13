@@ -84,7 +84,7 @@ async fn events(State(engine): State<Arc<Engine>>) -> Sse<impl Stream<Item = Res
 #[tokio::main]
 async fn main() {
     let temp_dir = tempfile::tempdir().expect("create temp data dir");
-    let data_dir = std::env::var_os("DATABOT_DATA_DIR").map_or_else(|| temp_dir.path().to_owned(), Into::into);
+    let data_dir = std::env::var_os("L1_DATA_DATA_DIR").map_or_else(|| temp_dir.path().to_owned(), Into::into);
     let engine = Engine::open(EngineConfig {
         data_dir,
         keys: Arc::new(MemoryKeyStore::default()),

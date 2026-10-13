@@ -1,8 +1,8 @@
-# DataBot
+# L1 Data
 
-DataBot is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. It has a connection tree, SQL editor tabs, a results grid, an output log, and per-tab transactions. The design is in [docs/architecture.md](docs/architecture.md).
+L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. It has a connection tree, SQL editor tabs, a results grid, an output log, and per-tab transactions. The design is in [docs/architecture.md](docs/architecture.md).
 
-![DataBot running the revenue-by-region query against the seeded shop database](docs/images/databot.png)
+![L1 Data running the revenue-by-region query against the seeded shop database](docs/images/l1-data.png)
 
 ## Quickstart
 

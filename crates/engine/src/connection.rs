@@ -55,7 +55,7 @@ impl ConnectParams {
             .port(self.port)
             .dbname(&self.database)
             .user(&self.user)
-            .application_name("DataBot")
+            .application_name("L1 Data")
             .connect_timeout(CONNECT_TIMEOUT)
             .keepalives(true)
             .keepalives_idle(KEEPALIVE_IDLE)
@@ -230,8 +230,8 @@ mod tests {
 
     #[test]
     fn url_becomes_a_draft() {
-        let d = draft_from_url("postgres://databot:s%40cret@db.example:5433/shop?sslmode=require", "dev").unwrap();
-        assert_eq!((d.host.as_str(), d.port, d.database.as_str(), d.user.as_str()), ("db.example", 5433, "shop", "databot"));
+        let d = draft_from_url("postgres://l1data:s%40cret@db.example:5433/shop?sslmode=require", "dev").unwrap();
+        assert_eq!((d.host.as_str(), d.port, d.database.as_str(), d.user.as_str()), ("db.example", 5433, "shop", "l1data"));
         assert!(matches!(d.password, PasswordInput::Set(ref p) if p == "s@cret"));
         assert_eq!(d.ssl_mode, SslMode::Require);
         let bare = draft_from_url("postgres://localhost/shop", "x").unwrap();

@@ -1,17 +1,17 @@
 services:
   postgres:
     image: postgres:16
-    container_name: databot-pg
+    container_name: l1-data-pg
     environment:
-      POSTGRES_USER: databot
-      POSTGRES_PASSWORD: databot
+      POSTGRES_USER: l1data
+      POSTGRES_PASSWORD: l1data
       POSTGRES_DB: shop
     ports:
       - "5433:5432"
     volumes:
       - ./seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U databot -d shop"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U l1data -d shop"]
       interval: 1s
       timeout: 3s
       retries: 60

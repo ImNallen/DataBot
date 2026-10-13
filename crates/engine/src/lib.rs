@@ -51,7 +51,7 @@ pub(crate) struct Shared {
 }
 
 const EVENT_BUFFER: usize = 1024;
-const DB_FILE: &str = "databot.sqlite3";
+const DB_FILE: &str = "l1-data.sqlite3";
 const KV_WORKSPACE: &str = "workspace";
 const KV_SETTINGS: &str = "settings";
 
@@ -692,7 +692,7 @@ mod tests {
             host: "localhost".into(),
             port: 5433,
             database: "shop".into(),
-            user: "databot".into(),
+            user: "l1data".into(),
             ssl_mode: SslMode::Prefer,
             ca_cert_path: None,
             password: PasswordInput::Set("pw".into()),
