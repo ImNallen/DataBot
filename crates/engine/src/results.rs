@@ -84,10 +84,6 @@ impl ResultSet {
         self.data.write().unwrap().elapsed_ms = elapsed_ms;
     }
 
-    pub fn row_count(&self) -> u32 {
-        self.data.read().unwrap().row_count()
-    }
-
     pub fn meta(&self) -> ResultMeta {
         let a = self.data.read().unwrap();
         ResultMeta {

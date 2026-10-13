@@ -199,9 +199,8 @@ mod tests {
             dispatch(&engine, "console_cancel", args).await,
             Err(BridgeError::BadArg { arg, .. }) if arg == "tabId"
         ));
-        assert!(matches!(
-            dispatch(&engine, "history_clear", Map::new()).await,
-            Err(BridgeError::Panicked(m)) if m.contains("not yet implemented")
-        ));
+        let unknown = json!({ "id": "00000000-0000-0000-0000-000000000000" }).as_object().unwrap().clone();
+        let reply = dispatch(&engine, "catalog_get", unknown).await.unwrap();
+        assert_eq!(reply.unwrap_err()["connectionId"], json!("00000000-0000-0000-0000-000000000000"), "a typed error is a command error");
     }
 }
