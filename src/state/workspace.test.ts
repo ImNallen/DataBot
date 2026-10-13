@@ -8,7 +8,7 @@ const config = (id: string): ConnectionConfig => ({
   host: "localhost",
   port: 5433,
   database: "shop",
-  user: "databot",
+  user: "l1data",
   sslMode: "Prefer",
   caCertPath: null,
   hasPassword: true,

@@ -6,7 +6,7 @@ set -euo pipefail
 BRIDGE=http://127.0.0.1:7077
 DATA_DIR=$(mktemp -d)
 SSE_LOG=$(mktemp)
-DATABOT_DATA_DIR="$DATA_DIR" ./target/debug/dev-bridge >"$DATA_DIR/bridge.log" 2>&1 &
+L1_DATA_DATA_DIR="$DATA_DIR" ./target/debug/dev-bridge >"$DATA_DIR/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 trap 'kill $BRIDGE_PID $SSE_PID 2>/dev/null || true' EXIT
 for _ in $(seq 1 50); do curl -s "$BRIDGE/invoke/app_boot" -d '{}' >/dev/null 2>&1 && break; sleep 0.1; done
@@ -18,7 +18,7 @@ sleep 0.3
 invoke() { curl -s "$BRIDGE/invoke/$1" -H 'content-type: application/json' -d "$2"; }
 ok() { python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["status"]=="ok", r; print(json.dumps(r["data"]))'; }
 
-CONN=$(invoke connection_save '{"draft":{"id":null,"name":"smoke","host":"localhost","port":5433,"database":"shop","user":"databot","sslMode":"Prefer","caCertPath":null,"password":{"Set":"databot"},"color":null}}' | ok)
+CONN=$(invoke connection_save '{"draft":{"id":null,"name":"smoke","host":"localhost","port":5433,"database":"shop","user":"l1data","sslMode":"Prefer","caCertPath":null,"password":{"Set":"l1data"},"color":null}}' | ok)
 CONN_ID=$(echo "$CONN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 echo "saved connection $CONN_ID"
 invoke connection_connect "{\"id\":\"$CONN_ID\"}" | ok

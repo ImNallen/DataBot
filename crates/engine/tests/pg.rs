@@ -9,14 +9,14 @@ use futures_util::TryStreamExt;
 use tokio::sync::broadcast;
 use tokio_postgres::NoTls;
 
-const DEFAULT_URL: &str = "postgres://databot:databot@localhost:5433/shop";
+const DEFAULT_URL: &str = "postgres://l1data:l1data@localhost:5433/shop";
 const MOCKUP_QUERY: &str = "select c.region, count(*) as orders, sum(o.total) as revenue
 from orders o join customers c on c.id = o.customer_id
 where o.status = 'paid' and o.created_at > now() - interval '90 days'
 group by c.region order by revenue desc";
 
 fn url() -> String {
-    std::env::var("DATABOT_TEST_PG").unwrap_or_else(|_| DEFAULT_URL.into())
+    std::env::var("L1_DATA_TEST_PG").unwrap_or_else(|_| DEFAULT_URL.into())
 }
 
 struct Harness {
@@ -561,7 +561,7 @@ async fn schema_and_search_path_follow_the_console_config() {
     assert_eq!(h.scalar(tab, "show search_path").await, "lab");
     h.engine.console_configure(tab, ConsoleConfig { connection_id: h.conn, schema: Some("public".into()), mode: TxnMode::AutoCommit }).await.unwrap();
     assert_eq!(h.scalar(tab, "show search_path").await, "public");
-    assert_eq!(h.scalar(tab, "show application_name").await, "DataBot");
+    assert_eq!(h.scalar(tab, "show application_name").await, "L1 Data");
     for copy in ["copy customers from stdin", "copy public.customers (id) to stdout", "copy pg_temp.nope from stdin with (format csv)"] {
         let err = h.engine.console_run(tab, RunRequest::Script { text: copy.into(), target: RunTarget::All }).await.err();
         assert!(matches!(err, Some(RunError::Unsupported { .. })), "{copy}: {err:?}");

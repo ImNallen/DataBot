@@ -5,7 +5,7 @@ use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 
 use crate::model::ConnectionId;
 
-const KEYCHAIN_SERVICE: &str = "dev.databot.app";
+const KEYCHAIN_SERVICE: &str = "dev.l1data.app";
 const KEYCHAIN_USER: &str = "master-key";
 
 #[derive(Debug, thiserror::Error)]

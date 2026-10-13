@@ -264,7 +264,7 @@ mod tests {
             host: "localhost".into(),
             port: 5433,
             database: "shop".into(),
-            user: "databot".into(),
+            user: "l1data".into(),
             ssl_mode: SslMode::Prefer,
             ca_cert_path: None,
             has_password: true,
