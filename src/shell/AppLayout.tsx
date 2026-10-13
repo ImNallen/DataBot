@@ -13,7 +13,7 @@ import { Overlays } from "./Overlays";
 import { StatusBar } from "./StatusBar";
 import { TabBar } from "./TabBar";
 import { ResizeEdges } from "./WindowChrome";
-import { hostedWindow } from "./windowChrome";
+import { appTitleAlign, hostedWindow } from "./windowChrome";
 import { TopBar } from "./TopBar";
 
 function useGlobalKeys() {
@@ -79,13 +79,14 @@ function MainArea() {
 export function AppLayout() {
   useGlobalKeys();
   const [hosted] = useState(() => hostedWindow());
+  const [titleAlign] = useState(() => appTitleAlign(navigator.userAgent));
   const sidebar = useWorkspace((s) => s.layout.sidebar);
   const rightPanel = useWorkspace((s) => s.layout.rightPanel);
 
   return (
     <div className="relative flex h-full">
       {hosted && <ResizeEdges hosted={hosted} />}
-      {sidebar && <Sidebar />}
+      {sidebar && <Sidebar titleAlign={titleAlign} />}
       <div className="flex min-w-0 flex-1 flex-col bg-bg">
         <TopBar hosted={hosted} />
         <TabBar />

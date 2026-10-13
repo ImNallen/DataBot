@@ -1,8 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
+import { Sidebar } from "../features/sidebar/Sidebar";
 import { ResizeEdges, WindowControlButtons } from "./WindowChrome";
 import { TopBar } from "./TopBar";
-import { hostedWindow, windowControlOrder, windowControlSide, type HostedWindow } from "./windowChrome";
+import { appTitleAlign, hostedWindow, windowControlOrder, windowControlSide, type HostedWindow } from "./windowChrome";
 
 function fakeHost(side: HostedWindow["side"]): HostedWindow {
   return {
@@ -15,6 +16,23 @@ function fakeHost(side: HostedWindow["side"]): HostedWindow {
     startResize: async () => {},
   };
 }
+
+it("keeps DataBot centered on macOS and pins it to the left on Windows and Linux", () => {
+  expect(appTitleAlign("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15")).toBe("center");
+  expect(appTitleAlign("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")).toBe("start");
+  expect(appTitleAlign("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")).toBe("start");
+
+  const mac = renderToStaticMarkup(<Sidebar titleAlign="center" />);
+  expect(mac).toContain("DataBot");
+  expect(mac).toContain('data-align="center"');
+  expect(mac).toContain("justify-center");
+
+  const linux = renderToStaticMarkup(<Sidebar titleAlign="start" />);
+  expect(linux).toContain("DataBot");
+  expect(linux).toContain('data-align="start"');
+  expect(linux).toContain("justify-start");
+  expect(linux).not.toContain("justify-center");
+});
 
 it("puts window buttons on the left on macOS and on the right elsewhere", () => {
   expect(windowControlSide("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15")).toBe("left");

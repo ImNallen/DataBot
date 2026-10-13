@@ -17,6 +17,12 @@ export function windowControlSide(userAgent: string): WindowControlSide {
   return /Macintosh|Mac OS X/.test(userAgent) ? "left" : "right";
 }
 
+export type AppTitleAlign = "center" | "start";
+
+export function appTitleAlign(userAgent: string): AppTitleAlign {
+  return windowControlSide(userAgent) === "left" ? "center" : "start";
+}
+
 export function windowControlOrder(side: WindowControlSide): readonly WindowControl[] {
   return side === "left" ? ["close", "minimize", "maximize"] : ["minimize", "maximize", "close"];
 }
