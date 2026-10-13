@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fuzzyRank } from "../features/sidebar/fuzzy";
-import { shopCatalog } from "../testing/fakeData";
+import { shopCatalog } from "../testing/shopCatalog";
 import { buildCatalogView } from "./catalog";
 
 const view = buildCatalogView(shopCatalog("conn", 7));
@@ -14,7 +14,7 @@ describe("buildCatalogView", () => {
       "id:bigint",
       "customer_id:bigint",
       "status:text",
-      "total:numeric",
+      "total:numeric(12,2)",
       "created_at:timestamptz",
     ]);
     expect(Object.keys(view.completion)).toEqual(["lab", "public"]);

@@ -10,13 +10,8 @@ import { AppLayout } from "./shell/AppLayout";
 
 async function start() {
   if (import.meta.env.DEV && !isTauri()) {
-    if (new URLSearchParams(location.search).has("fake")) {
-      const { installFakeEngine } = await import("./testing/fakeEngine");
-      await installFakeEngine();
-    } else {
-      const { installBridgeShim } = await import("./dev/bridgeShim");
-      installBridgeShim();
-    }
+    const { installBridgeShim } = await import("./dev/bridgeShim");
+    installBridgeShim();
   }
   const root = document.getElementById("root");
   if (!root) throw new Error("index.html is missing #root");
