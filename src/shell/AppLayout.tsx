@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ConnectionDialog } from "../features/connections/ConnectionDialog";
 import { SqlEditor } from "../features/editor/SqlEditor";
@@ -12,6 +12,8 @@ import { Button } from "../ui/primitives";
 import { Overlays } from "./Overlays";
 import { StatusBar } from "./StatusBar";
 import { TabBar } from "./TabBar";
+import { ResizeEdges } from "./WindowChrome";
+import { hostedWindow } from "./windowChrome";
 import { TopBar } from "./TopBar";
 
 function useGlobalKeys() {
@@ -76,14 +78,16 @@ function MainArea() {
 
 export function AppLayout() {
   useGlobalKeys();
+  const [hosted] = useState(() => hostedWindow());
   const sidebar = useWorkspace((s) => s.layout.sidebar);
   const rightPanel = useWorkspace((s) => s.layout.rightPanel);
 
   return (
-    <div className="flex h-full">
+    <div className="relative flex h-full">
+      {hosted && <ResizeEdges hosted={hosted} />}
       {sidebar && <Sidebar />}
       <div className="flex min-w-0 flex-1 flex-col bg-bg">
-        <TopBar />
+        <TopBar hosted={hosted} />
         <TabBar />
         <MainArea />
         <StatusBar />
