@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fuzzyRank } from "../features/sidebar/fuzzy";
 import { shopCatalog } from "../testing/shopCatalog";
-import { buildCatalogView } from "./catalog";
+import { buildCatalogView, isPrimaryKey } from "./catalog";
 
 const view = buildCatalogView(shopCatalog("conn", 7));
 
@@ -35,6 +35,16 @@ describe("buildCatalogView", () => {
   it("indexes relations by oid", () => {
     const orders = view.catalog.schemas[1]!.relations.find((r) => r.name === "orders")!;
     expect(view.relationsById.get(orders.oid)).toEqual({ schema: "public", rel: orders });
+  });
+
+  it("marks a result column as a primary key only when its source column is one", () => {
+    const orders = view.catalog.schemas[1]!.relations.find((r) => r.name === "orders")!;
+    const attnum = (name: string) => orders.columns.find((c) => c.name === name)!.attnum;
+    expect(isPrimaryKey(view, { tableOid: orders.oid, attnum: attnum("id") })).toBe(true);
+    expect(isPrimaryKey(view, { tableOid: orders.oid, attnum: attnum("customer_id") })).toBe(false);
+    expect(isPrimaryKey(view, null)).toBe(false);
+    expect(isPrimaryKey(undefined, { tableOid: orders.oid, attnum: attnum("id") })).toBe(false);
+    expect(isPrimaryKey(view, { tableOid: -1, attnum: 1 })).toBe(false);
   });
 });
 

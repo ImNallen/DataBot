@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
-import { Braces, Columns3, Eye, Search, Table2 } from "lucide-react";
+import { IconBraces, IconColumns3, IconEye, IconSearch, IconTable } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { useCatalog, type SearchItem } from "../../state/catalog";
 import { useWorkspace } from "../../state/workspace";
@@ -10,10 +10,10 @@ import { openTableTab } from "../editor/runActions";
 import { fuzzyRank } from "./fuzzy";
 
 const ICONS = {
-  table: <Table2 size={15} className="text-muted" />,
-  view: <Eye size={15} className="text-muted" />,
-  function: <Braces size={14} className="text-muted" />,
-  column: <Columns3 size={14} className="text-muted" />,
+  table: <IconTable size={15} className="text-muted" />,
+  view: <IconEye size={15} className="text-muted" />,
+  function: <IconBraces size={14} className="text-muted" />,
+  column: <IconColumns3 size={14} className="text-muted" />,
 } satisfies Record<SearchItem["kind"], React.ReactNode>;
 
 function itemKey(item: SearchItem): string {
@@ -71,7 +71,7 @@ export function SearchPalette() {
           <Dialog.Title className="sr-only">Search tables and columns</Dialog.Title>
           <Command shouldFilter={false} loop label="Search tables and columns">
             <div className="flex h-12 items-center gap-2.5 border-b border-control px-4">
-              <Search size={16} className="shrink-0 text-green" />
+              <IconSearch size={16} className="shrink-0 text-green" />
               <Command.Input
                 data-testid="palette-input"
                 autoFocus

@@ -1,6 +1,6 @@
-import { Plus, Table2, X } from "lucide-react";
+import { IconTable, IconX } from "@tabler/icons-react";
 import { useState } from "react";
-import { closeTab, openSqlTab } from "../features/editor/runActions";
+import { closeTab } from "../features/editor/runActions";
 import type { TabId } from "../ipc/bindings";
 import { useLive } from "../state/live";
 import { hasUncommittedWork } from "../state/status";
@@ -30,14 +30,14 @@ function TabItem({ id }: { id: TabId }) {
       }}
       onDoubleClick={() => tab.kind === "sql" && setEditing(true)}
       className={cx(
-        "group relative flex h-full max-w-[240px] min-w-0 shrink-0 cursor-default items-center gap-2 border-r border-border pr-2 pl-3.5",
-        active ? "bg-raised text-fg" : "text-dim hover:text-muted",
+        "group relative flex h-7 max-w-[240px] min-w-0 shrink-0 cursor-default items-center gap-2 rounded-md pr-1 pl-2.5",
+        active ? "bg-pill text-fg" : "text-dim hover:bg-hover hover:text-muted",
       )}
     >
       {tab.kind === "sql" ? (
         <span className="font-mono text-[9.5px] font-bold tracking-tight text-badge">SQL</span>
       ) : (
-        <Table2 size={14} className="shrink-0 text-muted" />
+        <IconTable size={14} className="shrink-0 text-muted" />
       )}
       {editing ? (
         <input
@@ -73,7 +73,7 @@ function TabItem({ id }: { id: TabId }) {
             active && !dirty ? "visible" : "invisible group-hover:visible",
           )}
         >
-          <X size={13} />
+          <IconX size={13} />
         </button>
       </span>
     </div>
@@ -83,19 +83,10 @@ function TabItem({ id }: { id: TabId }) {
 export function TabBar() {
   const order = useWorkspace((s) => s.order);
   return (
-    <div role="tablist" className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-border [scrollbar-width:none]">
+    <div role="tablist" className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto px-2 [scrollbar-width:none]">
       {order.map((id) => (
         <TabItem key={id} id={id} />
       ))}
-      <button
-        type="button"
-        data-testid="new-tab"
-        aria-label="New SQL tab"
-        onClick={() => openSqlTab()}
-        className="grid w-10 shrink-0 place-items-center text-muted hover:text-fg"
-      >
-        <Plus size={16} />
-      </button>
     </div>
   );
 }

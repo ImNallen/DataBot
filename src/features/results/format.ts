@@ -41,6 +41,29 @@ function scaleTo(n: number, base: number): string {
   return String(Math.abs(scaled) >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10);
 }
 
+const digits = (v: number) => groupDigits(String(v));
+
+function totalLabel(last: number, shortPage: boolean, estimate: number | null, exactRowCount: number | undefined): string {
+  if (exactRowCount !== undefined) return digits(exactRowCount);
+  if (shortPage) return digits(last);
+  if (estimate !== null && estimate > last) return `~${digits(estimate)}`;
+  return `${digits(last)}+`;
+}
+
+export function pageStatus(
+  page: number,
+  size: number,
+  rows: number,
+  estimate: number | null,
+  exactRowCount: number | undefined,
+): { label: string; isLast: boolean } {
+  const first = page * size;
+  const last = first + rows;
+  const isLast = exactRowCount !== undefined ? last >= exactRowCount : rows < size;
+  if (rows === 0) return { label: `0 of ${digits(exactRowCount ?? first)}`, isLast };
+  return { label: `${digits(first + 1)}–${digits(last)} of ${totalLabel(last, rows < size, estimate, exactRowCount)}`, isLast };
+}
+
 export function formatElapsed(ms: number): string {
   if (ms < 1000) return `${ms} ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;

@@ -81,7 +81,7 @@ describe("shownResult", () => {
 
 describe("workspace snapshot", () => {
   const tabs: Tab[] = [
-    { kind: "sql", id: "a", title: "Untitled-2.sql", console: { connectionId: "c", schema: "public", mode: "Manual" } },
+    { kind: "sql", id: "a", title: "Untitled-2.sql", console: { connectionId: "c", schema: null, mode: "Manual" } },
     { kind: "table", id: "b", connectionId: "c", schema: "public", table: "orders", page: 3 },
   ];
   const state = {
@@ -97,6 +97,11 @@ describe("workspace snapshot", () => {
     expect(snap.tabs[1]).toMatchObject({ kind: "Sql", text: "-- text of a", console: { mode: "Manual" } });
     expect(snap.tabs.map(tabFromSnapshot)).toEqual([tabs[1], tabs[0]]);
     expect(snap.layout).toEqual(state.layout);
+  });
+
+  it("drops the per-tab schema saved by older versions, since consoles span the whole database", () => {
+    const old = { kind: "Sql" as const, id: "a", title: "q.sql", text: "", console: { connectionId: "c", schema: "lab", mode: "AutoCommit" as const } };
+    expect(tabFromSnapshot(old)).toEqual({ kind: "sql", id: "a", title: "q.sql", console: { connectionId: "c", schema: null, mode: "AutoCommit" } });
   });
 
   it("numbers new tabs after the highest Untitled", () => {

@@ -1,4 +1,11 @@
-import { PanelBottom, PanelLeft, PanelRight } from "lucide-react";
+import {
+  IconLayoutBottombar,
+  IconLayoutBottombarFilled,
+  IconLayoutSidebar,
+  IconLayoutSidebarFilled,
+  IconLayoutSidebarRight,
+  IconLayoutSidebarRightFilled,
+} from "@tabler/icons-react";
 import { useWorkspace } from "../state/workspace";
 import { IconButton } from "../ui/primitives";
 import { WindowControls } from "./WindowChrome";
@@ -13,6 +20,17 @@ export function windowLeadingInset(hosted: HostedWindow | null): string {
   return hosted?.chrome === "native" ? "pl-[86px]" : "pl-3";
 }
 
+const PANEL_ICONS = {
+  left: { hidden: IconLayoutSidebar, shown: IconLayoutSidebarFilled },
+  right: { hidden: IconLayoutSidebarRight, shown: IconLayoutSidebarRightFilled },
+  bottom: { hidden: IconLayoutBottombar, shown: IconLayoutBottombarFilled },
+};
+
+function PanelIcon({ side, shown }: { side: keyof typeof PANEL_ICONS; shown: boolean }) {
+  const Icon = PANEL_ICONS[side][shown ? "shown" : "hidden"];
+  return <Icon size={16} />;
+}
+
 // Lives in whichever header touches the window's left edge, so it never moves when the sidebar opens or closes.
 export function SidebarToggle() {
   const sidebar = useWorkspace((s) => s.layout.sidebar);
@@ -21,11 +39,10 @@ export function SidebarToggle() {
     <IconButton
       data-testid="toggle-sidebar"
       aria-label="Toggle sidebar"
-      active={sidebar}
       className="shrink-0"
       onClick={() => setLayout({ sidebar: !sidebar })}
     >
-      <PanelLeft size={16} />
+      <PanelIcon side="left" shown={sidebar} />
     </IconButton>
   );
 }
@@ -40,18 +57,16 @@ export function WindowEdgeActions({ hosted }: { hosted: HostedWindow | null }) {
       <IconButton
         data-testid="toggle-results"
         aria-label="Toggle results"
-        active={results}
         onClick={() => setLayout({ results: !results })}
       >
-        <PanelBottom size={16} />
+        <PanelIcon side="bottom" shown={results} />
       </IconButton>
       <IconButton
         data-testid="toggle-right-panel"
         aria-label="Toggle right panel"
-        active={rightPanel !== null}
         onClick={() => setLayout({ rightPanel: rightPanel ? null : "Assistant" })}
       >
-        <PanelRight size={16} />
+        <PanelIcon side="right" shown={rightPanel !== null} />
       </IconButton>
       {hosted?.chrome === "custom" && (
         <>

@@ -1,4 +1,4 @@
-import { Minus, Square, X } from "lucide-react";
+import { IconMinus, IconSquare, IconX } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import { cx } from "../ui/primitives";
 import type { CustomChrome, ResizeEdge, WindowControl } from "./hostedWindow";
@@ -13,10 +13,10 @@ function RestoreGlyph() {
 }
 
 function ControlGlyph({ control, maximized }: { control: WindowControl; maximized: boolean }) {
-  if (control === "minimize") return <Minus size={14} />;
-  if (control === "close") return <X size={14} />;
+  if (control === "minimize") return <IconMinus size={14} />;
+  if (control === "close") return <IconX size={14} />;
   if (maximized) return <RestoreGlyph />;
-  return <Square size={11} />;
+  return <IconSquare size={11} />;
 }
 
 const CONTROL: Record<WindowControl, { label: (maximized: boolean) => string; run: (hosted: CustomChrome) => Promise<void> }> = {

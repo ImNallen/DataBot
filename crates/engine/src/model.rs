@@ -668,6 +668,13 @@ pub enum ResultError {
 
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum CountError {
+    NotConnected,
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum ExportError {
     Gone,
     Io { message: String },

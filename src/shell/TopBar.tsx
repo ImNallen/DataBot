@@ -1,29 +1,12 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { ChevronDown, Play, RefreshCw, Square } from "lucide-react";
-import { cancelActive, endTransaction, runActive, setTabConnection, setTabSchema } from "../features/editor/runActions";
-import { useCatalog } from "../state/catalog";
+import { IconPlayerPlayFilled, IconPlayerStopFilled } from "@tabler/icons-react";
+import { cancelActive, endTransaction, runActive, setTabConnection } from "../features/editor/runActions";
 import { useLive } from "../state/live";
 import { connectionStatus, hasUncommittedWork, isRunning } from "../state/status";
 import { tabConnectionId, tabLabel, useWorkspace } from "../state/workspace";
-import { Button, Kbd, MenuContent, MenuItem, MenuLabel, PgBadge, StatusDot, cx } from "../ui/primitives";
+import { Button, Kbd, MenuContent, MenuItem, MenuLabel, StatusDot, cx } from "../ui/primitives";
 import { SidebarToggle, WindowEdgeActions, windowEdgeInset, windowLeadingInset } from "./WindowEdgeActions";
 import type { HostedWindow } from "./hostedWindow";
-
-function Dropdown({ children, testId, label, disabled }: { children: React.ReactNode; testId: string; label: React.ReactNode; disabled?: boolean }) {
-  return (
-    <Menu.Root modal={false}>
-      <Menu.Trigger
-        data-testid={testId}
-        disabled={disabled}
-        className="inline-flex h-8 items-center gap-2 rounded-lg border border-control px-2.5 text-[13px] text-fg outline-none hover:bg-hover disabled:opacity-40 data-[state=open]:bg-hover"
-      >
-        {label}
-        <ChevronDown size={14} className="text-muted" />
-      </Menu.Trigger>
-      {children}
-    </Menu.Root>
-  );
-}
 
 export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
   const tab = useWorkspace((s) => (s.active ? s.tabs[s.active] : undefined));
@@ -32,25 +15,21 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
   const connectionId = tabConnectionId(tab);
   const liveConsole = useLive((s) => (tab ? s.consoles[tab.id] : undefined));
   const connections = useLive((s) => s.connections);
-  const catalog = useCatalog((s) => (connectionId ? s.views[connectionId]?.catalog : undefined));
   const config = connectionId ? configs[connectionId] : undefined;
   const running = isRunning(liveConsole);
   const sql = tab?.kind === "sql" ? tab : undefined;
-  const schema = sql ? (sql.console.schema ?? "public") : tab?.kind === "table" ? tab.schema : null;
-  const database = catalog?.database ?? config?.database;
 
   return (
     <header
       data-tauri-drag-region="deep"
       className={cx(
-        "flex h-[52px] shrink-0 items-center gap-2 border-b border-border",
+        "flex h-[52px] shrink-0 items-center gap-2",
         windowEdgeInset(hosted),
         layout.sidebar ? "pl-4" : windowLeadingInset(hosted),
       )}
     >
       {!layout.sidebar && <SidebarToggle />}
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <PgBadge />
         {sql ? (
           <Menu.Root modal={false}>
             <Menu.Trigger data-testid="tab-connection" className="truncate rounded px-0.5 text-[14px] text-dim outline-none hover:text-fg">
@@ -77,27 +56,6 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
         )}
       </div>
 
-      {sql && (
-        <Dropdown
-          testId="schema-picker"
-          disabled={!catalog}
-          label={
-            <span className="flex items-baseline gap-1.5">
-              <span className="text-dim">Schema</span>
-              <span>{database ? `${database}.${schema}` : schema}</span>
-            </span>
-          }
-        >
-          <MenuContent>
-            {catalog?.schemas.map((s) => (
-              <MenuItem key={s.name} checked={s.name === schema} onSelect={() => void setTabSchema(sql.id, s.name)}>
-                {s.name}
-                <span className="ml-auto pl-4 text-[11.5px] text-dim">{s.relations.length}</span>
-              </MenuItem>
-            ))}
-          </MenuContent>
-        </Dropdown>
-      )}
 
       {sql && hasUncommittedWork(liveConsole) && (
         <>
@@ -113,14 +71,14 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
       {tab &&
         (running ? (
           <Button data-testid="cancel-btn" className="w-[104px] justify-center bg-hover" onClick={() => cancelActive()}>
-            <Square size={10} fill="currentColor" className="text-muted" />
+            <IconPlayerStopFilled size={10} className="text-muted" />
             Cancel
             <Kbd className="bg-control text-muted">Esc</Kbd>
           </Button>
         ) : (
           <Button data-testid="run-btn" variant="primary" className="w-[104px] justify-center pr-2 pl-2.5 font-medium" onClick={() => runActive()}>
-            {tab.kind === "table" ? <RefreshCw size={13} /> : <Play size={13} fill="currentColor" className="text-green" />}
-            {tab.kind === "table" ? "Reload" : "Run"}
+            <IconPlayerPlayFilled size={13} className="text-green" />
+            Run
             <Kbd className="bg-white/15 text-[#dbe5fd]">⌘↵</Kbd>
           </Button>
         ))}

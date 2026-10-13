@@ -12,6 +12,7 @@ export const commands = {
 	connectionDisconnect: (id: ConnectionId, force: boolean) => typedError<null, DisconnectError>(__TAURI_INVOKE("connection_disconnect", { id, force })),
 	catalogGet: (id: ConnectionId) => typedError<Catalog, NotConnected>(__TAURI_INVOKE("catalog_get", { id })),
 	catalogRefresh: (id: ConnectionId) => typedError<number, NotConnected>(__TAURI_INVOKE("catalog_refresh", { id })),
+	exactRowCount: (id: ConnectionId, schema: string, table: string) => typedError<number, CountError>(__TAURI_INVOKE("exact_row_count", { id, schema, table })),
 	consoleConfigure: (tabId: TabId, config: ConsoleConfig) => typedError<ConsoleState, ConfigureError>(__TAURI_INVOKE("console_configure", { tabId, config })),
 	consoleRun: (tabId: TabId, request: RunRequest) => typedError<RunAccepted, RunError>(__TAURI_INVOKE("console_run", { tabId, request })),
 	consoleCancel: (tabId: TabId) => __TAURI_INVOKE<void>("console_cancel", { tabId }),
@@ -145,6 +146,8 @@ export type ConsoleState = {
 	txn: TxnState,
 	run: RunState,
 };
+
+export type CountError = { kind: "NotConnected" } | { kind: "Failed"; message: string };
 
 export type DisconnectError = { kind: "OpenTransactions"; tabs: OpenTxn[] } | { kind: "Store"; message: string };
 

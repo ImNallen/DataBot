@@ -1,4 +1,4 @@
-import { Check, CircleAlert } from "lucide-react";
+import { IconAlertCircle, IconCheck } from "@tabler/icons-react";
 import { useState } from "react";
 import { commands, type ConnectionConfig, type ConnectionDraft, type PasswordInput, type SslMode } from "../../ipc/bindings";
 import { connectErrorText } from "../../ipc/errors";
@@ -176,12 +176,12 @@ function ConnectionForm({ existing, onDone }: { existing: ConnectionConfig | und
         )}
         {probe.kind === "ok" && (
           <span className="flex items-center gap-1.5 text-fg">
-            <Check size={14} className="text-green" /> Connected to PostgreSQL {probe.version}
+            <IconCheck size={14} className="text-green" /> Connected to PostgreSQL {probe.version}
           </span>
         )}
         {probe.kind === "error" && (
           <span className="flex items-start gap-1.5 text-danger">
-            <CircleAlert size={14} className="mt-0.5 shrink-0" /> {probe.message}
+            <IconAlertCircle size={14} className="mt-0.5 shrink-0" /> {probe.message}
           </span>
         )}
         {saveError && <span className="text-danger">{saveError}</span>}

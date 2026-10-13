@@ -1,8 +1,9 @@
 import type { Completion } from "@codemirror/autocomplete";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { create } from "zustand";
+import { sqlIdent } from "../features/editor/sqlIdent";
 import { shortType } from "../features/results/format";
-import { commands, type Catalog, type ConnectionId, type RelKind, type Relation } from "../ipc/bindings";
+import { commands, type Catalog, type ColumnSource, type ConnectionId, type RelKind, type Relation } from "../ipc/bindings";
 
 export type SearchItem =
   | { kind: "table" | "view"; label: string; connectionId: ConnectionId; schema: string; relation: string; detail: string }
@@ -12,6 +13,7 @@ export type SearchItem =
 export type CatalogView = {
   catalog: Catalog;
   completion: SQLNamespace;
+  qualifiedTables: Completion[];
   searchItems: SearchItem[];
   relationsById: Map<number, { schema: string; rel: Relation }>;
 };
@@ -22,6 +24,7 @@ export function isViewKind(kind: RelKind): boolean {
 
 export function buildCatalogView(catalog: Catalog): CatalogView {
   const completion: Record<string, SQLNamespace> = {};
+  const qualifiedTables: Completion[] = [];
   const relationsById = new Map<number, { schema: string; rel: Relation }>();
   const relations: SearchItem[] = [];
   const views: SearchItem[] = [];
@@ -38,6 +41,12 @@ export function buildCatalogView(catalog: Catalog): CatalogView {
         self: { label: rel.name, type: view ? "type" : "class", detail: view ? "view" : "table" },
         children: rel.columns.map((c): Completion => ({ label: c.name, type: "property", detail: shortType(c.typeDisplay) })),
       };
+      qualifiedTables.push({
+        label: `${schema.name}.${rel.name}`,
+        apply: `${sqlIdent(schema.name)}.${sqlIdent(rel.name)}`,
+        type: view ? "type" : "class",
+        detail: view ? "view" : "table",
+      });
       (view ? views : relations).push({
         kind: view ? "view" : "table",
         label: rel.name,
@@ -71,7 +80,12 @@ export function buildCatalogView(catalog: Catalog): CatalogView {
     completion[schema.name] = tables;
   }
 
-  return { catalog, completion, searchItems: [...relations, ...views, ...functions, ...columns], relationsById };
+  return { catalog, completion, qualifiedTables, searchItems: [...relations, ...views, ...functions, ...columns], relationsById };
+}
+
+export function isPrimaryKey(view: CatalogView | undefined, source: ColumnSource | null): boolean {
+  if (!view || !source) return false;
+  return view.relationsById.get(source.tableOid)?.rel.columns.find((c) => c.attnum === source.attnum)?.pk ?? false;
 }
 
 type CatalogStore = {

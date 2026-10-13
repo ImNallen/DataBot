@@ -55,6 +55,12 @@ pub async fn catalog_refresh(engine: State<'_, Arc<Engine>>, id: ConnectionId) -
 
 #[tauri::command]
 #[specta::specta]
+pub async fn exact_row_count(engine: State<'_, Arc<Engine>>, id: ConnectionId, schema: String, table: String) -> Result<u64, CountError> {
+    engine.exact_row_count(id, schema, table).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn console_configure(engine: State<'_, Arc<Engine>>, tab_id: TabId, config: ConsoleConfig) -> Result<ConsoleState, ConfigureError> {
     engine.console_configure(tab_id, config).await
 }
