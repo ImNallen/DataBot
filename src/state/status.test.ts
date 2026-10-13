@@ -88,7 +88,7 @@ describe("workspace snapshot", () => {
     tabs: Object.fromEntries(tabs.map((t) => [t.id, t])),
     order: ["b", "a"],
     active: "a",
-    layout: { sidebar: true, results: false, rightPanel: "History" as const, resultsHeight: 280 },
+    layout: { sidebar: true, results: false, rightPanel: "History" as const, resultsHeight: 280, sidebarWidth: 256, rightPanelWidth: 341 },
   };
 
   it("round-trips tabs in order with text read from the editor", () => {

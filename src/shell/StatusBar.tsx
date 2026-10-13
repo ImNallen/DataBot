@@ -1,7 +1,12 @@
+import * as Menu from "@radix-ui/react-dropdown-menu";
+import type { TxnMode } from "../ipc/bindings";
+import { setTabMode } from "../features/editor/runActions";
 import { useLive } from "../state/live";
 import { connectionStatus } from "../state/status";
 import { tabConnectionId, useWorkspace } from "../state/workspace";
-import { StatusDot } from "../ui/primitives";
+import { MenuContent, MenuItem, StatusDot } from "../ui/primitives";
+
+const MODE_LABEL: Record<TxnMode, string> = { AutoCommit: "Auto-commit", Manual: "Manual" };
 
 export function StatusBar() {
   const tab = useWorkspace((s) => (s.active ? s.tabs[s.active] : undefined));
@@ -29,10 +34,23 @@ export function StatusBar() {
       <span className="flex-1" />
       {tab?.kind === "sql" && <span>{`Ln ${cursor.line}, Col ${cursor.col}`}</span>}
       <span>UTF-8</span>
-      <span>
-        {mode === "Manual" ? "Manual" : "Auto-commit"}
-        {mode === "Manual" && txn && txn !== "Idle" && <span className={txn === "Aborted" ? "text-danger" : "text-fg"}> · {txn === "Aborted" ? "aborted" : "in transaction"}</span>}
-      </span>
+      {tab?.kind === "sql" ? (
+        <Menu.Root modal={false}>
+          <Menu.Trigger data-testid="tx-mode" className="-mx-1.5 rounded px-1.5 py-0.5 outline-none hover:bg-hover hover:text-fg data-[state=open]:bg-hover">
+            {MODE_LABEL[mode]}
+            {mode === "Manual" && txn && txn !== "Idle" && <span className={txn === "Aborted" ? "text-danger" : "text-fg"}> · {txn === "Aborted" ? "aborted" : "in transaction"}</span>}
+          </Menu.Trigger>
+          <MenuContent align="end">
+            {(["AutoCommit", "Manual"] as const).map((m) => (
+              <MenuItem key={m} testId={`tx-mode-${m}`} checked={m === mode} onSelect={() => void setTabMode(tab.id, m)}>
+                {MODE_LABEL[m]}
+              </MenuItem>
+            ))}
+          </MenuContent>
+        </Menu.Root>
+      ) : (
+        <span>{MODE_LABEL[mode]}</span>
+      )}
     </footer>
   );
 }

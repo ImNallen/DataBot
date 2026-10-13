@@ -1,75 +1,108 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { Sidebar } from "../features/sidebar/Sidebar";
+import { useWorkspace } from "../state/workspace";
+import { AppLayout } from "./AppLayout";
+import { RightPanel } from "./RightPanel";
 import { ResizeEdges, WindowControlButtons } from "./WindowChrome";
 import { TopBar } from "./TopBar";
-import { appTitleAlign, hostedWindow, windowControlOrder, windowControlSide, type HostedWindow } from "./hostedWindow";
+import { hostedWindow, type CustomChrome } from "./hostedWindow";
 
-function fakeHost(side: HostedWindow["side"]): HostedWindow {
-  return {
-    side,
-    minimize: async () => {},
-    toggleMaximize: async () => {},
-    close: async () => {},
-    maximized: async () => false,
-    onResize: async () => () => {},
-    startResize: async () => {},
-  };
+const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
+const WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+const LINUX = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36";
+
+const fakeHost: CustomChrome = {
+  chrome: "custom",
+  minimize: async () => {},
+  toggleMaximize: async () => {},
+  close: async () => {},
+  maximized: async () => false,
+  onResize: async () => () => {},
+  startResize: async () => {},
+};
+
+function inTauri(userAgent: string) {
+  vi.stubGlobal("isTauri", true);
+  vi.stubGlobal("window", { __TAURI_INTERNALS__: { metadata: { currentWindow: { label: "main" } } } });
+  vi.stubGlobal("navigator", { userAgent });
 }
 
-it("keeps DataBot centered on macOS and pins it to the left on Windows and Linux", () => {
-  expect(appTitleAlign("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15")).toBe("center");
-  expect(appTitleAlign("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")).toBe("start");
-  expect(appTitleAlign("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")).toBe("start");
+const { layout: initialLayout, tabs: initialTabs, active: initialActive } = useWorkspace.getInitialState();
 
-  const mac = renderToStaticMarkup(<Sidebar titleAlign="center" />);
-  expect(mac).toContain("DataBot");
-  expect(mac).toContain('data-align="center"');
-  expect(mac).toContain("justify-center");
-
-  const linux = renderToStaticMarkup(<Sidebar titleAlign="start" />);
-  expect(linux).toContain("DataBot");
-  expect(linux).toContain('data-align="start"');
-  expect(linux).toContain("justify-start");
-  expect(linux).not.toContain("justify-center");
+afterEach(() => {
+  vi.unstubAllGlobals();
+  Object.assign(useWorkspace.getInitialState(), { layout: initialLayout, tabs: initialTabs, active: initialActive });
 });
 
-it("puts window buttons on the left on macOS and on the right elsewhere", () => {
-  expect(windowControlSide("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15")).toBe("left");
-  expect(windowControlSide("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")).toBe("right");
-  expect(windowControlSide("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")).toBe("right");
+// Static rendering reads zustand's server snapshot, which is the store's initial state, so setState can't reach it.
+function withLayout(patch: Partial<typeof initialLayout>) {
+  Object.assign(useWorkspace.getInitialState(), { layout: { ...initialLayout, ...patch } });
+}
+
+const controlOrder = (html: string) => html.match(/data-testid="window-(?:minimize|maximize|close)"/g);
+
+it("lets the window be dragged from the sidebar header", () => {
+  expect(renderToStaticMarkup(<Sidebar hosted={null} />)).toContain('data-tauri-drag-region="deep"');
 });
 
-it("orders buttons the way that side of the window does", () => {
-  expect(windowControlOrder("left")).toEqual(["close", "minimize", "maximize"]);
-  expect(windowControlOrder("right")).toEqual(["minimize", "maximize", "close"]);
+it("leaves macOS to its native traffic lights and resizing", () => {
+  inTauri(MAC);
+  expect(hostedWindow(MAC)).toEqual({ chrome: "native" });
+
+  const topBar = renderToStaticMarkup(<TopBar hosted={hostedWindow(MAC)} />);
+  expect(topBar).toContain('data-tauri-drag-region="deep"');
+  expect(topBar).not.toContain('data-testid="window-controls"');
+
+  const layout = renderToStaticMarkup(<AppLayout />);
+  expect(layout).not.toContain("window-resize-");
+  expect(layout).not.toContain('data-testid="window-controls"');
 });
 
-it("has no hosted window in the browser", () => {
-  expect(hostedWindow("Mozilla/5.0 (X11; Linux x86_64)")).toBeNull();
-});
+it.each([
+  ["Windows", WINDOWS],
+  ["Linux", LINUX],
+])("draws minimize, maximize, and close at the right of the toolbar on %s", (_os, userAgent) => {
+  inTauri(userAgent);
+  const hosted = hostedWindow(userAgent);
+  expect(hosted?.chrome).toBe("custom");
 
-it("draws minimize, maximize, and close, with restore once the window is maximized", () => {
-  const restored = renderToStaticMarkup(<WindowControlButtons hosted={fakeHost("right")} maximized={false} />);
-  expect(restored.match(/data-testid="window-(?:minimize|maximize|close)"/g)).toEqual([
+  const topBar = renderToStaticMarkup(<TopBar hosted={hosted} />);
+  expect(controlOrder(topBar)).toEqual([
     'data-testid="window-minimize"',
     'data-testid="window-maximize"',
     'data-testid="window-close"',
   ]);
+  expect(topBar.indexOf('data-testid="toggle-right-panel"')).toBeLessThan(topBar.indexOf('data-testid="window-controls"'));
+
+  expect(renderToStaticMarkup(<AppLayout />)).toContain('data-testid="window-resize-North"');
+});
+
+it("has no hosted window in the browser, so the toolbar stays draggable with no window buttons", () => {
+  expect(hostedWindow(MAC)).toBeNull();
+  expect(hostedWindow(LINUX)).toBeNull();
+
+  const html = renderToStaticMarkup(<TopBar hosted={null} />);
+  expect(html).toContain('data-tauri-drag-region="deep"');
+  expect(html).not.toContain('data-testid="window-controls"');
+});
+
+it("labels the maximize button Restore once the window is maximized", () => {
+  const restored = renderToStaticMarkup(<WindowControlButtons hosted={fakeHost} maximized={false} />);
   expect(restored).toContain('aria-label="Maximize"');
   expect(restored).toContain("hover:bg-danger");
 
-  const maximized = renderToStaticMarkup(<WindowControlButtons hosted={fakeHost("left")} maximized={true} />);
-  expect(maximized.match(/data-testid="window-(?:minimize|maximize|close)"/g)).toEqual([
-    'data-testid="window-close"',
+  const maximized = renderToStaticMarkup(<WindowControlButtons hosted={fakeHost} maximized={true} />);
+  expect(controlOrder(maximized)).toEqual([
     'data-testid="window-minimize"',
     'data-testid="window-maximize"',
+    'data-testid="window-close"',
   ]);
   expect(maximized).toContain('aria-label="Restore"');
 });
 
 it("gives the frameless window a resize edge on every side and corner", () => {
-  const html = renderToStaticMarkup(<ResizeEdges hosted={fakeHost("right")} />);
+  const html = renderToStaticMarkup(<ResizeEdges hosted={fakeHost} />);
   expect(html.match(/data-testid="window-resize-[A-Za-z]+"/g)).toEqual([
     'data-testid="window-resize-North"',
     'data-testid="window-resize-South"',
@@ -82,12 +115,156 @@ it("gives the frameless window a resize edge on every side and corner", () => {
   ]);
 });
 
-it("keeps the toolbar draggable and hides window buttons outside Tauri", () => {
-  const html = renderToStaticMarkup(<TopBar hosted={null} />);
-  expect(html).toContain('data-tauri-drag-region="deep"');
-  expect(html).not.toContain('data-testid="window-controls"');
+const TOGGLE = 'data-testid="toggle-right-panel"';
+const CONTROLS = 'data-testid="window-controls"';
+const RESULTS = 'data-testid="toggle-results"';
 
-  const hosted = renderToStaticMarkup(<TopBar hosted={fakeHost("right")} />);
-  expect(hosted).toContain('data-testid="window-controls"');
-  expect(hosted.indexOf('data-testid="toggle-right-panel"')).toBeLessThan(hosted.indexOf('data-testid="window-controls"'));
+it("keeps the right-panel toggle in the top bar while the panel is closed", () => {
+  withLayout({ rightPanel: null });
+  const topBar = renderToStaticMarkup(<TopBar hosted={null} />);
+  expect(topBar).toContain(TOGGLE);
+  expect(topBar.indexOf(RESULTS)).toBeLessThan(topBar.indexOf(TOGGLE));
+});
+
+it("moves the right-panel toggle into the open panel's header in place of a close button", () => {
+  withLayout({ rightPanel: "Assistant" });
+  const topBar = renderToStaticMarkup(<TopBar hosted={null} />);
+  expect(topBar).not.toContain(TOGGLE);
+  expect(topBar).not.toContain(RESULTS);
+
+  const panel = renderToStaticMarkup(<RightPanel hosted={null} />);
+  expect(panel).toContain(TOGGLE);
+  expect(panel.indexOf(RESULTS)).toBeLessThan(panel.indexOf(TOGGLE));
+  expect(panel).not.toContain('aria-label="Close panel"');
+  expect(panel).toContain('data-tauri-drag-region="deep"');
+});
+
+it("holds the Assistant placeholder in the right panel, with no query history", () => {
+  withLayout({ rightPanel: "Assistant" });
+  const panel = renderToStaticMarkup(<RightPanel hosted={null} />);
+  expect(panel).toContain(">Assistant</span>");
+  expect(panel).toContain("AI chat is coming soon.");
+  expect(panel).not.toMatch(/history/i);
+});
+
+it("insets the toggle from the window edge by the same amount in either header", () => {
+  for (const hosted of [null, { chrome: "native" } as const, fakeHost]) {
+    withLayout({ rightPanel: null });
+    const topBarInset = renderToStaticMarkup(<TopBar hosted={hosted} />).match(/<header[^>]*class="[^"]*\b(pr-\d)\b/)?.[1];
+    withLayout({ rightPanel: "Assistant" });
+    const panelInset = renderToStaticMarkup(<RightPanel hosted={hosted} />).match(/data-tauri-drag-region="deep" class="[^"]*\b(pr-\d)\b/)?.[1];
+    expect(panelInset).toBe(topBarInset);
+    expect(topBarInset).toBe(hosted?.chrome === "custom" ? "pr-2" : "pr-3");
+  }
+});
+
+it("keeps the custom window controls after the toggle in whichever header holds it", () => {
+  withLayout({ rightPanel: null });
+  const closed = renderToStaticMarkup(<TopBar hosted={fakeHost} />);
+  expect(closed).toContain(CONTROLS);
+  expect(closed.indexOf(TOGGLE)).toBeLessThan(closed.indexOf(CONTROLS));
+
+  withLayout({ rightPanel: "Assistant" });
+  expect(renderToStaticMarkup(<TopBar hosted={fakeHost} />)).not.toContain(CONTROLS);
+  const open = renderToStaticMarkup(<RightPanel hosted={fakeHost} />);
+  expect(controlOrder(open)).toEqual(['data-testid="window-minimize"', 'data-testid="window-maximize"', 'data-testid="window-close"']);
+  expect(open.indexOf(TOGGLE)).toBeLessThan(open.indexOf(CONTROLS));
+});
+
+const SIDEBAR_TOGGLE = 'data-testid="toggle-sidebar"';
+const leadingInset = (html: string) => html.match(/data-tauri-drag-region="deep" class="[^"]*\b(pl-\S+?)(?=[\s"])/)?.[1];
+
+it("puts the sidebar toggle before the app title while the sidebar is open, and keeps it out of the top bar", () => {
+  withLayout({ sidebar: true });
+  const sidebar = renderToStaticMarkup(<Sidebar hosted={null} />);
+  expect(sidebar).toContain(SIDEBAR_TOGGLE);
+  expect(sidebar.indexOf(SIDEBAR_TOGGLE)).toBeLessThan(sidebar.indexOf('data-testid="app-title"'));
+  expect(renderToStaticMarkup(<TopBar hosted={null} />)).not.toContain(SIDEBAR_TOGGLE);
+});
+
+it("leads the top bar with the sidebar toggle once the sidebar is hidden", () => {
+  withLayout({ sidebar: false });
+  const topBar = renderToStaticMarkup(<TopBar hosted={null} />);
+  expect(topBar.match(/<(?:button|a|input)\b[^>]*/)?.[0]).toContain(SIDEBAR_TOGGLE);
+});
+
+it("insets the sidebar toggle from the window's left edge by the same amount in either header", () => {
+  for (const hosted of [null, { chrome: "native" } as const, fakeHost]) {
+    withLayout({ sidebar: true });
+    const sidebarInset = leadingInset(renderToStaticMarkup(<Sidebar hosted={hosted} />));
+    withLayout({ sidebar: false });
+    const topBarInset = leadingInset(renderToStaticMarkup(<TopBar hosted={hosted} />));
+    expect(topBarInset).toBe(sidebarInset);
+    expect(topBarInset).toBe(hosted?.chrome === "native" ? "pl-[86px]" : "pl-3");
+  }
+});
+
+const SIDEBAR_RESIZE = /<div[^>]*data-testid="sidebar-resize"[^>]*>(.*?)<\/div><\/div>/;
+
+it("puts a labelled resize handle with a centered pill on the open sidebar's edge", () => {
+  withLayout({ sidebar: true });
+  const html = renderToStaticMarkup(<AppLayout />);
+  const separator = html.match(SIDEBAR_RESIZE);
+  expect(separator?.[0]).toContain('role="separator"');
+  expect(separator?.[0]).toContain('aria-label="Resize sidebar"');
+  expect(separator?.[1]).toContain("rounded-full");
+  expect(html.indexOf('data-testid="app-title"')).toBeLessThan(html.indexOf('data-testid="sidebar-resize"'));
+});
+
+it("drops the sidebar resize handle while the sidebar is hidden", () => {
+  withLayout({ sidebar: false });
+  const html = renderToStaticMarkup(<AppLayout />);
+  expect(html).not.toContain('data-testid="sidebar-resize"');
+  expect(html).not.toContain('aria-label="Resize sidebar"');
+});
+
+const handle = (html: string, id: string) =>
+  html.match(new RegExp(`<div[^>]*data-testid="${id}"[^>]*>(.*?)</div></div>`));
+
+function withSqlTab() {
+  const tab = { kind: "sql", id: "t1", title: "Untitled-1.sql", console: { connectionId: null, schema: null, mode: "AutoCommit" } } as const;
+  Object.assign(useWorkspace.getInitialState(), { tabs: { t1: tab }, active: "t1" });
+}
+
+it("puts the same pill handle on the line above the results, laid flat", () => {
+  withSqlTab();
+  withLayout({ results: true });
+  const html = renderToStaticMarkup(<AppLayout />);
+  const results = handle(html, "results-resize");
+  expect(results?.[0]).toContain('aria-label="Resize results"');
+  expect(results?.[0]).toContain("h-px");
+  expect(results?.[1]).toContain("rounded-full");
+  expect(results?.[1]).toContain("h-[5px] w-8");
+  expect(html.indexOf('data-testid="results-resize"')).toBeLessThan(html.indexOf('data-testid="results"'));
+});
+
+it("drops the results handle along with the results", () => {
+  withSqlTab();
+  withLayout({ results: false });
+  const html = renderToStaticMarkup(<AppLayout />);
+  expect(html).toContain('data-testid="editor"');
+  expect(html).not.toContain('data-testid="results-resize"');
+  expect(html).not.toContain('aria-label="Resize results"');
+});
+
+it("makes the open right panel a resizable panel after the main area, behind its own pill handle", () => {
+  withLayout({ rightPanel: "Assistant" });
+  const html = renderToStaticMarkup(<AppLayout />);
+  const right = handle(html, "right-panel-resize");
+  expect(right?.[0]).toContain('role="separator"');
+  expect(right?.[0]).toContain('aria-label="Resize right panel"');
+  expect(right?.[1]).toContain("h-8 w-[5px]");
+  const order = ['data-testid="main"', 'data-testid="right-panel-resize"', 'data-testid="right"', 'data-testid="right-panel"'].map((m) =>
+    html.indexOf(m),
+  );
+  expect(order.every((at) => at >= 0)).toBe(true);
+  expect(order).toEqual([...order].sort((a, b) => a - b));
+});
+
+it("drops the right panel and its handle while the panel is closed", () => {
+  withLayout({ rightPanel: null });
+  const html = renderToStaticMarkup(<AppLayout />);
+  expect(html).not.toContain('data-testid="right-panel-resize"');
+  expect(html).not.toContain('aria-label="Resize right panel"');
+  expect(html).not.toContain('data-testid="right-panel"');
 });

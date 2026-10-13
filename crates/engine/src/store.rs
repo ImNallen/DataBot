@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::model::{ConnectionConfig, ConnectionId, HistoryEntry, HistoryOutcome, HistoryPage, HistoryQuery};
+use crate::secrets::Sealed;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -19,7 +20,8 @@ pub enum StoreError {
 
 pub const HISTORY_KEEP: i64 = 10_000;
 
-const MIGRATIONS: [&str; 1] = ["
+const MIGRATIONS: [&str; 2] = [
+    "
     CREATE TABLE connections (id TEXT PRIMARY KEY, json TEXT NOT NULL);
     CREATE TABLE history (
         id INTEGER PRIMARY KEY,
@@ -33,7 +35,9 @@ const MIGRATIONS: [&str; 1] = ["
     );
     CREATE INDEX history_connection ON history (connection_id, id);
     CREATE TABLE kv (key TEXT PRIMARY KEY, json TEXT NOT NULL);
-"];
+",
+    "CREATE TABLE secrets (connection_id TEXT PRIMARY KEY, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL);",
+];
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -85,7 +89,37 @@ impl Store {
 
     pub fn delete_connection(&self, id: ConnectionId) -> Result<(), StoreError> {
         self.with(|c| {
-            c.execute("DELETE FROM connections WHERE id = ?1", [id.0.to_string()])?;
+            let tx = c.unchecked_transaction()?;
+            tx.execute("DELETE FROM connections WHERE id = ?1", [id.0.to_string()])?;
+            tx.execute("DELETE FROM secrets WHERE connection_id = ?1", [id.0.to_string()])?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    pub fn secret(&self, id: ConnectionId) -> Result<Option<Sealed>, StoreError> {
+        self.with(|c| {
+            Ok(c.query_row("SELECT nonce, ciphertext FROM secrets WHERE connection_id = ?1", [id.0.to_string()], |r| {
+                Ok(Sealed { nonce: r.get(0)?, ciphertext: r.get(1)? })
+            })
+            .optional()?)
+        })
+    }
+
+    pub fn set_secret(&self, id: ConnectionId, sealed: &Sealed) -> Result<(), StoreError> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO secrets (connection_id, nonce, ciphertext) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (connection_id) DO UPDATE SET nonce = excluded.nonce, ciphertext = excluded.ciphertext",
+                params![id.0.to_string(), sealed.nonce, sealed.ciphertext],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn delete_secret(&self, id: ConnectionId) -> Result<(), StoreError> {
+        self.with(|c| {
+            c.execute("DELETE FROM secrets WHERE connection_id = ?1", [id.0.to_string()])?;
             Ok(())
         })
     }

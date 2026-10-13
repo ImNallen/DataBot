@@ -15,7 +15,8 @@ Verified constraints the design honors:
 - `tokio-postgres` 0.7.18 has `CancelToken` and a streaming `simple_query_raw`. Its `SimpleColumn` exposes only `name()`, so no type OIDs come back from the simple protocol. `Statement::columns()` from `prepare` gives `Type` (custom enum and composite names resolved) plus `table_oid()` and `column_id()`. `SimpleQueryMessage::CommandComplete(u64)` carries a row count, not the textual tag.
 - `sqlx` has no server-side cancel request.
 - `tauri-specta` 2.0.0-rc.25 generates typed commands and events and supports `tauri::ipc::Channel` arguments.
-- `keyring` 4.2 (default feature `v1`) provides `Entry::new(service, user)`, `set_password`, `get_password`, and `delete_credential`.
+- `keyring` 4.2 (default feature `v1`) provides `Entry::new(service, user)`, `set_secret`, and `get_secret`, backed by Keychain on macOS, Credential Manager on Windows, and Secret Service on Linux.
+- `chacha20poly1305` 0.10 provides `XChaCha20Poly1305`, which seals saved passwords.
 - `@codemirror/lang-sql` ships a `PostgreSQL` dialect and schema-aware completion (`schema`, `defaultSchema`).
 - `tauri-driver` does not support macOS. `@wdio/tauri-service` with the embedded provider (`tauri-plugin-wdio-webdriver` 1.5.0) does.
 
@@ -80,7 +81,7 @@ await commands.resultExportCsv(meta.ref, path); // Rust writes from its own buff
 ```rust
 #[tokio::test]
 async fn manual_tab_isolated_until_commit() -> anyhow::Result<()> {
-    let h = Harness::start().await?;                 // Engine on tmp dir + MemorySecrets + Docker PG (:5433)
+    let h = Harness::start().await?;                 // Engine on tmp dir + MemoryKeyStore + Docker PG (:5433)
     let a = h.sql_tab(Mode::Manual).await?;
     let b = h.sql_tab(Mode::AutoCommit).await?;
     h.run_ok(a, "insert into customers(name, region) values ('t', 'EU-West')").await?;
@@ -342,9 +343,9 @@ Each command is one line delegating to `Engine`. tauri-specta uses `ErrorHandlin
 | Command | Request | Response | Notes |
 |---|---|---|---|
 | `app_boot` | – | `BootSnapshot` | Idempotent. Safe after a webview reload because live consoles survive. |
-| `connection_save` | `ConnectionDraft` | `Result<ConnectionConfig, SaveError>` | Upsert. Writes the secret to the keychain before the config row. |
-| `connection_delete` | `ConnectionId` | `Result<(), DisconnectError>` | Disconnects (refuses on open txns), deletes row and secret. |
-| `connection_test` | `ConnectionDraft` | `Result<ServerInfo, ConnectError>` | `PasswordInput::Keep` reads the stored secret. |
+| `connection_save` | `ConnectionDraft` | `Result<ConnectionConfig, SaveError>` | Upsert. Seals a set password and writes it before the config row. Reads the keychain only when a password is set. |
+| `connection_delete` | `ConnectionId` | `Result<(), DisconnectError>` | Disconnects (refuses on open txns), deletes the config row and sealed password together. Never touches the keychain. |
+| `connection_test` | `ConnectionDraft` | `Result<ServerInfo, ConnectError>` | `PasswordInput::Keep` opens the sealed password, if one is stored. |
 | `connection_connect` | `ConnectionId` | `Result<ServerInfo, ConnectError>` | Idempotent. Opens the metadata session and loads the catalog. |
 | `connection_disconnect` | `ConnectionId, force: bool` | `Result<(), DisconnectError>` | `OpenTransactions { tabs: Vec<(TabId, bool /*has_writes*/)> }` unless forced. |
 | `catalog_get` | `ConnectionId` | `Result<Catalog, NotConnected>` | Whole snapshot, fetched on `CatalogChanged`. |
@@ -389,9 +390,9 @@ Table data tabs need no extra command. A table tab sends `RunRequest::TablePage`
 ### Engine (crates/engine/src/lib.rs, the deep module)
 
 ```rust
-pub struct Engine { /* store, secrets, settings, connections, consoles, events, next_run */ }
+pub struct Engine { /* store, vault, settings, connections, consoles, events, next_run */ }
 
-pub struct EngineConfig { pub data_dir: PathBuf, pub secrets: Arc<dyn SecretStore> }
+pub struct EngineConfig { pub data_dir: PathBuf, pub keys: Arc<dyn KeyStore> }
 
 impl Engine {
     pub async fn open(cfg: EngineConfig) -> Result<Arc<Self>, StoreError>;   // opens SQLite, runs migrations
@@ -607,8 +608,9 @@ Everything lives under `app_data_dir()` (override with `DATABOT_DATA_DIR` in deb
 - `connections(id TEXT PK, json TEXT)`. Configs only.
 - `history(id INTEGER PK, at_ms, connection_id, connection_name, database, sql, elapsed_ms, outcome_json)`, indexed on `(connection_id, id)`. Search is `LIKE`; FTS5 can come later. Pruned to the newest 10,000 entries on insert.
 - `kv(key TEXT PK, json TEXT)`. Holds `workspace` and `settings`.
+- `secrets(connection_id TEXT PK, nonce BLOB, ciphertext BLOB)`. One sealed password per connection.
 
-Passwords are stored as keychain entries with service `dev.databot.app` and user `connection:<uuid>`, behind `trait SecretStore { get, set, delete }`. There are two implementations: `KeyringSecrets` and `MemorySecrets`. The second exists for tests and e2e, selected by `DATABOT_SECRET_STORE=memory` in debug builds only. SQLite access is a `std::sync::Mutex<rusqlite::Connection>`. Writes are single-row and sub-millisecond, so they run inline.
+The OS credential store holds one item, a random 32-byte master key, with service `dev.databot.app` and user `master-key`. macOS therefore asks for keychain access once, not once per connection. Each password is sealed with XChaCha20-Poly1305 under that key, with a random nonce and the connection id as associated data, and the result is stored in the `secrets` table. All passwords do not go into one keychain item because Windows Credential Manager caps an item at 2560 bytes. The first saved password creates the key. Reading a password never creates one. If the key is missing or a password fails to open (wiped keychain, copied data dir, memory store restart), the connection behaves as if it had no password, and the user enters it again at the `MissingPassword` prompt. `trait KeyStore { load, save }` has two implementations: `KeyringKeyStore` and `MemoryKeyStore`. The second exists for tests and e2e, selected by `DATABOT_SECRET_STORE=memory` in debug builds only. SQLite access is a `std::sync::Mutex<rusqlite::Connection>`. Writes are single-row and sub-millisecond, so they run inline.
 
 ### Repo layout
 
@@ -627,7 +629,7 @@ crates/engine/
   src/results.rs              # Arena, pages, CSV writer
   src/catalog.rs              # 4 catalog queries -> Catalog
   src/store.rs                # SQLite: migrations, connections, history, kv
-  src/secrets.rs              # SecretStore + Keyring/Memory
+  src/secrets.rs              # Vault + KeyStore (Keyring/Memory)
   tests/                      # pg-tests feature: Harness + scenario files
 src-tauri/
   src/main.rs                 # builder, specta export, event forwarder task, plugins
@@ -641,7 +643,7 @@ src/                          # frontend
   features/connections/ConnectionDialog.tsx
   features/editor/{SqlEditor,editorStates,runActions,completion}.ts(x)
   features/results/{ResultsPane,ResultGrid,OutputLog,format}.ts(x)
-  features/history/HistoryPanel.tsx
+  features/history/{HistoryPalette.tsx,historyList.ts}
 crates/dev-bridge/             # bin (not shipped): axum on 127.0.0.1:7077, POST /invoke/:cmd + GET /events (SSE)
 src/dev/bridgeShim.ts         # loaded only in vite dev outside Tauri: mockIPC -> fetch, SSE -> emit("app-event")
 dev/{docker-compose.yml,seed.sql}   # shop + lab.type_zoo, already committed
@@ -658,7 +660,7 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - `txn_after`: every transition in a table test
    - `OffsetMap`: emoji and CJK before the error
    - `type_ref` alias table, `synthesize_tag`, arena paging, CSV quoting
-2. **Engine against real Postgres** (`pnpm db:up && cargo test -p engine --features pg-tests`). `Harness` uses `MemorySecrets`, a temp data dir, and `DATABOT_TEST_PG` (default `postgres://databot:databot@localhost:5433/shop`). Scenarios:
+2. **Engine against real Postgres** (`pnpm db:up && cargo test -p engine --features pg-tests`). `Harness` uses `MemoryKeyStore`, a temp data dir, and `DATABOT_TEST_PG` (default `postgres://databot:databot@localhost:5433/shop`). Scenarios:
    - connect reports a 16.x server version
    - catalog of `shop` contains the mockup's tables with PKs and estimates after `ANALYZE`
    - every `lab.type_zoo` cell equals Postgres's own text output: numeric, timestamptz, interval, json/jsonb, int[], text[], bytea, uuid, inet, enum, point, range, NULL
@@ -678,7 +680,7 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - catalog → `SQLNamespace` and search items
    - `RowCache` page math
 4. **Contract drift**: a `src-tauri` test (`export_bindings_up_to_date`) renders bindings to a string and asserts equality with `src/ipc/bindings.ts`. A second test asserts the dev-bridge dispatch table covers exactly the registered command names.
-5. **UI against the real engine** (`pnpm bridge`). `crates/dev-bridge` hosts the same `Engine` (MemorySecrets, temp `DATABOT_DATA_DIR`) behind `POST /invoke/:cmd` and an SSE stream of `AppEvent`. In vite dev outside Tauri, `src/dev/bridgeShim.ts` installs `mockIPC` from `@tauri-apps/api/mocks` (with `shouldMockEvents`) that forwards every command to the bridge and re-emits SSE frames as `app-event`. The generated bindings run unchanged. An agent drives it with agent-browser or Playwright, selecting by `data-testid`:
+5. **UI against the real engine** (`pnpm bridge`). `crates/dev-bridge` hosts the same `Engine` (MemoryKeyStore, temp `DATABOT_DATA_DIR`) behind `POST /invoke/:cmd` and an SSE stream of `AppEvent`. In vite dev outside Tauri, `src/dev/bridgeShim.ts` installs `mockIPC` from `@tauri-apps/api/mocks` (with `shouldMockEvents`) that forwards every command to the bridge and re-emits SSE frames as `app-event`. The generated bindings run unchanged. An agent drives it with agent-browser or Playwright, selecting by `data-testid`:
    - create connection via the dialog, test it, save it, and see "Live" plus `customers 18.4k`-style estimates in the tree
    - ⌘P "ord it" opens `order_items`; the table tab shows 500 rows
    - new tab: type the mockup query, ⌘↵, see status "6 rows ·", headers `region text`, `orders bigint`, right-aligned numbers
@@ -732,7 +734,7 @@ Scaffold phase (workspace, contract, shell, dev-bridge, frontend skeleton). Each
 - **`DisconnectError::OpenTransactions { tabs: Vec<OpenTxn> }`**, where `OpenTxn { tabId, hasWrites }` replaces the `(TabId, bool)` tuple, so the frontend reads a named field instead of a positional boolean.
 - **Error types the design named but did not define:**
   - `SaveError` is `Invalid | Keychain | Store`, each with a `message`.
-  - `DisconnectError` also has `Keychain` and `Store`, for `connection_delete`.
+  - `DisconnectError` also has `Store`, for `connection_delete`.
   - `NotConnected` is `{ connectionId }`.
   - `ConfigureError` is `TransactionOpen | Busy | UnknownConnection`.
   - `ExportError` is `Gone | Io { message }`.
@@ -744,8 +746,8 @@ Scaffold phase (workspace, contract, shell, dev-bridge, frontend skeleton). Each
 - **Dispatch coverage source.** The dev-bridge test parses the generated `bindings.ts`, not a hand-kept constant. The drift test already proves that file equals the Tauri registration. The test compares command names and camelCase argument names.
 - **Dev-bridge protocol.** The route is `/invoke/{cmd}` (axum 0.8 path syntax). A command's own result is 200 `{status:"ok",data}` or 200 `{status:"error",error}`. An unknown command (404), bad argument (400), or engine panic (500) returns `{message}`, and the shim throws it as a real `Error`, so `typedError` rethrows instead of returning a typed error. The body is parsed as JSON whatever the content-type, so a bare `curl -d '{}'` works. `DATABOT_DATA_DIR` overrides the bridge's temporary data directory.
 - **Window creation.** The `main` window is declared in `tauri.conf.json` with `"create": false` and built in `setup`, so `DATABOT_SELF_CHECK=1` runs without a window. The self-check prints `{"ok":false,...,"connect":{"status":"notImplemented"}}` and exits 1 until the engine phase adds the connect, `SELECT 1`, and catalog steps.
-- **Window chrome.** `decorations` is false. The toolbar is the drag region, and the webview draws the resize edges and the window buttons. `hostedWindow()` returns null in the dev-bridge browser, so those controls stay hidden there. The sidebar title stays centered on macOS. On Windows and Linux it sits on the left.
-- **Engine additions.** `Engine::data_dir()` lets the self-check report and the bridge log show the directory in use. `KeyringSecrets` and `MemorySecrets` are implemented, not stubbed, and `SecretStore` is keyed by `ConnectionId`.
+- **Window chrome.** On macOS, `main.rs` turns decorations back on with an overlay title bar and a hidden title. The native traffic lights sit over the sidebar header, and macOS handles resizing. On Windows and Linux, `tauri.conf.json` sets `decorations` to false, and the webview draws the resize edges and the minimize, maximize, and close buttons at the right of the toolbar. The toolbar and the sidebar header are drag regions on every platform. `hostedWindow()` returns `{ chrome: "native" }` on macOS, the custom controls elsewhere, and null in the dev-bridge browser, where no window controls show. The sidebar toggle leads whichever header touches the window's left edge. That is the sidebar header while the sidebar is open and the toolbar while it is hidden. `windowLeadingInset()` gives both headers the same left padding, so the toggle stays put. On macOS that padding clears the traffic lights. The "DataBot" title follows the toggle on every platform.
+- **Engine additions.** `Engine::data_dir()` lets the self-check report and the bridge log show the directory in use. `KeyringKeyStore` and `MemoryKeyStore` are implemented, not stubbed, and sealed passwords are keyed by `ConnectionId`.
 - **Defaults the design left open.** `Settings::default()` sets `stop_on_error: true`. `Layout::default()` is sidebar and results shown, no right panel, and `results_height: 320`.
 - **Fonts** come from `@fontsource-variable/inter` and `@fontsource-variable/jetbrains-mono`, the variable-axis builds of the Fontsource packages.
 

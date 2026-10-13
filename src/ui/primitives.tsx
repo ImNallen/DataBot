@@ -73,6 +73,10 @@ export function IconButton({ className, active, ...rest }: ButtonHTMLAttributes<
   );
 }
 
+export function DialogBackdrop() {
+  return <Dialog.Overlay className="fixed inset-0 z-40 bg-[#1f1f1f]/50 backdrop-blur-[6px]" />;
+}
+
 export function MenuContent({ children, align = "start" }: { children: ReactNode; align?: "start" | "end" }) {
   return (
     <Menu.Portal>
@@ -143,7 +147,7 @@ export function Modal({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
+        <DialogBackdrop />
         <Dialog.Content
           data-testid={testId}
           style={{ width }}

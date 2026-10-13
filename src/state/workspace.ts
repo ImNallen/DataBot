@@ -19,6 +19,7 @@ export type RelationRef = { connectionId: ConnectionId; schema: string; relation
 export type Overlay =
   | { kind: "none" }
   | { kind: "palette" }
+  | { kind: "history" }
   | { kind: "connection"; editing: ConnectionId | null }
   | { kind: "settings" }
   | { kind: "cell"; title: string; value: string | null }
@@ -38,7 +39,7 @@ export type WorkspaceData = {
   cursor: { line: number; col: number };
 };
 
-const DEFAULT_LAYOUT: Layout = { sidebar: true, results: true, rightPanel: null, resultsHeight: 320 };
+const DEFAULT_LAYOUT: Layout = { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341 };
 const DEFAULT_SETTINGS: Settings = { maxRows: 200_000, maxResultBytes: 512 * 1024 * 1024, tablePageSize: 500, stopOnError: true };
 
 export function tabFromSnapshot(t: TabSnapshot): Tab {
@@ -125,7 +126,7 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
       tabs: Object.fromEntries(tabs.map((t) => [t.id, t])),
       order,
       active: w.active && order.includes(w.active) ? w.active : (order[0] ?? null),
-      layout: { ...w.layout, rightPanel: w.layout.rightPanel === "Assistant" ? "Schema" : w.layout.rightPanel },
+      layout: { ...w.layout, rightPanel: w.layout.rightPanel && "Assistant" },
       configs: Object.fromEntries(connections.map((c) => [c.id, c])),
       settings,
     });

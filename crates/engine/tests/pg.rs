@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use engine::model::*;
-use engine::{Engine, EngineConfig, MemorySecrets, draft_from_url};
+use engine::{Engine, EngineConfig, MemoryKeyStore, draft_from_url};
 use futures_util::TryStreamExt;
 use tokio::sync::broadcast;
 use tokio_postgres::NoTls;
@@ -33,7 +33,7 @@ impl Harness {
     }
 
     async fn start_in(dir: tempfile::TempDir) -> Self {
-        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), secrets: Arc::new(MemorySecrets::default()) })
+        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(MemoryKeyStore::default()) })
             .await
             .unwrap();
         let events = engine.subscribe();

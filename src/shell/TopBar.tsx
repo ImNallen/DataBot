@@ -1,16 +1,13 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { ChevronDown, PanelBottom, PanelRight, Play, RefreshCw, Square } from "lucide-react";
-import type { TxnMode } from "../ipc/bindings";
-import { cancelActive, endTransaction, runActive, setTabConnection, setTabMode, setTabSchema } from "../features/editor/runActions";
+import { ChevronDown, Play, RefreshCw, Square } from "lucide-react";
+import { cancelActive, endTransaction, runActive, setTabConnection, setTabSchema } from "../features/editor/runActions";
 import { useCatalog } from "../state/catalog";
 import { useLive } from "../state/live";
 import { connectionStatus, hasUncommittedWork, isRunning } from "../state/status";
 import { tabConnectionId, tabLabel, useWorkspace } from "../state/workspace";
-import { Button, IconButton, Kbd, MenuContent, MenuItem, MenuLabel, PgBadge, StatusDot, cx } from "../ui/primitives";
-import { WindowControls } from "./WindowChrome";
+import { Button, Kbd, MenuContent, MenuItem, MenuLabel, PgBadge, StatusDot, cx } from "../ui/primitives";
+import { SidebarToggle, WindowEdgeActions, windowEdgeInset, windowLeadingInset } from "./WindowEdgeActions";
 import type { HostedWindow } from "./hostedWindow";
-
-const MODE_LABEL: Record<TxnMode, string> = { AutoCommit: "Auto-commit", Manual: "Manual" };
 
 function Dropdown({ children, testId, label, disabled }: { children: React.ReactNode; testId: string; label: React.ReactNode; disabled?: boolean }) {
   return (
@@ -32,7 +29,6 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
   const tab = useWorkspace((s) => (s.active ? s.tabs[s.active] : undefined));
   const configs = useWorkspace((s) => s.configs);
   const layout = useWorkspace((s) => s.layout);
-  const setLayout = useWorkspace((s) => s.setLayout);
   const connectionId = tabConnectionId(tab);
   const liveConsole = useLive((s) => (tab ? s.consoles[tab.id] : undefined));
   const connections = useLive((s) => s.connections);
@@ -41,7 +37,6 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
   const running = isRunning(liveConsole);
   const sql = tab?.kind === "sql" ? tab : undefined;
   const schema = sql ? (sql.console.schema ?? "public") : tab?.kind === "table" ? tab.schema : null;
-  const mode = sql?.console.mode ?? "AutoCommit";
   const database = catalog?.database ?? config?.database;
 
   return (
@@ -49,15 +44,11 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
       data-tauri-drag-region="deep"
       className={cx(
         "flex h-[52px] shrink-0 items-center gap-2 border-b border-border",
-        hosted?.side === "left" ? "pr-3 pl-2" : hosted ? "pr-2 pl-4" : "pr-3 pl-4",
+        windowEdgeInset(hosted),
+        layout.sidebar ? "pl-4" : windowLeadingInset(hosted),
       )}
     >
-      {hosted?.side === "left" && (
-        <>
-          <WindowControls hosted={hosted} />
-          <div className="mx-1 h-5 w-px bg-border" />
-        </>
-      )}
+      {!layout.sidebar && <SidebarToggle />}
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <PgBadge />
         {sql ? (
@@ -108,18 +99,6 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
         </Dropdown>
       )}
 
-      {sql && (
-        <Dropdown testId="tx-mode" label={MODE_LABEL[mode]}>
-          <MenuContent>
-            {(["AutoCommit", "Manual"] as const).map((m) => (
-              <MenuItem key={m} testId={`tx-mode-${m}`} checked={m === mode} onSelect={() => void setTabMode(sql.id, m)}>
-                {MODE_LABEL[m]}
-              </MenuItem>
-            ))}
-          </MenuContent>
-        </Dropdown>
-      )}
-
       {sql && hasUncommittedWork(liveConsole) && (
         <>
           <Button data-testid="commit-btn" disabled={running} onClick={() => void endTransaction(sql.id, "commit")}>
@@ -146,27 +125,10 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
           </Button>
         ))}
 
-      <div className="mx-1 h-5 w-px bg-border" />
-      <IconButton
-        data-testid="toggle-results"
-        aria-label="Toggle results"
-        active={layout.results}
-        onClick={() => setLayout({ results: !layout.results })}
-      >
-        <PanelBottom size={16} />
-      </IconButton>
-      <IconButton
-        data-testid="toggle-right-panel"
-        aria-label="Toggle right panel"
-        active={layout.rightPanel !== null}
-        onClick={() => setLayout({ rightPanel: layout.rightPanel ? null : "Schema" })}
-      >
-        <PanelRight size={16} />
-      </IconButton>
-      {hosted?.side === "right" && (
+      {layout.rightPanel === null && (
         <>
           <div className="mx-1 h-5 w-px bg-border" />
-          <WindowControls hosted={hosted} />
+          <WindowEdgeActions hosted={hosted} />
         </>
       )}
     </header>

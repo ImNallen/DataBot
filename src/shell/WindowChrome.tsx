@@ -1,12 +1,7 @@
 import { Minus, Square, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cx } from "../ui/primitives";
-import {
-  windowControlOrder,
-  type HostedWindow,
-  type ResizeEdge,
-  type WindowControl,
-} from "./hostedWindow";
+import type { CustomChrome, ResizeEdge, WindowControl } from "./hostedWindow";
 
 function RestoreGlyph() {
   return (
@@ -24,16 +19,18 @@ function ControlGlyph({ control, maximized }: { control: WindowControl; maximize
   return <Square size={11} />;
 }
 
-const CONTROL: Record<WindowControl, { label: (maximized: boolean) => string; run: (hosted: HostedWindow) => Promise<void> }> = {
+const CONTROL: Record<WindowControl, { label: (maximized: boolean) => string; run: (hosted: CustomChrome) => Promise<void> }> = {
   minimize: { label: () => "Minimize", run: (hosted) => hosted.minimize() },
   maximize: { label: (maximized) => (maximized ? "Restore" : "Maximize"), run: (hosted) => hosted.toggleMaximize() },
   close: { label: () => "Close", run: (hosted) => hosted.close() },
 };
 
-export function WindowControlButtons({ hosted, maximized }: { hosted: HostedWindow; maximized: boolean }) {
+const ORDER: readonly WindowControl[] = ["minimize", "maximize", "close"];
+
+export function WindowControlButtons({ hosted, maximized }: { hosted: CustomChrome; maximized: boolean }) {
   return (
-    <div className="flex items-center" data-testid="window-controls" data-side={hosted.side}>
-      {windowControlOrder(hosted.side).map((control) => (
+    <div className="flex items-center" data-testid="window-controls">
+      {ORDER.map((control) => (
         <button
           key={control}
           type="button"
@@ -53,7 +50,7 @@ export function WindowControlButtons({ hosted, maximized }: { hosted: HostedWind
   );
 }
 
-export function WindowControls({ hosted }: { hosted: HostedWindow }) {
+export function WindowControls({ hosted }: { hosted: CustomChrome }) {
   const [maximized, setMaximized] = useState(false);
   useEffect(() => {
     let current = true;
@@ -88,7 +85,7 @@ const EDGES: { edge: ResizeEdge; className: string }[] = [
   { edge: "SouthEast", className: "right-0 bottom-0 size-2 cursor-nwse-resize" },
 ];
 
-export function ResizeEdges({ hosted }: { hosted: HostedWindow }) {
+export function ResizeEdges({ hosted }: { hosted: CustomChrome }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-30">
       {EDGES.map(({ edge, className }) => (

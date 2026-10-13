@@ -146,7 +146,7 @@ export type ConsoleState = {
 	run: RunState,
 };
 
-export type DisconnectError = { kind: "OpenTransactions"; tabs: OpenTxn[] } | { kind: "Keychain"; message: string } | { kind: "Store"; message: string };
+export type DisconnectError = { kind: "OpenTransactions"; tabs: OpenTxn[] } | { kind: "Store"; message: string };
 
 /**  UTF-16 code-unit offset into the editor document as sent in `RunRequest::Script.text`. */
 export type DocOffset = number;
@@ -204,6 +204,8 @@ export type Layout = {
 	results: boolean,
 	rightPanel: RightPanel | null,
 	resultsHeight: number,
+	sidebarWidth: number,
+	rightPanelWidth: number,
 };
 
 export type NotConnected = {

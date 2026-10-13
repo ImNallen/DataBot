@@ -2,7 +2,6 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type WindowControl = "minimize" | "maximize" | "close";
-export type WindowControlSide = "left" | "right";
 export type ResizeEdge =
   | "North"
   | "South"
@@ -13,22 +12,12 @@ export type ResizeEdge =
   | "SouthEast"
   | "SouthWest";
 
-export function windowControlSide(userAgent: string): WindowControlSide {
-  return /Macintosh|Mac OS X/.test(userAgent) ? "left" : "right";
+function isMac(userAgent: string): boolean {
+  return /Macintosh|Mac OS X/.test(userAgent);
 }
 
-export type AppTitleAlign = "center" | "start";
-
-export function appTitleAlign(userAgent: string): AppTitleAlign {
-  return windowControlSide(userAgent) === "left" ? "center" : "start";
-}
-
-export function windowControlOrder(side: WindowControlSide): readonly WindowControl[] {
-  return side === "left" ? ["close", "minimize", "maximize"] : ["minimize", "maximize", "close"];
-}
-
-export type HostedWindow = {
-  side: WindowControlSide;
+export type CustomChrome = {
+  chrome: "custom";
   minimize(): Promise<void>;
   toggleMaximize(): Promise<void>;
   close(): Promise<void>;
@@ -37,11 +26,14 @@ export type HostedWindow = {
   startResize(edge: ResizeEdge): Promise<void>;
 };
 
+export type HostedWindow = { chrome: "native" } | CustomChrome;
+
 export function hostedWindow(userAgent?: string): HostedWindow | null {
   if (!isTauri()) return null;
+  if (isMac(userAgent ?? navigator.userAgent)) return { chrome: "native" };
   const win = getCurrentWindow();
   return {
-    side: windowControlSide(userAgent ?? navigator.userAgent),
+    chrome: "custom",
     minimize: () => win.minimize(),
     toggleMaximize: () => win.toggleMaximize(),
     close: () => win.close(),

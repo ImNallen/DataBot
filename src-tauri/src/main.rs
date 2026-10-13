@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use engine::model::AppEvent;
-use engine::{Engine, EngineConfig, KeyringSecrets, MemorySecrets, SecretStore};
+use engine::{Engine, EngineConfig, KeyStore, KeyringKeyStore, MemoryKeyStore};
 use specta_typescript::Typescript;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -58,11 +58,11 @@ fn engine_config(app: &tauri::App) -> Result<EngineConfig, Box<dyn Error>> {
         Some(dir) => dir.into(),
         None => app.path().app_data_dir()?,
     };
-    let secrets: Arc<dyn SecretStore> = match debug_env("DATABOT_SECRET_STORE").as_deref() {
-        Some("memory") => Arc::new(MemorySecrets::default()),
-        _ => Arc::new(KeyringSecrets),
+    let keys: Arc<dyn KeyStore> = match debug_env("DATABOT_SECRET_STORE").as_deref() {
+        Some("memory") => Arc::new(MemoryKeyStore::default()),
+        _ => Arc::new(KeyringKeyStore),
     };
-    Ok(EngineConfig { data_dir, secrets })
+    Ok(EngineConfig { data_dir, keys })
 }
 
 fn forward_events(app: AppHandle, mut events: broadcast::Receiver<AppEvent>) {
@@ -163,7 +163,15 @@ fn main() {
                 return Ok(());
             }
             forward_events(app.handle().clone(), engine.subscribe());
-            WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?.build()?;
+            let window = WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?;
+            // macOS keeps the native traffic lights over the webview; Windows and Linux draw their own chrome.
+            #[cfg(target_os = "macos")]
+            let window = window
+                .decorations(true)
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .traffic_light_position(tauri::LogicalPosition::new(18.0, 28.0));
+            window.build()?;
             Ok(())
         })
         .run(tauri::generate_context!())
