@@ -1,7 +1,7 @@
 import { Clock, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { useWorkspace } from "../../state/workspace";
 import { cx, IconButton, Kbd } from "../../ui/primitives";
-import type { AppTitleAlign } from "../../shell/windowChrome";
+import type { AppTitleAlign } from "../../shell/hostedWindow";
 import { ConnectionTree } from "./ConnectionTree";
 
 export function Sidebar({ titleAlign }: { titleAlign: AppTitleAlign }) {

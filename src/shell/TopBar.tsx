@@ -8,7 +8,7 @@ import { connectionStatus, hasUncommittedWork, isRunning } from "../state/status
 import { tabConnectionId, tabLabel, useWorkspace } from "../state/workspace";
 import { Button, IconButton, Kbd, MenuContent, MenuItem, MenuLabel, PgBadge, StatusDot, cx } from "../ui/primitives";
 import { WindowControls } from "./WindowChrome";
-import type { HostedWindow } from "./windowChrome";
+import type { HostedWindow } from "./hostedWindow";
 
 const MODE_LABEL: Record<TxnMode, string> = { AutoCommit: "Auto-commit", Manual: "Manual" };
 

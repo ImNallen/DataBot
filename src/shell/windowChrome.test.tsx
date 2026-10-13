@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { Sidebar } from "../features/sidebar/Sidebar";
 import { ResizeEdges, WindowControlButtons } from "./WindowChrome";
 import { TopBar } from "./TopBar";
-import { appTitleAlign, hostedWindow, windowControlOrder, windowControlSide, type HostedWindow } from "./windowChrome";
+import { appTitleAlign, hostedWindow, windowControlOrder, windowControlSide, type HostedWindow } from "./hostedWindow";
 
 function fakeHost(side: HostedWindow["side"]): HostedWindow {
   return {

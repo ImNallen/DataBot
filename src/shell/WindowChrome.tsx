@@ -6,7 +6,7 @@ import {
   type HostedWindow,
   type ResizeEdge,
   type WindowControl,
-} from "./windowChrome";
+} from "./hostedWindow";
 
 function RestoreGlyph() {
   return (

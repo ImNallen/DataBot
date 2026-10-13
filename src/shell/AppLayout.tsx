@@ -13,7 +13,7 @@ import { Overlays } from "./Overlays";
 import { StatusBar } from "./StatusBar";
 import { TabBar } from "./TabBar";
 import { ResizeEdges } from "./WindowChrome";
-import { appTitleAlign, hostedWindow } from "./windowChrome";
+import { appTitleAlign, hostedWindow } from "./hostedWindow";
 import { TopBar } from "./TopBar";
 
 function useGlobalKeys() {
