@@ -165,6 +165,15 @@ mod tests {
         assert_eq!(classify("copy t from stdin"), StmtKind::CopyStdio);
         assert_eq!(classify("COPY (select 1) TO STDOUT CSV"), StmtKind::CopyStdio);
         assert_eq!(classify("copy t from '/tmp/x.csv'"), StmtKind::Other("COPY".into()));
+        assert_eq!(classify("copy public.orders to stdout"), StmtKind::CopyStdio);
+        assert_eq!(classify("copy pg_temp.t from stdin"), StmtKind::CopyStdio);
+        assert_eq!(classify("copy pg_temp.t (x, y) from stdin with (format csv)"), StmtKind::CopyStdio);
+        assert_eq!(classify("COPY binary \"Shop\".\"Orders\" (id) TO STDOUT"), StmtKind::CopyStdio);
+        assert_eq!(classify("copy (select 'x' from t) to stdout"), StmtKind::CopyStdio);
+        assert_eq!(classify("copy \"stdin\" to stdout"), StmtKind::CopyStdio);
+        assert_eq!(classify("copy public.orders to '/tmp/stdout.csv'"), StmtKind::Other("COPY".into()));
+        assert_eq!(classify("copy pg_temp.t from '/tmp/stdin' with (format csv)"), StmtKind::Other("COPY".into()));
+        assert_eq!(classify("copy public.orders to program 'cat'"), StmtKind::Other("COPY".into()));
         assert_eq!(classify("vacuum analyze t"), StmtKind::NoTxnBlock("VACUUM".into()));
         assert_eq!(classify("create database x"), StmtKind::NoTxnBlock("CREATE DATABASE".into()));
         assert_eq!(classify("create index concurrently i on t (a)"), StmtKind::NoTxnBlock("CREATE INDEX".into()));

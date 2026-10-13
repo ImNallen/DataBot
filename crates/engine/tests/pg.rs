@@ -503,8 +503,11 @@ async fn schema_and_search_path_follow_the_console_config() {
     h.engine.console_configure(tab, ConsoleConfig { connection_id: h.conn, schema: Some("public".into()), mode: TxnMode::AutoCommit }).await.unwrap();
     assert_eq!(h.scalar(tab, "show search_path").await, "public");
     assert_eq!(h.scalar(tab, "show application_name").await, "DataBot");
-    let err = h.engine.console_run(tab, RunRequest::Script { text: "copy customers from stdin".into(), target: RunTarget::All }).await.unwrap_err();
-    assert!(matches!(err, RunError::Unsupported { .. }));
+    for copy in ["copy customers from stdin", "copy public.customers (id) to stdout", "copy pg_temp.nope from stdin with (format csv)"] {
+        let err = h.engine.console_run(tab, RunRequest::Script { text: copy.into(), target: RunTarget::All }).await.err();
+        assert!(matches!(err, Some(RunError::Unsupported { .. })), "{copy}: {err:?}");
+    }
+    assert_eq!(h.scalar(tab, "select 5").await, "5", "the session survived the rejected COPYs");
     assert!(matches!(h.engine.console_run(tab, RunRequest::Script { text: " -- nothing\n".into(), target: RunTarget::All }).await, Err(RunError::NoStatement)));
     h.engine.console_close(tab, false).await.unwrap();
     assert!(h.engine.boot().consoles.is_empty());
