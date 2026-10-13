@@ -2,6 +2,8 @@
 
 DataBot is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. It has a connection tree, SQL editor tabs, a results grid, an output log, and per-tab transactions. The design is in [docs/architecture.md](docs/architecture.md).
 
+![DataBot running the revenue-by-region query against the seeded shop database](docs/images/databot.png)
+
 ## Quickstart
 
 Prerequisites: Rust 1.93 or later, Node 26, pnpm, and Docker.
@@ -17,6 +19,7 @@ pnpm bridge         # dev-bridge on :7077 plus vite on :5173: the real engine fr
 
 ```sh
 cargo test --workspace   # engine units, bindings drift test, bridge coverage test
+cargo test -p engine --features pg-tests   # engine against the Docker database
 pnpm typecheck
 pnpm test                # vitest
 pnpm build               # production frontend bundle
