@@ -61,6 +61,10 @@ pub enum SessionSlot {
     },
 }
 
+/// Disconnect or close reassigned the slot while a task held the session. The task's edits no
+/// longer apply, and it must stop.
+pub struct Orphaned;
+
 impl Console {
     pub fn new(tab: TabId, config: ConsoleConfigView) -> Self {
         let inner = ConsoleInner {
@@ -143,12 +147,20 @@ impl Console {
         Some((session, stop))
     }
 
-    /// Gives the session back after a run and applies the run's final `txn`. If the slot was
-    /// reassigned meanwhile (disconnect or close) the session is dropped and the console stays Idle.
-    pub fn return_session(&self, inner: &mut ConsoleInner, run_id: RunId, session: Session, txn: TxnState, lost: Option<String>) {
+    /// The one way a task that took the session edits console state. The edit applies and is
+    /// published only while `run_id` still owns the slot; otherwise the task is `Orphaned`.
+    pub async fn edit<T>(&self, shared: &Shared, run_id: RunId, edit: impl FnOnce(&mut ConsoleInner) -> T) -> Result<T, Orphaned> {
+        let mut inner = self.inner.lock().await;
         if !matches!(inner.session, SessionSlot::InRun { run_id: r, .. } if r == run_id) {
-            return;
+            return Err(Orphaned);
         }
+        let out = edit(&mut inner);
+        self.publish(&mut inner, shared);
+        Ok(out)
+    }
+
+    /// Puts the session back after a run or a transaction command and applies its final `txn`.
+    pub fn return_session(inner: &mut ConsoleInner, session: Session, txn: TxnState, lost: Option<String>) {
         inner.txn = txn;
         inner.session = match lost {
             Some(reason) => {
@@ -159,6 +171,37 @@ impl Console {
             }
             None => SessionSlot::Idle(session),
         };
+    }
+
+    /// Cancels any run and drops the session; the console itself stays. A task holding the
+    /// session finds itself `Orphaned` at its next edit, so the run is finished here: the
+    /// statement in flight is Cancelled and the rest Skipped.
+    pub async fn drop_session(&self, shared: &Shared) {
+        let mut inner = self.inner.lock().await;
+        if let SessionSlot::InRun { cancel, stop, .. } = &inner.session {
+            stop.store(true, Ordering::Relaxed);
+            let cancel = cancel.clone();
+            tokio::spawn(async move { cancel.cancel().await });
+        }
+        inner.session = SessionSlot::Empty;
+        inner.txn = TxnState::Idle;
+        inner.ddl_pending = false;
+        if let RunState::Running { run_id, started_at_ms, statements } = &mut inner.run {
+            let mut in_flight = true;
+            for s in statements.iter_mut() {
+                if matches!(s.status, StmtStatus::Pending | StmtStatus::Preparing | StmtStatus::Rows { done: false, .. }) {
+                    s.status = if in_flight { StmtStatus::Cancelled } else { StmtStatus::Skipped };
+                    in_flight = false;
+                }
+            }
+            inner.run = RunState::Finished {
+                run_id: *run_id,
+                elapsed_ms: (now_ms() - *started_at_ms).clamp(0, u32::MAX as i64) as u32,
+                statements: std::mem::take(statements),
+                outcome: RunOutcome::Cancelled,
+            };
+        }
+        self.publish(&mut inner, shared);
     }
 
     pub fn statements_mut(inner: &mut ConsoleInner) -> &mut Vec<StatementRun> {
@@ -174,6 +217,7 @@ pub struct RunPlan {
     pub text: String,
     pub statements: Vec<PlannedStmt>,
     pub mode: TxnMode,
+    pub txn: TxnState,
     pub schema: Option<String>,
     pub connection: ConnectionConfig,
 }
@@ -198,15 +242,15 @@ fn elapsed_ms(since: Instant) -> u32 {
     since.elapsed().as_millis().min(u32::MAX as u128) as u32
 }
 
-pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: Session, plan: RunPlan, stop: Arc<AtomicBool>) {
+/// Every console write goes through `Console::edit`, so an orphaned task returns at its next
+/// write and drops the session with it.
+pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: Session, plan: RunPlan, stop: Arc<AtomicBool>) -> Result<(), Orphaned> {
     let started = Instant::now();
     let run_id = plan.run_id;
     let map = OffsetMap::new(&plan.text);
-    let (settings, mut txn) = {
-        let inner = console.inner.lock().await;
-        (shared.settings(), inner.txn)
-    };
+    let settings = shared.settings();
     let caps = Caps { max_rows: settings.max_rows, max_bytes: settings.max_result_bytes };
+    let mut txn = plan.txn;
     let mut outcome = RunOutcome::Ok;
     let mut fatal = None;
 
@@ -222,7 +266,7 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
         let stmt = &plan.statements[index];
         let i = index as u16;
         if stop.load(Ordering::Relaxed) {
-            set_status(&console, &shared, i, StmtStatus::Cancelled).await;
+            set_status(&console, &shared, run_id, i, StmtStatus::Cancelled).await?;
             outcome = RunOutcome::Cancelled;
             break;
         }
@@ -232,10 +276,8 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
             match session.client.batch_execute("BEGIN").await {
                 Ok(()) => {
                     txn = TxnState::Active;
+                    console.edit(&shared, run_id, |inner| inner.txn = txn).await?;
                     console.output(&shared, Some(run_id), OutputBody::Info { message: "BEGIN (implicit)".into() });
-                    let mut inner = console.inner.lock().await;
-                    inner.txn = txn;
-                    console.publish(&mut inner, &shared);
                 }
                 Err(e) => {
                     let error = e.as_db_error().map_or_else(|| transport_error(&e), |db| query_error(db, None));
@@ -246,8 +288,15 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
             }
         }
 
-        set_status(&console, &shared, i, StmtStatus::Preparing).await;
-        let result = match session.client.prepare(sql).await {
+        set_status(&console, &shared, run_id, i, StmtStatus::Preparing).await?;
+        let prepared = session.client.prepare(sql).await;
+        // A cancel that reached the backend while it was idle between prepare and execute is lost.
+        if prepared.is_ok() && stop.load(Ordering::Relaxed) {
+            set_status(&console, &shared, run_id, i, StmtStatus::Cancelled).await?;
+            outcome = RunOutcome::Cancelled;
+            break;
+        }
+        let result = match prepared {
             Err(e) => Err(stmt_error(e, &map, &stmt.span)),
             Ok(prepared) if prepared.columns().is_empty() => {
                 drop(prepared);
@@ -265,14 +314,15 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
                     .collect();
                 drop(prepared);
                 let set = Arc::new(ResultSet::new(ResultRef { tab_id: console.tab, run_id, index: i }, columns));
-                console.results.lock().unwrap().push(set.clone());
-                set_status(&console, &shared, i, StmtStatus::Rows { result: set.meta(), done: false }).await;
-                run_rows(&console, &shared, &mut session, sql, &set, &caps, i)
-                    .await
-                    .map_err(|e| stmt_error(e, &map, &stmt.span))
+                console
+                    .edit(&shared, run_id, |inner| {
+                        console.results.lock().unwrap().push(set.clone());
+                        Console::statements_mut(inner)[index].status = StmtStatus::Rows { result: set.meta(), done: false };
+                    })
+                    .await?;
+                run_rows(&console, &shared, &mut session, sql, &set, &caps, i).await?.map_err(|e| stmt_error(e, &map, &stmt.span))
             }
         };
-        publish_notices(&console, &shared, &mut session, run_id);
 
         let cancelled = stop.load(Ordering::Relaxed)
             && matches!(&result, Err(e) if e.sqlstate.as_deref() == Some(QUERY_CANCELED));
@@ -308,19 +358,20 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
                 (HistoryOutcome::Error { message: error.message.clone() }, 0),
             ),
         };
-        {
-            let mut inner = console.inner.lock().await;
-            inner.txn = txn;
-            Console::statements_mut(&mut inner)[index].status = status;
-            if stmt.kind.is_ddl() && result.is_ok() {
-                inner.ddl_pending = true;
-            }
-            if inner.ddl_pending && txn == TxnState::Idle {
-                inner.ddl_pending = false;
-                shared.schedule_catalog_refresh(plan.connection.id);
-            }
-            console.publish(&mut inner, &shared);
-        }
+        console
+            .edit(&shared, run_id, |inner| {
+                inner.txn = txn;
+                Console::statements_mut(inner)[index].status = status;
+                if stmt.kind.is_ddl() && result.is_ok() {
+                    inner.ddl_pending = true;
+                }
+                if inner.ddl_pending && txn == TxnState::Idle {
+                    inner.ddl_pending = false;
+                    shared.schedule_catalog_refresh(plan.connection.id);
+                }
+            })
+            .await?;
+        publish_notices(&console, &shared, &mut session, run_id);
         console.output(&shared, Some(run_id), body);
         shared.record_history(HistoryInsert {
             at_ms: now_ms(),
@@ -349,31 +400,31 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
     }
 
     let lost = session.closed_reason_settled(fatal).await;
-    let mut inner = console.inner.lock().await;
-    let statements = Console::statements_mut(&mut inner);
-    for s in statements.iter_mut().skip(index) {
-        if matches!(s.status, StmtStatus::Pending) {
-            s.status = StmtStatus::Skipped;
-        }
-    }
-    let statements = statements.clone();
-    console.return_session(&mut inner, run_id, session, txn, lost);
-    if let SessionSlot::Lost { reason, txn_lost } = &inner.session {
-        let message = if *txn_lost {
-            format!("Transaction rolled back: connection lost ({reason})")
-        } else {
-            format!("Session reset: connection lost ({reason})")
-        };
-        console.output(&shared, Some(run_id), OutputBody::Info { message });
-    }
-    inner.run = RunState::Finished { run_id, elapsed_ms: elapsed_ms(started), statements, outcome };
-    console.publish(&mut inner, &shared);
+    console
+        .edit(&shared, run_id, |inner| {
+            let statements = Console::statements_mut(inner);
+            for s in statements.iter_mut().skip(index) {
+                if matches!(s.status, StmtStatus::Pending) {
+                    s.status = StmtStatus::Skipped;
+                }
+            }
+            let statements = statements.clone();
+            if let Some(reason) = &lost {
+                let message = if txn != TxnState::Idle {
+                    format!("Transaction rolled back: connection lost ({reason})")
+                } else {
+                    format!("Session reset: connection lost ({reason})")
+                };
+                console.output(&shared, Some(run_id), OutputBody::Info { message });
+            }
+            Console::return_session(inner, session, txn, lost);
+            inner.run = RunState::Finished { run_id, elapsed_ms: elapsed_ms(started), statements, outcome };
+        })
+        .await
 }
 
-async fn set_status(console: &Console, shared: &Shared, index: u16, status: StmtStatus) {
-    let mut inner = console.inner.lock().await;
-    Console::statements_mut(&mut inner)[index as usize].status = status;
-    console.publish(&mut inner, shared);
+async fn set_status(console: &Console, shared: &Shared, run_id: RunId, index: u16, status: StmtStatus) -> Result<(), Orphaned> {
+    console.edit(shared, run_id, |inner| Console::statements_mut(inner)[index as usize].status = status).await
 }
 
 fn publish_notices(console: &Console, shared: &Shared, session: &mut Session, run_id: RunId) {
@@ -413,6 +464,7 @@ async fn run_command(session: &Session, sql: &str, kind: &StmtKind) -> Result<St
 }
 
 /// Streams text rows into the arena, publishing growth at most every `STREAM_EMIT_INTERVAL`.
+/// The outer error is the run losing its slot; the inner one is the query failing.
 async fn run_rows(
     console: &Console,
     shared: &Shared,
@@ -421,25 +473,28 @@ async fn run_rows(
     set: &Arc<ResultSet>,
     caps: &Caps,
     index: u16,
-) -> Result<StmtOk, tokio_postgres::Error> {
+) -> Result<Result<StmtOk, tokio_postgres::Error>, Orphaned> {
     let ncols = set.columns.len();
     let started = Instant::now();
-    let mut stream = std::pin::pin!(session.client.simple_query_raw(sql).await?);
+    let mut stream = match session.client.simple_query_raw(sql).await {
+        Ok(stream) => std::pin::pin!(stream),
+        Err(e) => return Ok(Err(e)),
+    };
     let mut last_emit = Instant::now();
     while let Some(message) = stream.next().await {
-        if let SimpleQueryMessage::Row(row) = message? {
-            set.push_row((0..ncols).map(|c| row.try_get(c).ok().flatten()), caps);
+        match message {
+            Ok(SimpleQueryMessage::Row(row)) => set.push_row((0..ncols).map(|c| row.try_get(c).ok().flatten()), caps),
+            Ok(_) => {}
+            Err(e) => return Ok(Err(e)),
         }
         if last_emit.elapsed() >= STREAM_EMIT_INTERVAL {
             last_emit = Instant::now();
             set.set_elapsed(elapsed_ms(started));
-            let mut inner = console.inner.lock().await;
-            Console::statements_mut(&mut inner)[index as usize].status = StmtStatus::Rows { result: set.meta(), done: false };
-            console.publish(&mut inner, shared);
-            drop(inner);
+            let status = StmtStatus::Rows { result: set.meta(), done: false };
+            console.edit(shared, set.r#ref.run_id, |inner| Console::statements_mut(inner)[index as usize].status = status).await?;
             publish_notices(console, shared, session, set.r#ref.run_id);
         }
     }
     set.set_elapsed(elapsed_ms(started));
-    Ok(StmtOk::Rows(set.clone()))
+    Ok(Ok(StmtOk::Rows(set.clone())))
 }

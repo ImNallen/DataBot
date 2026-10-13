@@ -224,37 +224,38 @@ impl Shared {
     }
 
     /// Consoles of `id` with an open transaction, with `has_writes` probed on their idle sessions.
+    /// The probe takes the session out like a run does, so the lock is not held across the query.
     async fn open_transactions(&self, consoles: &[Arc<Console>]) -> Vec<OpenTxn> {
         let mut open = Vec::new();
         for console in consoles {
-            let inner = console.inner.lock().await;
-            if inner.txn == TxnState::Idle {
-                continue;
-            }
-            let has_writes = match &inner.session {
-                SessionSlot::Idle(s) => match s.client.simple_query("SELECT pg_current_xact_id_if_assigned() IS NOT NULL").await {
-                    Ok(msgs) => msgs.iter().any(|m| matches!(m, tokio_postgres::SimpleQueryMessage::Row(r) if r.get(0) == Some("t"))),
-                    Err(_) => true,
-                },
-                _ => true,
+            let run_id = self.next_run_id();
+            let taken = {
+                let mut inner = console.inner.lock().await;
+                if inner.txn == TxnState::Idle {
+                    continue;
+                }
+                console.take_session(&mut inner, run_id)
+            };
+            let has_writes = match taken {
+                None => true,
+                Some((session, _stop)) => {
+                    let has_writes = match session.client.simple_query("SELECT pg_current_xact_id_if_assigned() IS NOT NULL").await {
+                        Ok(msgs) => msgs.iter().any(|m| matches!(m, tokio_postgres::SimpleQueryMessage::Row(r) if r.get(0) == Some("t"))),
+                        Err(_) => true,
+                    };
+                    let lost = session.closed_reason();
+                    let _ = console
+                        .edit(self, run_id, |inner| {
+                            let txn = inner.txn;
+                            Console::return_session(inner, session, txn, lost);
+                        })
+                        .await;
+                    has_writes
+                }
             };
             open.push(OpenTxn { tab_id: console.tab, has_writes });
         }
         open
-    }
-
-    /// Cancels any run and drops the session; the console itself stays.
-    async fn drop_session(&self, console: &Console) {
-        let mut inner = console.inner.lock().await;
-        if let SessionSlot::InRun { cancel, stop, .. } = &inner.session {
-            stop.store(true, Ordering::Relaxed);
-            let cancel = cancel.clone();
-            tokio::spawn(async move { cancel.cancel().await });
-        }
-        inner.session = SessionSlot::Empty;
-        inner.txn = TxnState::Idle;
-        inner.ddl_pending = false;
-        console.publish(&mut inner, self);
     }
 
     async fn console_txn_command(self: &Arc<Self>, tab: TabId, commit: bool) -> Result<(), TxnError> {
@@ -279,18 +280,19 @@ impl Shared {
         for n in session.drain_notices() {
             console.output(self, None, console::notice_body(&n));
         }
-        let mut inner = console.inner.lock().await;
         let outcome = if result.is_ok() { txn::StmtOutcome::Ok } else { txn::StmtOutcome::Err };
-        let txn = txn::txn_after(inner.txn, &kind, outcome);
-        console.return_session(&mut inner, run_id, session, txn, lost);
-        let refresh = inner.ddl_pending && inner.txn == TxnState::Idle && commit && !aborted && result.is_ok();
-        if inner.txn == TxnState::Idle {
-            inner.ddl_pending = false;
-        }
-        console.publish(&mut inner, self);
-        drop(inner);
-        if refresh {
-            let connection_id = console.inner.lock().await.config.connection_id;
+        let edited = console
+            .edit(self, run_id, |inner| {
+                let txn = txn::txn_after(inner.txn, &kind, outcome);
+                Console::return_session(inner, session, txn, lost);
+                let refresh = inner.ddl_pending && inner.txn == TxnState::Idle && commit && !aborted && result.is_ok();
+                if inner.txn == TxnState::Idle {
+                    inner.ddl_pending = false;
+                }
+                refresh.then_some(inner.config.connection_id)
+            })
+            .await;
+        if let Ok(Some(connection_id)) = edited {
             self.schedule_catalog_refresh(connection_id);
         }
         match result {
@@ -448,7 +450,7 @@ impl Engine {
             }
         }
         for c in &consoles {
-            s.drop_session(c).await;
+            c.drop_session(s).await;
         }
         if s.connection_state(id).is_some() {
             s.set_connection(id, ConnSlot::Disconnected);
@@ -557,6 +559,7 @@ impl Engine {
             }
         }
         let Some((session, stop)) = console.take_session(&mut inner, run_id) else { return Err(RunError::Busy) };
+        let txn = inner.txn;
         console.results.lock().unwrap().clear();
         inner.run = RunState::Running {
             run_id,
@@ -570,7 +573,7 @@ impl Engine {
         console.publish(&mut inner, s);
         drop(inner);
 
-        let plan = RunPlan { run_id, text, statements, mode: config.mode, schema: config.schema.clone(), connection };
+        let plan = RunPlan { run_id, text, statements, mode: config.mode, txn, schema: config.schema.clone(), connection };
         tokio::spawn(console::run_task(console.clone(), s.clone(), session, plan, stop));
         Ok(RunAccepted { run_id, statements: ranges })
     }
@@ -610,7 +613,7 @@ impl Engine {
             }
         }
         console.closed.store(true, Ordering::Relaxed);
-        s.drop_session(&console).await;
+        console.drop_session(s).await;
         s.consoles.write().unwrap().remove(&tab);
         Ok(())
     }
