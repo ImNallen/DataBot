@@ -181,9 +181,20 @@ function mapRecord<K extends string, A, B>(record: Record<K, A>, f: (a: A) => B)
   return out;
 }
 
-/** Every token from two seed colours. Callers pass validated hex; an unparsable seed reads as black. */
-export function derivePalette(appearance: Appearance, background: string, accent: string): Record<Token, string> {
+/**
+ * Every token from two seed colours, and optionally a foreground to derive text and surfaces toward.
+ * Callers pass validated hex; an unparsable seed reads as black.
+ */
+export function derivePalette(appearance: Appearance, background: string, accent: string, foreground?: string): Record<Token, string> {
   const bg = parseHex(background) ?? BLACK;
-  const seeds = { background: bg, accent: parseHex(accent) ?? BLACK, foreground: FOREGROUND[appearance](bg) };
+  const fg = (foreground && parseHex(foreground)) || FOREGROUND[appearance](bg);
+  const seeds = { background: bg, accent: parseHex(accent) ?? BLACK, foreground: fg };
   return mapRecord(RECIPES[appearance], (recipe) => formatHex(recipe(seeds)));
+}
+
+export type ThemeColors = Palette & { background: string; accent: string };
+
+/** `colors` over the palette their seeds derive. */
+export function completePalette(appearance: Appearance, colors: ThemeColors): Record<Token, string> {
+  return { ...derivePalette(appearance, colors.background, colors.accent, colors.foreground), ...colors };
 }

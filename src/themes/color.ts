@@ -68,3 +68,17 @@ export function isDark(hex: string): boolean {
   const c = parseHex(hex);
   return c !== null && luminance(c) < 0.18;
 }
+
+/** OKLab chroma: about 0 for greys, 0.1 and up for clearly coloured. */
+export function chroma(hex: string): number {
+  const c = parseHex(hex);
+  if (!c) return 0;
+  const { a, b } = toOklab(c);
+  return Math.hypot(a, b);
+}
+
+/** `top` alpha-blended onto opaque `bottom`, as the browser would paint it. */
+export function over(top: Rgba, bottom: Rgba): Rgba {
+  const blend = (t: number, b: number) => t * top.a + b * (1 - top.a);
+  return { r: blend(top.r, bottom.r), g: blend(top.g, bottom.g), b: blend(top.b, bottom.b), a: 1 };
+}

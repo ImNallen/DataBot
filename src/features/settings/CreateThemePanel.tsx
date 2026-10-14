@@ -4,7 +4,7 @@ import type { Appearance } from "../../ipc/bindings";
 import { previewTheme } from "../../shell/theme";
 import { APPEARANCE_LABEL, APPEARANCES, L1_VARIANTS, type ThemeDraft } from "../../themes/catalog";
 import { formatHex, isDark, parseHex } from "../../themes/color";
-import { derivePalette, TOKEN_NAMES, type Token } from "../../themes/palette";
+import { completePalette, TOKEN_NAMES, type Token } from "../../themes/palette";
 import { Button, cx, IconButton, inputClass } from "../../ui/primitives";
 import { addCustomThemes } from "./themeActions";
 
@@ -64,7 +64,7 @@ export function CreateThemePanel({ initial, onClose }: { initial: ThemeDraft; on
   const [draft, setDraft] = useState(initial);
   const [advanced, setAdvanced] = useState(false);
   const titleId = useId();
-  const palette = { ...derivePalette(draft.appearance, draft.colors.background, draft.colors.accent), ...draft.colors };
+  const palette = completePalette(draft.appearance, draft.colors);
   const name = draft.name.trim();
 
   useEffect(() => {

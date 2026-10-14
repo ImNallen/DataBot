@@ -1,6 +1,6 @@
 import type { Appearance, ColorScheme, CustomTheme, Settings } from "../ipc/bindings";
 import { isHex } from "./color";
-import { derivePalette, isToken, TOKEN_NAMES, type Palette } from "./palette";
+import { completePalette, derivePalette, isToken, TOKEN_NAMES, type Palette, type ThemeColors } from "./palette";
 
 export type ThemeId = string;
 
@@ -20,7 +20,7 @@ export type ThemeFamily = {
 };
 
 /** A theme not yet saved: from the create panel, a duplicate, or an import. */
-export type ThemeDraft = { name: string; appearance: Appearance; colors: Palette & { background: string; accent: string } };
+export type ThemeDraft = { name: string; appearance: Appearance; colors: ThemeColors };
 
 export const APPEARANCES = ["light", "dark"] as const satisfies readonly Appearance[];
 
@@ -67,19 +67,22 @@ export function customVariant(theme: CustomTheme): ThemeVariant {
     name: theme.name,
     appearance: theme.appearance,
     swatch,
-    palette: { ...derivePalette(theme.appearance, swatch.background, swatch.accent), ...colors },
+    palette: completePalette(theme.appearance, { ...colors, ...swatch }),
   };
 }
 
 /** A draft that reproduces `variant`, keeping only the colours its seeds don't already derive. */
 export function draftOf(variant: ThemeVariant, name: string): ThemeDraft {
-  const derived = derivePalette(variant.appearance, variant.swatch.background, variant.swatch.accent);
-  const colors: ThemeDraft["colors"] = { ...variant.swatch };
+  const { appearance, swatch, palette } = variant;
+  const base = derivePalette(appearance, swatch.background, swatch.accent);
+  const foreground = palette.foreground !== base.foreground ? palette.foreground : undefined;
+  const derived = foreground ? derivePalette(appearance, swatch.background, swatch.accent, foreground) : base;
+  const colors: ThemeColors = { ...swatch };
   for (const token of TOKEN_NAMES) {
-    const value = variant.palette[token];
+    const value = palette[token];
     if (value && value !== derived[token]) colors[token] = value;
   }
-  return { name, appearance: variant.appearance, colors };
+  return { name, appearance, colors };
 }
 
 export function themeFamilies(customThemes: readonly CustomTheme[]): ThemeFamily[] {

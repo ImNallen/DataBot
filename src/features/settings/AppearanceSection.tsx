@@ -1,4 +1,4 @@
-import { IconColorSwatch, IconCopy, IconMoon, IconSun, IconTrash } from "@tabler/icons-react";
+import { IconColorSwatch, IconCopy, IconMoon, IconPlus, IconSun, IconTrash } from "@tabler/icons-react";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import type { Appearance, ColorScheme } from "../../ipc/bindings";
 import { useWorkspace } from "../../state/workspace";
@@ -14,13 +14,14 @@ import {
   type ThemeFamily,
   type ThemeVariant,
 } from "../../themes/catalog";
-import { derivePalette } from "../../themes/palette";
+import { completePalette } from "../../themes/palette";
 import { Button, IconButton } from "../../ui/primitives";
+import { AddThemeDialog } from "./AddThemeDialog";
 import { CreateThemePanel } from "./CreateThemePanel";
 import { chooseColorScheme, chooseThemes, confirmDeleteTheme } from "./themeActions";
 
 function Swatch({ variant }: { variant: ThemeVariant }) {
-  const c = { ...derivePalette(variant.appearance, variant.swatch.background, variant.swatch.accent), ...variant.palette };
+  const c = completePalette(variant.appearance, { ...variant.palette, ...variant.swatch });
   const bar = (width: string, color = c.control) => <span className="h-1.5 rounded-full" style={{ width, background: color }} />;
   return (
     <span className="absolute inset-0 flex" style={{ background: c.background }}>
@@ -90,13 +91,13 @@ function ThemeCard({ family, picks, appearance, onDuplicate }: CardProps) {
   const variants = APPEARANCES.flatMap((a) => family.variants[a] ?? []);
   const shown = family.variants[appearance] ?? variants[0];
   return (
-    <div data-testid={`theme-family-${family.id}`} className="flex flex-col rounded-lg border border-control">
+    <div data-testid={`theme-family-${family.id}`} className="group relative flex flex-col rounded-lg border border-control">
       <div className="flex justify-center gap-3 px-3 pt-4 pb-3">
         {variants.map((v) => (
           <Orb key={v.id} variant={v} checked={picks[v.appearance] === v.id} />
         ))}
       </div>
-      <div className="flex h-9 items-center gap-1 pr-1.5 pl-1">
+      <div className="flex h-9 items-center px-1">
         <button
           type="button"
           title={variants.length > 1 ? `Use ${family.name} for light and dark` : `Use ${family.name}`}
@@ -105,6 +106,8 @@ function ThemeCard({ family, picks, appearance, onDuplicate }: CardProps) {
         >
           {family.name}
         </button>
+      </div>
+      <div className="absolute top-1.5 right-1.5 flex opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
         {shown && (
           <IconButton aria-label={`Duplicate ${family.name}`} title="Duplicate into a new theme" onClick={() => onDuplicate(draftOf(shown, `${family.name} copy`))}>
             <IconCopy size={14} />
@@ -132,6 +135,7 @@ export function AppearanceSection() {
   const systemDark = useSyncExternalStore(subscribeSystem, () => window.matchMedia(DARK_QUERY).matches, () => true);
   const current = resolveTheme(settings, systemDark);
   const [draft, setDraft] = useState<{ key: number; draft: ThemeDraft } | null>(null);
+  const [adding, setAdding] = useState(false);
   const edit = (next: ThemeDraft) => setDraft((d) => ({ key: (d?.key ?? 0) + 1, draft: next }));
   const families = themeFamilies(settings.customThemes);
   const picks = { light: settings.lightTheme, dark: settings.darkTheme };
@@ -168,14 +172,20 @@ export function AppearanceSection() {
             </h2>
             <p className="mt-0.5 text-[12px] text-dim">Pick one theme for light mode and one for dark.</p>
           </div>
-          <Button
-            data-testid="create-theme"
-            className="h-7 px-2.5 text-[12.5px]"
-            onClick={() => edit(draftOf(current, ""))}
-          >
-            <IconColorSwatch size={14} />
-            Create theme
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              data-testid="create-theme"
+              className="h-7 px-2.5 text-[12.5px]"
+              onClick={() => edit(draftOf(current, ""))}
+            >
+              <IconColorSwatch size={14} />
+              Create theme
+            </Button>
+            <Button data-testid="add-theme" className="h-7 px-2.5 text-[12.5px]" onClick={() => setAdding(true)}>
+              <IconPlus size={14} />
+              Add theme
+            </Button>
+          </div>
         </div>
         <div className="mt-4 grid grid-cols-3 gap-3">
           {families.map((family) => (
@@ -183,6 +193,7 @@ export function AppearanceSection() {
           ))}
         </div>
       </section>
+      <AddThemeDialog open={adding} onOpenChange={setAdding} />
       {draft && <CreateThemePanel key={draft.key} initial={draft.draft} onClose={() => setDraft(null)} />}
     </div>
   );
