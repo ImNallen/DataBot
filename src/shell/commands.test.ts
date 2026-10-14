@@ -54,3 +54,37 @@ it("closes settings, not the active tab, on the close-tab shortcut", () => {
   press("w")?.run();
   expect([useWorkspace.getState().screen, useWorkspace.getState().order]).toEqual([{ kind: "workspace" }, ["t1"]]);
 });
+
+const screenAndOverlay = () => [useWorkspace.getState().screen, useWorkspace.getState().overlay];
+
+it.each(["w", ",", "t"])("closes the settings search along with settings on ⌘%s", (key) => {
+  useWorkspace.getState().openSettings("queries");
+  useWorkspace.getState().open({ kind: "settings-search" });
+  press(key)?.run();
+  expect(screenAndOverlay()).toEqual([{ kind: "workspace" }, { kind: "none" }]);
+});
+
+it.each([{ kind: "palette" }, { kind: "history" }] as const)("closes the $kind overlay when ⌘, opens settings", (overlay) => {
+  useWorkspace.getState().open(overlay);
+  press(",")?.run();
+  expect(screenAndOverlay()).toEqual([{ kind: "settings", section: "appearance" }, { kind: "none" }]);
+});
+
+it.each([
+  ["p", { kind: "palette" }],
+  ["n", { kind: "connection", editing: null }],
+] as const)("still opens its overlay on the workspace when ⌘%s leaves settings with the settings search open", (key, overlay) => {
+  useWorkspace.getState().openSettings();
+  useWorkspace.getState().open({ kind: "settings-search" });
+  useWorkspace.getState().closeSettings();
+  press(key)?.run();
+  expect(screenAndOverlay()).toEqual([{ kind: "workspace" }, overlay]);
+});
+
+it("lands on the chosen setting with no overlay after a settings search pick", () => {
+  useWorkspace.getState().openSettings();
+  useWorkspace.getState().open({ kind: "settings-search" });
+  useWorkspace.getState().close();
+  useWorkspace.getState().openSettings("queries", "maxRows");
+  expect(screenAndOverlay()).toEqual([{ kind: "settings", section: "queries", target: "maxRows" }, { kind: "none" }]);
+});

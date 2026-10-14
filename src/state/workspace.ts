@@ -206,8 +206,8 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
   select: (selected) => set({ selected }),
   open: (overlay) => set({ overlay }),
   close: () => set({ overlay: { kind: "none" } }),
-  openSettings: (section = "appearance", target) => set({ screen: { kind: "settings", section, target } }),
-  closeSettings: () => set({ screen: { kind: "workspace" } }),
+  openSettings: (section = "appearance", target) => set({ screen: { kind: "settings", section, target }, overlay: { kind: "none" } }),
+  closeSettings: () => set({ screen: { kind: "workspace" }, overlay: { kind: "none" } }),
   notify: (text) => set({ toast: { id: ++toastSeq, text } }),
   setCursor: (line, col) => set({ cursor: { line, col } }),
 }));
