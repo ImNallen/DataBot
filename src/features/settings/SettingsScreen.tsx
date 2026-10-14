@@ -25,7 +25,7 @@ function useRevealTarget(screen: SettingsScreen) {
     if (!screen.target) return;
     const row = body.current?.querySelector(`[data-setting="${screen.target}"]`);
     row?.scrollIntoView({ block: "nearest" });
-    (row?.querySelector<HTMLElement>("input:checked") ?? row?.querySelector<HTMLElement>("input"))?.focus({ preventScroll: true });
+    (row?.querySelector<HTMLElement>("input:checked") ?? row?.querySelector<HTMLElement>("input, select"))?.focus({ preventScroll: true });
   }, [screen]);
   return body;
 }

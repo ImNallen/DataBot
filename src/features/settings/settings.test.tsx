@@ -4,10 +4,12 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { CustomTheme, Settings } from "../../ipc/bindings";
 import { AppLayout } from "../../shell/AppLayout";
 import { clampWidth } from "../../shell/PixelColumn";
+import { startAppearance } from "../../shell/appearance";
 import { startTheme } from "../../shell/theme";
 import { useWorkspace, type WorkspaceData } from "../../state/workspace";
 import { fakeRoot } from "../../testing/fakeRoot";
 import { BUILT_IN_FAMILIES, customFamily, familyPicks } from "../../themes/catalog";
+import { chooseDensity, chooseFont, previewPanelMotion, savePanelMotion } from "./appearanceActions";
 import { addCustomThemes, chooseColorScheme, chooseThemes, deleteCustomTheme } from "./themeActions";
 import { searchSettings } from "./sections";
 
@@ -97,12 +99,26 @@ it.each([
   ["page", "tablePageSize"],
   ["error", "stopOnError"],
   ["row limit", "maxRows"],
+  ["compact", "density"],
+  ["animation", "panelMotion"],
+  ["sf pro", "interfaceFont"],
+  ["jetbrains", "codeFont"],
 ])("ranks %s to the %s setting first", (query, id) => {
   expect(searchSettings(query)[0]?.id).toBe(id);
 });
 
 it("lists every setting in registry order for an empty query, and nothing for a miss", () => {
-  expect(searchSettings(" ").map((s) => s.id)).toEqual(["colorScheme", "themes", "maxRows", "tablePageSize", "stopOnError"]);
+  expect(searchSettings(" ").map((s) => s.id)).toEqual([
+    "colorScheme",
+    "themes",
+    "density",
+    "panelMotion",
+    "interfaceFont",
+    "codeFont",
+    "maxRows",
+    "tablePageSize",
+    "stopOnError",
+  ]);
   expect(searchSettings("zzqx")).toEqual([]);
 });
 
@@ -281,4 +297,60 @@ it("deletes a whole family and resets a slot that held any of its variants", asy
   await deleteCustomTheme("custom-cat");
   stop();
   expect(saved.at(-1)).toEqual({ ...initial.settings, lightTheme: "l1-light", darkTheme: "l1-dark", customThemes: [] });
+});
+
+const selectValue = (html: string, testId: string) => new RegExp(`data-testid="${testId}"[^>]*>(.*?)</select>`).exec(html)?.[1]?.match(/<option[^>]*selected=""[^>]*>([^<]*)</)?.[1];
+
+it("shows the saved density, fonts, and panel speed in the appearance cards", () => {
+  const settings: Settings = {
+    ...initial.settings,
+    density: "Spacious",
+    interfaceFont: { family: "System", size: 15 },
+    codeFont: { family: "Berkeley Mono", size: 11 },
+    panelMotionMs: 0,
+  };
+  const html = render({ ...settingsOpen(), settings });
+  expect(radios(html, "density")).toEqual([
+    ["Compact", false],
+    ["Standard", false],
+    ["Spacious", true],
+  ]);
+  expect([selectValue(html, "setting-interfaceFont-family"), selectValue(html, "setting-interfaceFont-size")]).toEqual(["System", "15 px"]);
+  expect([selectValue(html, "setting-codeFont-family"), selectValue(html, "setting-codeFont-size")]).toEqual(["Berkeley Mono", "11 px"]);
+  expect(html).toMatch(/data-testid="setting-panelMotion"[^>]*value="0"/);
+  expect(html).toContain('data-testid="setting-panelMotion-reset"');
+  expect(render({ ...settingsOpen(), settings: initial.settings })).not.toContain('data-testid="setting-panelMotion-reset"');
+});
+
+it("saves the clicked density and repaints the spacing scale", async () => {
+  const { root, saved, stop } = paintAndRecordSaves();
+  const appearance = startAppearance();
+  await chooseDensity("Compact");
+  appearance();
+  stop();
+  expect(saved).toEqual([{ ...initial.settings, density: "Compact" }]);
+  expect(root.style.vars.get("--density")).toBe("0.85");
+});
+
+it("changes only the size of the chosen font and keeps its family", async () => {
+  const { saved, stop } = paintAndRecordSaves();
+  await chooseFont("code", { size: 16 });
+  await chooseFont("interface", { family: "System" });
+  stop();
+  expect(saved.map((s) => [s.codeFont, s.interfaceFont])).toEqual([
+    [{ family: "JetBrains Mono", size: 16 }, initial.settings.interfaceFont],
+    [{ family: "JetBrains Mono", size: 16 }, { family: "System", size: 13 }],
+  ]);
+});
+
+it("repaints the panel speed while the slider moves and saves it once on release", async () => {
+  const { root, saved, stop } = paintAndRecordSaves();
+  const appearance = startAppearance();
+  previewPanelMotion(250);
+  previewPanelMotion(300);
+  expect([saved, root.style.vars.get("--panel-duration")]).toEqual([[], "300ms"]);
+  await savePanelMotion(300);
+  appearance();
+  stop();
+  expect(saved).toEqual([{ ...initial.settings, panelMotionMs: 300 }]);
 });

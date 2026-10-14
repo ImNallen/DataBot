@@ -37,7 +37,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 
 ### The window
 
-- **Settings** (`⌘,`) opens in place of the sidebar and editor. **Appearance** picks a System, Light, or Dark theme. **Queries** sets the row limit, the table page size, and whether a script stops at its first error.
+- **Settings** (`⌘,`) opens in place of the sidebar and editor. **Appearance** picks a System, Light, or Dark scheme and the themes for each. It also sets the density (Compact, Standard, or Spacious), the speed of panel, dialog, and menu animations, and the interface and monospace fonts and sizes. The monospace font is used by the SQL editor and the result tables. **Queries** sets the row limit, the table page size, and whether a script stops at its first error.
 - On macOS the window keeps the native traffic lights. On Windows and Linux the app draws its own window controls and resize edges.
 - The right panel holds a placeholder for an AI assistant.
 

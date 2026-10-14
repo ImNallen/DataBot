@@ -17,6 +17,7 @@ import {
 import { completePalette } from "../../themes/palette";
 import { Button, cx, IconButton } from "../../ui/primitives";
 import { AddThemeDialog } from "./AddThemeDialog";
+import { AppearanceCards } from "./AppearanceControls";
 import { CreateThemePanel } from "./CreateThemePanel";
 import { chooseColorScheme, chooseThemes, confirmDeleteTheme } from "./themeActions";
 
@@ -207,6 +208,7 @@ export function AppearanceSection() {
           ))}
         </div>
       </section>
+      <AppearanceCards />
       <AddThemeDialog open={adding} onOpenChange={setAdding} />
       {draft && <CreateThemePanel key={draft.key} initial={draft.draft} onClose={() => setDraft(null)} />}
     </div>
