@@ -59,7 +59,6 @@ function ColorField({ token, value, onChange }: { token: Token; value: string; o
   );
 }
 
-/** A floating editor beside the settings page; the app repaints with the draft while it is open. */
 export function CreateThemePanel({ initial, onClose }: { initial: ThemeDraft; onClose: () => void }) {
   const [draft, setDraft] = useState(initial);
   const [advanced, setAdvanced] = useState(false);

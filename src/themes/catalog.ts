@@ -19,7 +19,6 @@ export type ThemeFamily = {
   custom: boolean;
 };
 
-/** A theme not yet saved: from the create panel, a duplicate, or an import. */
 export type ThemeDraft = { name: string; appearance: Appearance; colors: ThemeColors };
 
 export const APPEARANCES = ["light", "dark"] as const satisfies readonly Appearance[];

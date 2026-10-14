@@ -8,10 +8,12 @@ export type ImportResult = { ok: true; themes: ThemeDraft[] } | { ok: false; err
 
 type Json = { [key: string]: unknown };
 
-const isObject = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
+export const isObject = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
+
+export type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 
 /** Parses JSON with comments and trailing commas, as VS Code theme files are written. */
-export function readJsonc(text: string): { ok: true; value: unknown } | { ok: false; error: string } {
+export function readJsonc(text: string): Parsed<unknown> {
   const errors: ParseError[] = [];
   const value: unknown = parse(text, errors, { allowTrailingComma: true });
   const first = errors[0];
@@ -23,7 +25,6 @@ export function readJsonc(text: string): { ok: true; value: unknown } | { ok: fa
 // Overlay tokens are painted over other colours, so they keep their alpha; every other token is opaque.
 const TRANSLUCENT = new Set<Token>(["codeSelectionMatch", "codeSearchMatch", "codeSearchCurrent", "codeExecuted"]);
 
-/** Normalizes a hex colour, flattening alpha onto `background` where the token must be opaque. */
 function tokenColor(token: Token, value: unknown, background: string): string | null {
   const color = typeof value === "string" ? parseHex(value) : null;
   if (!color) return null;

@@ -1,0 +1,64 @@
+import { strToU8, zipSync } from "fflate";
+import { afterEach, expect, it, vi } from "vitest";
+import { fetchExtensionThemes, searchThemes, type VsxExtension } from "./openVsx";
+
+afterEach(() => vi.unstubAllGlobals());
+
+const serve = (routes: Record<string, () => Response>) => {
+  const requested: string[] = [];
+  vi.stubGlobal("fetch", (url: string) => {
+    requested.push(url);
+    return Promise.resolve(routes[url]?.() ?? new Response("missing", { status: 404 }));
+  });
+  return requested;
+};
+
+const ext: VsxExtension = { id: "acme.night", displayName: "Night", publisher: "acme", description: "", downloadCount: 0, download: "https://cdn.test/night.vsix" };
+
+it("searches the Themes category by downloads and keeps only well-formed extensions", async () => {
+  const body = {
+    extensions: [
+      { namespace: "dracula-theme", name: "theme-dracula", displayName: "Dracula Theme Official", description: "Dark", downloadCount: 435372, files: { download: "https://x/d.vsix" } },
+      { namespace: "broken", name: "no-files" },
+    ],
+  };
+  const requested = serve({
+    "https://open-vsx.org/api/-/search?query=tokyo+night&category=Themes&size=20&sortBy=downloadCount&sortOrder=desc": () => Response.json(body),
+  });
+  expect(await searchThemes("tokyo night")).toEqual([
+    { id: "dracula-theme.theme-dracula", displayName: "Dracula Theme Official", publisher: "dracula-theme", description: "Dark", downloadCount: 435372, download: "https://x/d.vsix" },
+  ]);
+  expect(requested).toHaveLength(1);
+});
+
+it("imports every theme an extension contributes, following includes inside the package", async () => {
+  const manifest = {
+    contributes: {
+      themes: [
+        { label: "Night Dark", uiTheme: "vs-dark", path: "./themes/dark.json" },
+        { label: "Night Light", uiTheme: "vs", path: "./themes/light.json" },
+      ],
+    },
+  };
+  const vsix = zipSync({
+    "extension/package.json": strToU8(JSON.stringify(manifest)),
+    "extension/themes/base.json": strToU8('{ "colors": { "editor.background": "#101018", "button.background": "#e0457b" } }'),
+    "extension/themes/dark.json": strToU8('// dark\n{ "include": "./base.json", "colors": { "sideBar.background": "#08080c", }, }'),
+    "extension/themes/light.json": strToU8('{ "colors": { "editor.background": "#fafafa", "focusBorder": "#1477b0" } }'),
+  });
+  serve({ [ext.download]: () => new Response(vsix) });
+  expect(await fetchExtensionThemes(ext)).toEqual({
+    ok: true,
+    themes: [
+      { name: "Night Dark", appearance: "dark", colors: { background: "#101018", sidebar: "#08080c", accent: "#e0457b" } },
+      { name: "Night Light", appearance: "light", colors: { background: "#fafafa", accent: "#1477b0", focus: "#1477b0" } },
+    ],
+  });
+});
+
+it("reports an extension with no color themes, and a failed download", async () => {
+  serve({ [ext.download]: () => new Response(zipSync({ "extension/package.json": strToU8('{ "contributes": {} }') })) });
+  expect(await fetchExtensionThemes(ext)).toEqual({ ok: false, error: "Night contributes no color themes." });
+  serve({});
+  expect(await fetchExtensionThemes(ext)).toEqual({ ok: false, error: "Download failed: Open VSX answered 404." });
+});

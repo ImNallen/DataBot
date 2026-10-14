@@ -77,7 +77,6 @@ export function chroma(hex: string): number {
   return Math.hypot(a, b);
 }
 
-/** `top` alpha-blended onto opaque `bottom`, as the browser would paint it. */
 export function over(top: Rgba, bottom: Rgba): Rgba {
   const blend = (t: number, b: number) => t * top.a + b * (1 - top.a);
   return { r: blend(top.r, bottom.r), g: blend(top.g, bottom.g), b: blend(top.b, bottom.b), a: 1 };

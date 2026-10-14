@@ -194,7 +194,6 @@ export function derivePalette(appearance: Appearance, background: string, accent
 
 export type ThemeColors = Palette & { background: string; accent: string };
 
-/** `colors` over the palette their seeds derive. */
 export function completePalette(appearance: Appearance, colors: ThemeColors): Record<Token, string> {
   return { ...derivePalette(appearance, colors.background, colors.accent, colors.foreground), ...colors };
 }

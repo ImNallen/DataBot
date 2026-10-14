@@ -1,10 +1,10 @@
 import { IconDownload, IconPlus } from "@tabler/icons-react";
 import { useRef, useState, type DragEvent } from "react";
-import { useWorkspace } from "../../state/workspace";
 import type { ThemeDraft } from "../../themes/catalog";
 import { parseThemeFile } from "../../themes/importers";
 import { Button, cx, inputClass, Modal } from "../../ui/primitives";
-import { addCustomThemes } from "./themeActions";
+import { ThemeSearch } from "./ThemeSearch";
+import { addThemes } from "./themeActions";
 
 const EXAMPLE = `{
   "version": 1,
@@ -12,12 +12,6 @@ const EXAMPLE = `{
   "appearance": "light",
   "colors": { "background": "#fbfaff", "accent": "#7c3aed" }
 }`;
-
-export async function addThemes(drafts: readonly ThemeDraft[]): Promise<void> {
-  await addCustomThemes(drafts);
-  const names = drafts.map((d) => d.name);
-  useWorkspace.getState().notify(names.length === 1 ? `Added ${names[0]}.` : `Added ${names.length} themes.`);
-}
 
 async function readFiles(files: readonly File[]): Promise<{ drafts: ThemeDraft[]; errors: string[] }> {
   const results = await Promise.all(files.map(async (f) => ({ name: f.name, result: parseThemeFile(await f.text(), f.name) })));
@@ -59,6 +53,12 @@ export function AddThemeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   return (
     <Modal open={open} onOpenChange={(next) => (next ? onOpenChange(true) : close())} title="Add a theme" width={560} testId="add-theme-dialog">
       <div className="flex flex-col gap-4">
+        <ThemeSearch onImported={close} />
+        <div className="flex items-center gap-3 text-[11px] tracking-wide text-faint uppercase">
+          <span className="h-px flex-1 bg-border" />
+          or import a file
+          <span className="h-px flex-1 bg-border" />
+        </div>
         <div
           data-testid="theme-drop-zone"
           onDragOver={(e) => {

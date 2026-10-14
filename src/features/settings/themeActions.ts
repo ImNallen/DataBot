@@ -32,11 +32,16 @@ export function chooseThemes(variants: readonly ThemeVariant[]): Promise<void> {
   return saveSettings(picksPatch(variants));
 }
 
-/** Saves the drafts and picks the first of each appearance among them. */
 export function addCustomThemes(drafts: readonly ThemeDraft[]): Promise<void> {
   const added = drafts.map((d): CustomTheme => ({ id: `custom-${crypto.randomUUID()}`, name: d.name, appearance: d.appearance, colors: { ...d.colors } }));
   const firsts = APPEARANCES.flatMap((a) => added.find((t) => t.appearance === a) ?? []).map(customVariant);
   return saveSettings({ customThemes: [...settings().customThemes, ...added], ...picksPatch(firsts) });
+}
+
+export async function addThemes(drafts: readonly ThemeDraft[]): Promise<void> {
+  await addCustomThemes(drafts);
+  const names = drafts.map((d) => d.name);
+  useWorkspace.getState().notify(names.length === 1 ? `Added ${names[0]}.` : `Added ${names.length} themes.`);
 }
 
 export function deleteCustomTheme(id: string): Promise<void> {
