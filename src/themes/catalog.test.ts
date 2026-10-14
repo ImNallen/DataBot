@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { CustomTheme } from "../ipc/bindings";
-import { resolveTheme, type ThemeSettings } from "./catalog";
+import { BUILT_IN_FAMILIES, customVariant, draftOf, resolveTheme, type ThemeSettings } from "./catalog";
 
 const defaults: ThemeSettings = { colorScheme: "System", lightTheme: "l1-light", darkTheme: "l1-dark", customThemes: [] };
 const dusk: CustomTheme = { id: "custom-dusk", name: "Dusk", appearance: "dark", colors: { background: "#1b1824", accent: "#e0a040" } };
@@ -37,4 +37,11 @@ it("resolves a custom theme to its stored colours over a palette derived from it
 it("paints L1 from the stylesheet with no inline palette", () => {
   expect(resolveTheme(defaults, true).palette).toEqual({});
   expect(resolveTheme(defaults, false).palette).toEqual({});
+});
+
+it("duplicates a variant as its seeds plus only the colours they don't derive", () => {
+  const groveDark = BUILT_IN_FAMILIES.find((f) => f.id === "grove")?.variants.dark;
+  expect(groveDark && draftOf(groveDark, "Grove copy")).toEqual({ name: "Grove copy", appearance: "dark", colors: { background: "#0c1310", accent: "#2f9e6e" } });
+  const tuned = customVariant({ ...dusk, colors: { ...dusk.colors, keyword: "#ff00ff" } });
+  expect(draftOf(tuned, "Dusk copy").colors).toEqual({ background: "#1b1824", accent: "#e0a040", keyword: "#ff00ff" });
 });

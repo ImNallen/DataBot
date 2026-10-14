@@ -1,19 +1,23 @@
-import { IconMoon, IconSun } from "@tabler/icons-react";
-import type { ReactNode } from "react";
-import type { Appearance, ColorScheme, Settings } from "../../ipc/bindings";
+import { IconColorSwatch, IconCopy, IconMoon, IconSun, IconTrash } from "@tabler/icons-react";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
+import type { Appearance, ColorScheme } from "../../ipc/bindings";
 import { useWorkspace } from "../../state/workspace";
 import {
   APPEARANCES,
+  draftOf,
   FIXED_APPEARANCE,
   pickedVariant,
-  SCHEME_FOR,
+  resolveTheme,
   THEME_SLOT,
   themeFamilies,
+  type ThemeDraft,
   type ThemeFamily,
   type ThemeVariant,
 } from "../../themes/catalog";
 import { derivePalette } from "../../themes/palette";
-import { saveSettings } from "../editor/runActions";
+import { Button, IconButton } from "../../ui/primitives";
+import { CreateThemePanel } from "./CreateThemePanel";
+import { chooseColorScheme, chooseThemes, confirmDeleteTheme } from "./themeActions";
 
 function Swatch({ variant }: { variant: ThemeVariant }) {
   const c = { ...derivePalette(variant.appearance, variant.swatch.background, variant.swatch.accent), ...variant.palette };
@@ -50,20 +54,6 @@ function SchemePreview({ scheme, picks }: { scheme: ColorScheme; picks: Record<A
   );
 }
 
-export function chooseColorScheme(colorScheme: ColorScheme): Promise<void> {
-  return saveSettings({ colorScheme });
-}
-
-/** Puts each variant in its appearance's slot, and switches a pinned scheme when it would hide every pick. */
-export function chooseThemes(variants: readonly ThemeVariant[]): Promise<void> {
-  const patch: Partial<Settings> = {};
-  for (const v of variants) patch[THEME_SLOT[v.appearance]] = v.id;
-  const pinned = FIXED_APPEARANCE[useWorkspace.getState().settings.colorScheme];
-  const first = variants[0];
-  if (first && pinned && !variants.some((v) => v.appearance === pinned)) patch.colorScheme = SCHEME_FOR[first.appearance];
-  return saveSettings(patch);
-}
-
 const ORB_ICON: Record<Appearance, ReactNode> = { light: <IconSun size={11} />, dark: <IconMoon size={11} /> };
 
 function Orb({ variant, checked }: { variant: ThemeVariant; checked: boolean }) {
@@ -94,8 +84,11 @@ function Orb({ variant, checked }: { variant: ThemeVariant; checked: boolean }) 
   );
 }
 
-function ThemeCard({ family, picks }: { family: ThemeFamily; picks: Record<Appearance, string> }) {
+type CardProps = { family: ThemeFamily; picks: Record<Appearance, string>; appearance: Appearance; onDuplicate: (draft: ThemeDraft) => void };
+
+function ThemeCard({ family, picks, appearance, onDuplicate }: CardProps) {
   const variants = APPEARANCES.flatMap((a) => family.variants[a] ?? []);
+  const shown = family.variants[appearance] ?? variants[0];
   return (
     <div data-testid={`theme-family-${family.id}`} className="flex flex-col rounded-lg border border-control">
       <div className="flex justify-center gap-3 px-3 pt-4 pb-3">
@@ -112,13 +105,34 @@ function ThemeCard({ family, picks }: { family: ThemeFamily; picks: Record<Appea
         >
           {family.name}
         </button>
+        {shown && (
+          <IconButton aria-label={`Duplicate ${family.name}`} title="Duplicate into a new theme" onClick={() => onDuplicate(draftOf(shown, `${family.name} copy`))}>
+            <IconCopy size={14} />
+          </IconButton>
+        )}
+        {family.custom && (
+          <IconButton aria-label={`Delete ${family.name}`} title="Delete theme" onClick={() => confirmDeleteTheme(family)}>
+            <IconTrash size={14} />
+          </IconButton>
+        )}
       </div>
     </div>
   );
 }
 
+const DARK_QUERY = "(prefers-color-scheme: dark)";
+const subscribeSystem = (onChange: () => void) => {
+  const media = window.matchMedia(DARK_QUERY);
+  media.addEventListener("change", onChange);
+  return () => media.removeEventListener("change", onChange);
+};
+
 export function AppearanceSection() {
   const settings = useWorkspace((s) => s.settings);
+  const systemDark = useSyncExternalStore(subscribeSystem, () => window.matchMedia(DARK_QUERY).matches, () => true);
+  const current = resolveTheme(settings, systemDark);
+  const [draft, setDraft] = useState<{ key: number; draft: ThemeDraft } | null>(null);
+  const edit = (next: ThemeDraft) => setDraft((d) => ({ key: (d?.key ?? 0) + 1, draft: next }));
   const families = themeFamilies(settings.customThemes);
   const picks = { light: settings.lightTheme, dark: settings.darkTheme };
   const variants = { light: pickedVariant(settings, "light"), dark: pickedVariant(settings, "dark") };
@@ -154,13 +168,22 @@ export function AppearanceSection() {
             </h2>
             <p className="mt-0.5 text-[12px] text-dim">Pick one theme for light mode and one for dark.</p>
           </div>
+          <Button
+            data-testid="create-theme"
+            className="h-7 px-2.5 text-[12.5px]"
+            onClick={() => edit(draftOf(current, ""))}
+          >
+            <IconColorSwatch size={14} />
+            Create theme
+          </Button>
         </div>
         <div className="mt-4 grid grid-cols-3 gap-3">
           {families.map((family) => (
-            <ThemeCard key={family.id} family={family} picks={picks} />
+            <ThemeCard key={family.id} family={family} picks={picks} appearance={current.appearance} onDuplicate={edit} />
           ))}
         </div>
       </section>
+      {draft && <CreateThemePanel key={draft.key} initial={draft.draft} onClose={() => setDraft(null)} />}
     </div>
   );
 }

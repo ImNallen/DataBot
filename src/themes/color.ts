@@ -64,4 +64,7 @@ export function contrast(x: Rgba, y: Rgba): number {
   return (Math.max(p, q) + 0.05) / (Math.min(p, q) + 0.05);
 }
 
-export const isDark = (c: Rgba) => luminance(c) < 0.18;
+export function isDark(hex: string): boolean {
+  const c = parseHex(hex);
+  return c !== null && luminance(c) < 0.18;
+}

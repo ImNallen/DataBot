@@ -1,6 +1,6 @@
 import type { Appearance, ColorScheme, CustomTheme, Settings } from "../ipc/bindings";
 import { isHex } from "./color";
-import { derivePalette, isToken, type Palette } from "./palette";
+import { derivePalette, isToken, TOKEN_NAMES, type Palette } from "./palette";
 
 export type ThemeId = string;
 
@@ -18,6 +18,9 @@ export type ThemeFamily = {
   variants: { light?: ThemeVariant; dark?: ThemeVariant };
   custom: boolean;
 };
+
+/** A theme not yet saved: from the create panel, a duplicate, or an import. */
+export type ThemeDraft = { name: string; appearance: Appearance; colors: Palette & { background: string; accent: string } };
 
 export const APPEARANCES = ["light", "dark"] as const satisfies readonly Appearance[];
 
@@ -66,6 +69,17 @@ export function customVariant(theme: CustomTheme): ThemeVariant {
     swatch,
     palette: { ...derivePalette(theme.appearance, swatch.background, swatch.accent), ...colors },
   };
+}
+
+/** A draft that reproduces `variant`, keeping only the colours its seeds don't already derive. */
+export function draftOf(variant: ThemeVariant, name: string): ThemeDraft {
+  const derived = derivePalette(variant.appearance, variant.swatch.background, variant.swatch.accent);
+  const colors: ThemeDraft["colors"] = { ...variant.swatch };
+  for (const token of TOKEN_NAMES) {
+    const value = variant.palette[token];
+    if (value && value !== derived[token]) colors[token] = value;
+  }
+  return { name, appearance: variant.appearance, colors };
 }
 
 export function themeFamilies(customThemes: readonly CustomTheme[]): ThemeFamily[] {

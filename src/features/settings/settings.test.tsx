@@ -8,7 +8,7 @@ import { startTheme } from "../../shell/theme";
 import { useWorkspace, type WorkspaceData } from "../../state/workspace";
 import { fakeRoot } from "../../testing/fakeRoot";
 import { BUILT_IN_FAMILIES } from "../../themes/catalog";
-import { chooseColorScheme, chooseThemes } from "./AppearanceSection";
+import { addCustomThemes, chooseColorScheme, chooseThemes, deleteCustomTheme } from "./themeActions";
 import { searchSettings } from "./sections";
 
 const initial = { ...useWorkspace.getInitialState() };
@@ -183,4 +183,23 @@ it("sets both picks from a two-variant family without touching the scheme", asyn
   await chooseThemes([variant("rose", "light"), variant("rose", "dark")]);
   stop();
   expect(saved.at(-1)).toEqual({ ...initial.settings, colorScheme: "Dark", lightTheme: "rose-light", darkTheme: "rose-dark" });
+});
+
+it("saves created themes, picks the first of each appearance, and drops a deleted pick back to L1", async () => {
+  let n = 0;
+  vi.stubGlobal("crypto", { randomUUID: () => `id${++n}` });
+  const { root, saved, stop } = paintAndRecordSaves();
+  await chooseColorScheme("Light");
+  await addCustomThemes([
+    { name: "Dusk", appearance: "dark", colors: { background: "#1b1824", accent: "#e0a040" } },
+    { name: "Night", appearance: "dark", colors: { background: "#000000", accent: "#ffffff" } },
+  ]);
+  expect([root.dataset.theme, root.style.vars.get("--color-bg")]).toEqual(["dark", "#1b1824"]);
+  expect(saved.at(-1)).toMatchObject({ colorScheme: "Dark", lightTheme: "l1-light", darkTheme: "custom-id1" });
+  expect(saved.at(-1)?.customThemes.map((t) => [t.id, t.name])).toEqual([["custom-id1", "Dusk"], ["custom-id2", "Night"]]);
+
+  await deleteCustomTheme("custom-id1");
+  stop();
+  expect(saved.at(-1)).toMatchObject({ darkTheme: "l1-dark", customThemes: [{ id: "custom-id2", name: "Night" }] });
+  expect(root.style.vars.size).toBe(0);
 });
