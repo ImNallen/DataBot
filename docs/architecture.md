@@ -32,35 +32,55 @@ pnpm bridge             # dev-bridge on :7077 + vite on :5173: the real Engine d
 cargo test -p engine                       # pure unit tests, no DB
 cargo test -p engine --features pg-tests   # engine against the Docker DB
 pnpm test                                  # vitest: reducers, formatting
+pnpm typecheck                             # tsc --noEmit
+pnpm bindings                              # rewrite src/ipc/bindings.ts without opening a window
 pnpm self-check                            # debug binary boots Engine inside Tauri, connects, prints JSON, exits
+cargo build -p dev-bridge && dev/bridge-smoke.sh   # curl flow against the bridge, checks the SSE stream
+pnpm screenshot                            # macOS: rewrite docs/images/l1-data.png from the real app
+pnpm icons                                 # rewrite src-tauri/icons from src-tauri/app-icon.svg
 ```
 
-### Call site 1: frontend boot (src/main.tsx)
+### Call site 1: frontend boot (src/boot.ts)
 
 ```ts
-import { listen } from "@tauri-apps/api/event";
-import { commands, type AppEvent } from "./ipc/bindings";
-import { live } from "./state/live";
-
-// Listen first, then snapshot. Every event carries a full entity snapshot with a `rev`,
-// so an event that races the boot snapshot is harmless: the reducer keeps the higher rev.
-await listen<AppEvent>("app-event", (e) => live.getState().apply(e.payload));
-const boot = await commands.appBoot();           // live connections + consoles + workspace
-live.getState().hydrate(boot);
-workspace.getState().restore(boot.workspace);
+export async function boot(): Promise<void> {
+  installRunBehavior();                            // ⌘↵, Escape, doc and cursor listeners for every editor
+  // Listen first, then snapshot. Every event carries a full entity snapshot with a `rev`,
+  // so an event that races the boot snapshot is harmless: the reducer keeps the higher rev.
+  await listen<AppEvent>("app-event", (e) => useLive.getState().apply(e.payload));
+  const snapshot = await commands.appBoot();       // live connections + consoles + workspace + settings
+  useLive.getState().hydrate(snapshot);
+  for (const tab of snapshot.workspace.tabs) seedEditor(tab.id, tab.kind === "Sql" ? tab.text : browseQuery(tab.schema, tab.table));
+  useWorkspace.getState().restore(snapshot.workspace, snapshot.connections, snapshot.settings);
+  startTheme();
+  if (snapshot.workspace.tabs.length === 0) openSqlTab();
+  startPersistence();                              // debounced workspace_save
+  startCatalogSync();                              // useCatalog.ensure(id, version) per connected connection
+}
 ```
 
-### Call site 2: run the statement under the cursor (features/editor/runActions.ts)
+### Call site 2: run the active tab (features/editor/runActions.ts)
+
+`runActive()` runs the active tab through the private `runTab`. A table tab sends `tablePage` only while its editor still holds `browseQuery(schema, table)`. Any other text runs as a script.
 
 ```ts
-export async function runAtCursor(tabId: TabId, view: EditorView) {
-  const sel = view.state.selection.main;
-  const target: RunTarget = sel.empty
-    ? { kind: "cursor", offset: sel.head }
-    : { kind: "selection", from: sel.from, to: sel.to };
-  const res = await commands.consoleRun(tabId, { kind: "script", text: view.state.doc.toString(), target });
-  if (res.status === "error") return toast(runErrorMessage(res.error)); // Busy | NoStatement | Connect(...)
-  flashRanges(view, res.data.statements);   // UTF-16 doc ranges actually executed
+async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
+  // ...queue page requests that arrive mid-run, then ensureConsole(tab)
+  let request: RunRequest;
+  if (tab.kind === "table" && isBrowsing(tab)) {
+    request = { kind: "tablePage", schema: tab.schema, table: tab.table, page: target?.page ?? tab.page, query: tab.query };
+  } else {
+    const state = editorStateOf(tabId);
+    const sel = state.selection.main;
+    request = {
+      kind: "script",
+      text: state.doc.toString(),
+      target: sel.empty ? { kind: "cursor", offset: sel.head } : { kind: "selection", from: sel.from, to: sel.to },
+    };
+  }
+  const res = await commands.consoleRun(tabId, request);
+  if (res.status === "error") return notify(runErrorText(res.error)); // Busy | NoStatement | BadFilter | Connect
+  if (request.kind === "script") flashRanges(tabId, res.data.statements); // UTF-16 doc ranges actually executed
   // Progress, results, errors arrive as AppEvent::ConsoleChanged / ConsoleOutput.
 }
 ```
@@ -68,28 +88,31 @@ export async function runAtCursor(tabId: TabId, view: EditorView) {
 ### Call site 3: the grid pulls a window of rows (features/results/ResultGrid.tsx)
 
 ```ts
-const meta = useLive((s) => s.consoles[tabId]?.run.statements[i].result); // ResultMeta | undefined
-const rows = useRowWindow(meta.ref, virtualizer.range);  // fetches 256-row pages via commands.resultPage
-// header: meta.columns[c].name + meta.columns[c].type.display ("bigint", "timestamptz")
-// align:  meta.columns[c].type.category === "numeric" ? "right" : "left"
-// cell:   rows.get(r)?.[c] ?? NULL marker; null is SQL NULL, string is PG text output
-await commands.resultExportCsv(meta.ref, path); // Rust writes from its own buffer
+const cache = rowCacheFor(meta.ref);                       // module-level RowCache per ResultRef
+useSyncExternalStore(cache.subscribe, cache.getVersion);
+void cache.ensure({ start: firstRow - PREFETCH, end: lastRow + 1 + PREFETCH }, rowCount); // 256-row pages via commands.resultPage
+// header: category icon (key icon for a PK column) + meta.columns[c].name; type.display in the tooltip
+// align:  isRightAligned(meta.columns[c].type.category)
+// cell:   cache.get(r)?.[c]; null is SQL NULL, string is PG text output
+await commands.resultExportCsv(meta.ref, path); // ResultsPane; Rust writes from its own buffer
 ```
 
-### Call site 4: engine integration test (crates/engine/tests/txn.rs)
+### Call site 4: engine integration test (crates/engine/tests/pg.rs)
 
 ```rust
 #[tokio::test]
-async fn manual_tab_isolated_until_commit() -> anyhow::Result<()> {
-    let h = Harness::start().await?;                 // Engine on tmp dir + MemoryKeyStore + Docker PG (:5433)
-    let a = h.sql_tab(Mode::Manual).await?;
-    let b = h.sql_tab(Mode::AutoCommit).await?;
-    h.run_ok(a, "insert into customers(name, region) values ('t', 'EU-West')").await?;
-    assert_eq!(h.console(a).txn, TxnState::Active);
-    assert_eq!(h.scalar(b, "select count(*) from customers where name='t'").await?, "0");
-    h.engine.console_commit(a).await?;
-    assert_eq!(h.scalar(b, "select count(*) from customers where name='t'").await?, "1");
-    Ok(())
+async fn manual_tab_isolated_until_commit_and_abort_rolls_back() {
+    let mut h = Harness::start().await;              // Engine on tmp dir + MemoryKeyStore + Docker PG (:5433)
+    let a = h.sql_tab(TxnMode::Manual).await;
+    let b = h.sql_tab(TxnMode::AutoCommit).await;
+    let table = unique("public.t_iso");
+    h.run_ok(b, &format!("create table {table} (id int)")).await;
+    let state = h.run_ok(a, &format!("insert into {table} values (1)")).await;
+    assert_eq!(state.txn, TxnState::Active);
+    assert_eq!(h.scalar(b, &format!("select count(*) from {table}")).await, "0");
+    h.engine.console_commit(a).await.unwrap();
+    assert_eq!(h.scalar(b, &format!("select count(*) from {table}")).await, "1");
+    // ...then the abort, rollback, and savepoint cases
 }
 ```
 
@@ -102,10 +125,10 @@ async fn manual_tab_isolated_until_commit() -> anyhow::Result<()> {
    - Unknown and extension types render exactly as psql shows them.
    - Type-aware rendering keys off `TypeCategory` on the column, not off the value.
    - Session `TimeZone` is set to the OS IANA zone on session open, so timestamptz text is local time.
-2. **Rust owns result rows. The webview pulls windows.** A `ResultSet` is an append-only text arena filled by the run task. The grid requests `resultPage(ref, start, len)`. CSV export writes straight from the arena. The webview never holds more than a few pages, and the row-cap policy lives in one place. Filter, sort, and value-viewer features later attach to the same arena without changing the grid.
-3. **One dedicated session per tab, opened lazily, plus one metadata session per connection.** No pool. Session state (search_path, temp tables, GUCs, transactions) belongs to the tab, which is what an IDE user expects.
+2. **Rust owns result rows. The webview pulls windows.** A `ResultSet` is an append-only text arena filled by the run task. The grid requests `resultPage(ref, start, len)`. CSV export writes straight from the arena. The webview never holds more than a few pages, and the row-cap policy lives in one place. Sort and filter on a table tab do not touch the arena. They change the tab's `TableQuery` and re-run `TablePage`, so the engine sorts and filters. The value viewer is the `cell` overlay, opened from the grid. It reads a cut cell's full text with `result_cell` through `RowCache.loadFull`.
+3. **One dedicated session per tab, opened lazily, plus one metadata session per connection.** No pool. The metadata session also serves `exact_row_count`. Session state (search_path, temp tables, GUCs, transactions) belongs to the tab, which is what an IDE user expects.
 4. **During a run, the session moves into the run task.** `Console` holds `Option<Session>`. A run takes it and gives it back when finished. Commit, rollback, or a second run while it is gone returns `Busy`. Concurrent use of one session cannot be expressed.
-5. **Snapshots over deltas.** The backend emits whole `ConsoleState` and `ConnectionState` values with a monotonically increasing `rev`. The frontend's live store is a pure projection: `apply(event)` keeps the higher rev. This is idempotent and tolerant of event order. Only the append-only output log uses deltas.
+5. **Snapshots over deltas.** The backend emits whole `ConsoleState` and `ConnectionState` values with a monotonically increasing `rev`. The frontend's live store is a pure projection: `apply(event)` keeps the higher rev. This is idempotent and tolerant of event order. Only `ConsoleOutput`, the append-only output log, uses deltas.
 6. **One SQL lexer, in Rust.** `split_statements` and `classify` are pure functions. They handle dollar quotes, `E''` strings, nested block comments, and quoted identifiers. They drive statement picking, transaction-state tracking, DDL-triggered catalog refresh, and synthesized command tags. The frontend sends the whole document plus a cursor or selection. All offsets crossing IPC are UTF-16 code units (CodeMirror's unit), and the conversion happens once at the boundary.
 7. **One full-catalog snapshot per connection, loaded in four queries.** It covers schemas, relations with `reltuples`, columns with PK flags, and functions. The tree, ⌘P fuzzy search, and CodeMirror completion are all derived from it. Successful DDL triggers a background refresh and a `CatalogChanged` event.
 8. **Contract generation.** Every IPC type lives in `crates/engine` with `#[derive(Serialize, Deserialize, specta::Type)]`. `src-tauri` registers commands with `tauri-specta` and adds `AppEvent` as a plain exported type; the shell forwards `Engine::subscribe()` with `app.emit("app-event", ev)`, which sidesteps the release-candidate event API. Debug builds export `src/ipc/bindings.ts`, and a test fails if the checked-in file differs.
@@ -254,7 +277,7 @@ pub struct ResultMeta {
 pub struct ColumnMeta {
     pub name: String,
     pub r#type: PgTypeRef,
-    pub source: Option<ColumnSource>,  // table_oid + attnum: hook for future inline editing
+    pub source: Option<ColumnSource>,  // table_oid + attnum: the grid's PK icon (isPrimaryKey in state/catalog.ts)
 }
 #[derive(Clone, Serialize, Type)]
 pub struct PgTypeRef { pub oid: u32, pub display: String /* "bigint", "integer[]", "order_status" */, pub category: TypeCategory }
@@ -307,18 +330,23 @@ pub struct Workspace { pub tabs: Vec<TabSnapshot>, pub active: Option<TabId>, pu
 #[serde(tag = "kind")]
 pub enum TabSnapshot {
     Sql   { id: TabId, title: String, text: String, console: ConsoleConfigSnapshot },
-    Table { id: TabId, connection_id: ConnectionId, schema: String, table: String, page: u32 },
+    Table { id: TabId, connection_id: ConnectionId, schema: String, table: String, page: u32, #[serde(default)] query: TableQuery },
 }
 #[derive(Clone, Serialize, Deserialize, Type)]
 pub struct ConsoleConfigSnapshot { pub connection_id: Option<ConnectionId>, pub schema: Option<String>, pub mode: TxnMode }
-#[derive(Clone, Serialize, Deserialize, Type)]
-pub struct Layout { pub sidebar: bool, pub results: bool, pub right_panel: Option<RightPanel>, pub results_height: u16 }
+#[derive(Clone, Serialize, Type)]
+pub struct Layout {
+    pub sidebar: bool, pub results: bool, pub right_panel: Option<RightPanel>, pub results_height: u16,
+    pub sidebar_width: u16 /* 256 */, pub right_panel_width: u16 /* 341 */,
+}
+// Layout has a hand-written Deserialize: workspaces saved before the widths existed load with the defaults.
 #[derive(Clone, Serialize, Deserialize, Type)] pub enum RightPanel { Assistant, Schema, History }
+// Only Assistant is drawn. `restore` in state/workspace.ts maps any saved panel to Assistant.
 
-#[derive(Clone, Serialize, Deserialize, Type)]
+#[derive(Clone, Serialize, Type)]
 pub struct Settings { pub max_rows: u32 /* 200_000 */, pub max_result_bytes: u64 /* 512 MiB */, pub table_page_size: u32 /* 500 */, pub stop_on_error: bool, pub theme: Theme /* System */ }
 #[derive(Clone, Copy, Default, Serialize, Deserialize, Type)] pub enum Theme { #[default] System, Light, Dark }
-// Settings saved before `theme` existed load with Theme::System.
+// Settings has a hand-written Deserialize: settings saved before `theme` existed load with Theme::System.
 
 #[derive(Serialize, Type)]
 pub struct BootSnapshot {
@@ -349,14 +377,16 @@ Each command is one line delegating to `Engine`. tauri-specta uses `ErrorHandlin
 | `connection_delete` | `ConnectionId` | `Result<(), DisconnectError>` | Disconnects (refuses on open txns), deletes the config row and sealed password together. Never touches the keychain. |
 | `connection_test` | `ConnectionDraft` | `Result<ServerInfo, ConnectError>` | `PasswordInput::Keep` opens the sealed password, if one is stored. |
 | `connection_connect` | `ConnectionId` | `Result<ServerInfo, ConnectError>` | Idempotent. Opens the metadata session and loads the catalog. |
-| `connection_disconnect` | `ConnectionId, force: bool` | `Result<(), DisconnectError>` | `OpenTransactions { tabs: Vec<(TabId, bool /*has_writes*/)> }` unless forced. |
+| `connection_disconnect` | `ConnectionId, force: bool` | `Result<(), DisconnectError>` | `OpenTransactions { tabs: Vec<OpenTxn> }` unless forced. |
 | `catalog_get` | `ConnectionId` | `Result<Catalog, NotConnected>` | Whole snapshot, fetched on `CatalogChanged`. |
 | `catalog_refresh` | `ConnectionId` | `Result<u64, NotConnected>` | Returns the new version. The event also fires. |
+| `exact_row_count` | `ConnectionId, schema: String, table: String, TableQuery` | `Result<u64, CountError>` | `count(*)` with the query's filters, on the metadata session. The pager's Last button calls it. |
 | `console_configure` | `TabId, ConsoleConfig` | `Result<ConsoleState, ConfigureError>` | Upsert. `TransactionOpen` if mode/connection change with a live txn. A schema change issues `SET search_path` (applied on next run if busy). |
-| `console_run` | `TabId, RunRequest` | `Result<RunAccepted, RunError>` | Returns once statements are picked. Progress arrives as events. |
+| `console_run` | `TabId, RunRequest` | `Result<RunAccepted, RunError>` | Returns once statements are picked. Progress arrives as events. `BadFilter` when a table page's SQL isn't one statement. |
 | `console_cancel` | `TabId` | `()` | Idempotent. Sets the stop flag and sends `CancelRequest`. |
 | `console_commit` | `TabId` | `Result<(), TxnError>` | `Busy`, `NoTransaction`. Commit in `Aborted` reports `RolledBack`. |
 | `console_rollback` | `TabId` | `Result<(), TxnError>` | |
+| `table_apply` | `TabId, TableChanges` | `Result<ApplySummary, ApplyError>` | Applies staged row edits on the tab's session, all or nothing. |
 | `console_close` | `TabId, force: bool` | `Result<(), DisconnectError>` | Drops session and results. |
 | `result_page` | `ResultRef, start: u32, len: u32` | `Result<RowPage, ResultError>` | `Gone` if the tab re-ran or closed. `len` ≤ 2,000. |
 | `result_cell` | `ResultRef, row: u32, col: u16` | `Result<Option<String>, ResultError>` | Full value for cut cells. |
@@ -371,9 +401,20 @@ Each command is one line delegating to `Engine`. tauri-specta uses `ErrorHandlin
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RunRequest {
     Script { text: String, target: RunTarget },
-    /// Engine builds quoted SQL ordered by the catalog's PK columns (no ORDER BY without a PK).
-    TablePage { schema: String, table: String, page: u32 },
+    /// Engine builds quoted SQL: the query's ORDER BY text first, then the catalog's PK columns as a tiebreak.
+    TablePage { schema: String, table: String, page: u32, #[serde(default)] query: TableQuery },
 }
+#[derive(Clone, Default, PartialEq, Serialize, Type)]
+pub struct TableQuery {
+    pub order_by: String,              // SQL after ORDER BY; empty means primary key order
+    pub filters: Vec<ColumnFilter>,
+    pub r#where: String,               // a boolean SQL expression ANDed with `filters`; empty means none
+}
+// TableQuery has a hand-written Deserialize so saved tabs missing a field still load, while specta keeps every field required.
+#[derive(Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ColumnFilter { pub column: String, pub op: FilterOp, pub value: String /* a PG literal; ignored by IsNull, NotNull */ }
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum FilterOp { Eq, Ne, Lt, Le, Gt, Ge, Contains, StartsWith, IsNull, NotNull }
 #[derive(Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RunTarget { Cursor { offset: DocOffset }, Selection { from: DocOffset, to: DocOffset }, All, }
@@ -381,10 +422,42 @@ pub enum RunTarget { Cursor { offset: DocOffset }, Selection { from: DocOffset, 
 pub struct RunAccepted { pub run_id: RunId, pub statements: Vec<DocRange> }
 #[derive(Serialize, Type)]
 #[serde(tag = "kind")]
-pub enum RunError { Busy, NoStatement, NotConfigured, Unsupported { what: String /* COPY FROM STDIN */ }, Connect(ConnectError) }
+pub enum RunError {
+    Busy, NoStatement, NotConfigured, Unsupported { what: String /* COPY FROM STDIN / TO STDOUT */ }, Connect { error: ConnectError },
+    BadFilter,                         // WHERE or ORDER BY isn't a single expression
+}
 #[derive(Serialize, Type)] #[serde(tag = "kind")] pub enum TxnError { Busy, NoTransaction, RolledBack, Query(QueryError) }
 #[derive(Serialize, Type)] #[serde(tag = "kind")] pub enum ResultError { Gone, OutOfRange }
 #[derive(Serialize, Type)] pub struct ExportSummary { pub rows: u64, pub bytes: u64, pub truncated: bool }
+#[derive(Serialize, Type)] #[serde(tag = "kind")] pub enum CountError { NotConnected, Failed { message: String } }
+
+/// Staged edits to one table. Rows to update or delete are found by primary key.
+#[derive(Deserialize, Type)]
+pub struct TableChanges {
+    pub schema: String, pub table: String,
+    pub inserts: Vec<Vec<CellWrite>>,  // columns left out take their default
+    pub updates: Vec<RowUpdate>,
+    pub deletes: Vec<Vec<CellWrite>>,  // each entry is the primary key of a row to delete
+}
+#[derive(Clone, PartialEq, Deserialize, Type)]
+pub struct CellWrite { pub column: String, pub value: Option<String> /* PG text input; None is NULL */ }
+#[derive(Deserialize, Type)] pub struct RowUpdate { pub key: Vec<CellWrite>, pub set: Vec<CellWrite> }
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Type)] pub enum ChangeKind { Insert, Update, Delete }
+/// Points at one entry of `TableChanges`, by its list and index there.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Type)] pub struct ChangeRef { pub kind: ChangeKind, pub index: u32 }
+/// `committed` is false when the changes wait in the tab's open transaction (manual mode) for Commit.
+#[derive(Serialize, Type)] pub struct ApplySummary { pub committed: bool }
+/// Nothing is applied when any of these comes back.
+#[derive(Serialize, Type)]
+#[serde(tag = "kind")]
+pub enum ApplyError {
+    Busy, NotConfigured, Connect { error: ConnectError },
+    TransactionAborted,                              // roll the tab's failed transaction back first
+    NoPrimaryKey,                                    // updates and deletes need the full primary key
+    Failed { change: ChangeRef, error: QueryError },
+    RowMismatch { change: ChangeRef, rows: u64 },    // matched `rows` rows instead of one
+    Transaction { error: QueryError },               // opening or committing the transaction failed
+}
 ```
 
 Table data tabs need no extra command to read. A table tab sends `RunRequest::TablePage` with its `TableQuery` (`where`, per-column `filters`, `orderBy`) to `console_run` on its own console. The engine builds `SELECT * FROM "public"."orders" WHERE … ORDER BY <user order>, <pk cols> LIMIT 500 OFFSET 1000` with a pure, tested `browse_sql` function and then follows the same run path as a script. One execution path serves both tab kinds, and identifier quoting has one owner.
@@ -394,12 +467,14 @@ Writing uses one command, `table_apply(tab, TableChanges)`. It borrows the tab's
 ### Engine (crates/engine/src/lib.rs, the deep module)
 
 ```rust
-pub struct Engine { /* store, vault, settings, connections, consoles, events, next_run */ }
+pub struct Engine { shared: Arc<Shared> }
+pub(crate) struct Shared { /* data_dir, vault, store, settings, connections, consoles, events, next_run, timezone */ }
 
 pub struct EngineConfig { pub data_dir: PathBuf, pub keys: Arc<dyn KeyStore> }
 
 impl Engine {
     pub async fn open(cfg: EngineConfig) -> Result<Arc<Self>, StoreError>;   // opens SQLite, runs migrations
+    pub fn data_dir(&self) -> &Path;                                         // self-check report, bridge log
     pub fn subscribe(&self) -> broadcast::Receiver<AppEvent>;                // Tauri shell + tests
     pub fn boot(&self) -> BootSnapshot;
 
@@ -410,12 +485,14 @@ impl Engine {
     pub async fn disconnect(&self, id: ConnectionId, force: bool) -> Result<(), DisconnectError>;
     pub fn catalog(&self, id: ConnectionId) -> Result<Arc<Catalog>, NotConnected>;
     pub async fn refresh_catalog(&self, id: ConnectionId) -> Result<u64, NotConnected>;
+    pub async fn exact_row_count(&self, id: ConnectionId, schema: String, table: String, query: TableQuery) -> Result<u64, CountError>;
 
     pub async fn console_configure(&self, tab: TabId, c: ConsoleConfig) -> Result<ConsoleState, ConfigureError>;
     pub async fn console_run(&self, tab: TabId, r: RunRequest) -> Result<RunAccepted, RunError>;
     pub async fn console_cancel(&self, tab: TabId);
     pub async fn console_commit(&self, tab: TabId) -> Result<(), TxnError>;
     pub async fn console_rollback(&self, tab: TabId) -> Result<(), TxnError>;
+    pub async fn table_apply(&self, tab: TabId, changes: TableChanges) -> Result<ApplySummary, ApplyError>;
     pub async fn console_close(&self, tab: TabId, force: bool) -> Result<(), DisconnectError>;
 
     pub fn result_page(&self, r: ResultRef, start: u32, len: u32) -> Result<RowPage, ResultError>;
@@ -425,11 +502,12 @@ impl Engine {
     pub fn history(&self, q: HistoryQuery) -> HistoryPage;
     pub fn clear_history(&self);
     pub fn save_workspace(&self, w: Workspace);
+    pub fn settings(&self) -> Settings;                                      // main.rs: the window's first theme
     pub fn set_settings(&self, s: Settings);
 }
 ```
 
-The surface is about 20 methods, matching the commands one to one. Behind it the engine hides:
+The surface is 27 methods. 23 of them match the 23 registered commands one to one. `open`, `data_dir`, `subscribe`, and `settings` serve the shell, the dev-bridge, and tests. Behind it the engine hides:
 
 - TLS mode mapping and keychain reads
 - Session lifecycle, lazy reconnects, and `search_path` / `TimeZone` setup
@@ -442,55 +520,71 @@ The surface is about 20 methods, matching the commands one to one. Behind it the
 - History recording
 - DDL-triggered catalog refresh
 - UTF-16 offset mapping
+- Table-browse, count, and edit SQL with its own quoting
+- Staged edits applied under one transaction or savepoint
 
-The frontend never sequences two calls to complete one operation.
+The frontend sequences two calls for one operation in two places only. `runTab` configures a tab's console before its first run, and the pager's Last button counts rows with `exact_row_count` before it loads the page.
 
 ### Internal structure
 
 ```rust
 // console.rs
-pub(crate) struct Console {
-    tab: TabId,
-    inner: Mutex<ConsoleInner>,          // tokio Mutex, held only for state edits, never across a query
+pub struct Console {
+    pub tab: TabId,
+    pub inner: Mutex<ConsoleInner>,                       // tokio Mutex, held only for state edits, never across a query
+    pub results: std::sync::Mutex<Vec<Arc<ResultSet>>>,   // results of the current/last run only; dropped on re-run
+    pub latest: std::sync::Mutex<ConsoleState>,           // the last published snapshot, for boot()
+    pub closed: AtomicBool,
 }
-struct ConsoleInner {
-    config: ConsoleConfigView,
-    session: SessionSlot,
-    txn: TxnState,
-    run: RunState,
-    results: Vec<Arc<ResultSet>>,        // results of the current/last run only; dropped on re-run
-    rev: u64,
+pub struct ConsoleInner {
+    pub config: ConsoleConfigView,
+    pub session: SessionSlot,
+    pub txn: TxnState,
+    pub run: RunState,
+    pub rev: u64,
+    pub ddl_pending: bool,                                // DDL ran inside a transaction; refresh the catalog on commit
 }
-enum SessionSlot {
+pub enum SessionSlot {
     Empty,
     Idle(Session),
-    InRun { run_id: RunId, cancel: CancelHandle },   // the Session is owned by the run task
+    Busy { run_id: RunId, backend_pid: i32, cancel: CancelHandle, stop: Arc<AtomicBool> },  // a run task or a commit owns the Session
     Lost { reason: String, txn_lost: bool },
 }
-struct CancelHandle { token: tokio_postgres::CancelToken, tls: MakeTlsConnector, stop: Arc<AtomicBool> }
 
 // session.rs
-pub(crate) struct Session {
-    client: tokio_postgres::Client,
-    backend_pid: i32,
+pub struct Session {
+    pub client: tokio_postgres::Client,
+    pub backend_pid: i32,
+    pub server: ServerInfo,
+    pub search_path: Option<String>,              // the schema last set, compared with the console config before each run
+    cancel: CancelToken,
+    tls: MakeTlsConnector,
     notices: mpsc::UnboundedReceiver<DbError>,   // fed by the Connection driver task (poll_message)
     closed: watch::Receiver<Option<String>>,     // Some(reason) once the driver task exits
 }
+#[derive(Clone)] pub struct CancelHandle { token: CancelToken, tls: MakeTlsConnector }
 impl Session {
     /// Connects, sets TimeZone, application_name='L1 Data', search_path; spawns the driver task.
-    pub async fn open(p: &ConnectParams, schema: Option<&str>) -> Result<Session, ConnectError>;
+    pub async fn open(p: &ConnectParams, schema: Option<&str>, timezone: &str) -> Result<Session, ConnectError>;
 }
 
 // results.rs: single writer (run task), many readers (result_page); append-only.
-pub(crate) struct ResultSet { pub meta_static: (ResultRef, Vec<ColumnMeta>), data: RwLock<Arena> }
-struct Arena { text: String, cells: Vec<(u32, u32)> /* (start, len); len == u32::MAX = NULL */, ncols: u16, rows_seen: u64, truncated: Option<TruncateReason> }
+pub struct ResultSet { pub r#ref: ResultRef, pub columns: Vec<ColumnMeta>, data: RwLock<Arena> }
+struct Arena { text: String, cells: Vec<(u32, u32)> /* (start, len); len == u32::MAX = NULL */, ncols: usize, rows_seen: u64, truncated: Option<TruncateReason>, elapsed_ms: u32 }
 
 // sql/split.rs, sql/classify.rs: pure
 pub struct StmtSpan { pub start: usize, pub end: usize }        // UTF-8 byte offsets, trimmed
 pub fn split_statements(sql: &str) -> Vec<StmtSpan>;
 pub fn pick(spans: &[StmtSpan], sql: &str, target: ByteTarget) -> Vec<StmtSpan>;
-pub enum StmtKind { Begin, Commit, Rollback, Savepoint, RollbackTo, Release, Ddl, Dml(DmlVerb), Query, CopyStdio, Other }
+pub enum StmtKind {
+    Begin, Commit, Rollback, Savepoint, RollbackTo, Release,
+    Ddl(String), Dml(DmlVerb), Query, CopyStdio, NoTxnBlock(String), Other(String),   // String: the command tag
+}
 pub fn classify(stmt: &str) -> StmtKind;
+
+// catalog.rs
+impl Catalog { pub fn relation(&self, schema: &str, table: &str) -> Option<&Relation>; }
+impl Relation { pub fn pk_columns(&self) -> Vec<String>; }
 
 // txn.rs: pure, exhaustively tested
 pub enum StmtOutcome { Ok, Err }
@@ -502,21 +596,30 @@ pub struct OffsetMap<'a> { /* sql text */ }
 impl OffsetMap<'_> {
     pub fn to_utf16(&self, byte: usize) -> DocOffset;
     pub fn from_utf16(&self, off: DocOffset) -> usize;
+    pub fn range(&self, span: &StmtSpan) -> DocRange;
     /// PG ErrorPosition::Original(n) is a 1-based character index within the statement.
     pub fn pg_position(&self, stmt: &StmtSpan, n: u32) -> DocOffset;
 }
 pub fn type_ref(t: &tokio_postgres::types::Type) -> PgTypeRef;       // int8 -> bigint, _int4 -> integer[], Kind -> category
 pub fn synthesize_tag(kind: &StmtKind, rows: u64) -> String;          // "INSERT 0 3", "UPDATE 3", "CREATE TABLE"
+pub fn quote_ident(name: &str) -> String;
+pub fn quote_literal(value: &str) -> String;
+pub fn browse_sql(schema: &str, table: &str, pk: &[String], q: &TableQuery, limit: u32, offset: u64) -> String;
+pub fn count_sql(schema: &str, table: &str, q: &TableQuery) -> String;
+pub fn insert_sql(schema: &str, table: &str, cells: &[CellWrite]) -> String;
+pub fn update_sql(schema: &str, table: &str, key: &[CellWrite], set: &[CellWrite]) -> String;
+pub fn delete_sql(schema: &str, table: &str, key: &[CellWrite]) -> String;
 ```
 
 ### Run loop (console.rs, pseudocode)
 
 ```rust
-async fn run_task(console: Arc<Console>, mut session: Session, run: RunPlan, eng: Arc<EngineShared>) {
-    for (i, stmt) in run.statements.iter().enumerate() {
-        if run.stop.load() { mark rest Cancelled/Skipped; break }
-        let kind = classify(stmt.sql);
-        // TODO: if needs_implicit_begin(mode, txn, kind) => session.client.batch_execute("BEGIN"), Info entry
+async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: Session, plan: RunPlan, stop: Arc<AtomicBool>) -> Result<(), Orphaned> {
+    // if session.search_path != plan.schema => session.set_search_path(plan.schema)
+    for (i, stmt) in plan.statements.iter().enumerate() {
+        if stop.load() { mark rest Cancelled/Skipped; break }
+        let kind = stmt.kind;                            // classified by console_run
+        if needs_implicit_begin(mode, txn, kind) { session.client.batch_execute("BEGIN"); txn = Active; Info("BEGIN (implicit)") }
         set_status(i, Preparing);
         let outcome = match session.client.prepare(stmt.sql).await {
             Err(e) => Failed(map_err(e, stmt)),
@@ -533,9 +636,9 @@ async fn run_task(console: Arc<Console>, mut session: Session, run: RunPlan, eng
         };
         drain session.notices -> ConsoleOutput
         txn = txn_after(txn, &kind, outcome.ok_or_err());
-        eng.history.record(...);                         // single writer: run tasks, via store mutex
+        shared.record_history(...);                      // single writer: run tasks, via store mutex
         if outcome.failed() && settings.stop_on_error { mark rest Skipped; break }
-        if kind == Ddl && ok && txn == Idle { eng.schedule_catalog_refresh(conn) }
+        if kind.is_ddl() && ok && txn == Idle { shared.schedule_catalog_refresh(conn) }  // else ddl_pending until commit
     }
     // if session.closed has Some(reason): slot = Lost { reason, txn_lost: txn != Idle }; txn = Idle
     // else slot = Idle(session)
@@ -554,9 +657,9 @@ Session-loss rules:
 
 ### Frontend (React 19, TypeScript, Vite)
 
-- **Framework: React 19.** cmdk covers the ⌘P palette, Radix primitives cover menus and dialogs, and TanStack Virtual covers the grid. The AI panel later lands in React's ecosystem. Agents write React most reliably, which speeds the verify loop.
-- **Editor: CodeMirror 6, used directly** (no wrapper library). One `EditorView` is mounted, and the `EditorState` is swapped per tab, so undo history survives tab switches. `sql({ dialect: PostgreSQL, schema, defaultSchema, upperCaseKeywords: true })` provides highlighting and schema completion. A lint source renders `QueryError.position` as a diagnostic.
-- **Grid: a hand-built DOM grid on `@tanstack/react-virtual`.** Fixed 36 px rows. Rows are always virtualized. Columns are virtualized when there are more than 40. The header shows name and type in two lines, and a sticky row-number column is on the left. Numeric categories are right aligned with digit grouping, inserted textually so precision is never lost. NULL renders as a dim `NULL`. Cut cells show an ellipsis, and clicking one calls `result_cell`. Selection of a cell range is copied as TSV.
+- **Framework: React 19.** cmdk covers three palettes: catalog search (⌘P), query history, and settings search. Radix covers dialogs, dropdown menus, and context menus. TanStack Virtual covers the grid, and `@tabler/icons-react` supplies the icons. react-resizable-panels holds only the editor and results split. The right panel draws an Assistant placeholder. The AI chat is not built yet. Agents write React most reliably, which speeds the verify loop.
+- **Editor: CodeMirror 6, used directly** (no wrapper library). One `EditorView` is mounted, and the `EditorState` is swapped per tab, so undo history survives tab switches. Table tabs get an editor too, seeded with `browseQuery(schema, table)`. `sql({ dialect: PostgreSQL, schema, upperCaseKeywords: true })` provides highlighting and schema completion. A second completion source, `qualifiedTables`, offers every table as `schema.table` and inserts `"schema"."table"`. After a failed script run, `showDiagnostics` calls `setDiagnostics` to mark `QueryError.position`.
+- **Grid: a hand-built DOM grid on `@tanstack/react-virtual`.** Fixed 24 px rows. Rows and columns are always virtualized. The header is one line with a category icon (a key icon for a primary-key column) and the name. The type shows in the tooltip. On a table tab a header click sorts and Shift-click adds a sort key. A sticky row-number column is on the left. Numeric categories are right aligned with digit grouping, inserted textually so precision is never lost. NULL renders as a dim `NULL`. Cut cells show an ellipsis button that opens the `cell` overlay with the full value. Selection of a cell range is copied as TSV, up to 50,000 rows. On an editable table tab the grid also edits cells, adds rows, and marks rows deleted (see Frontend phase in Implementation reconciliation).
 - **Styling: Tailwind v4** with CSS variables for every colour. `index.css` holds the dark values from the mockup and a `:root[data-theme="light"]` block that overrides each one. The CodeMirror theme and syntax colours read the same variables. `shell/theme.ts` sets `data-theme` and `color-scheme` on the root element before the first render. It follows `prefers-color-scheme` while the setting is System.
 - **Settings is a screen, not an overlay.** The workspace store holds `screen: { kind: "workspace" } | { kind: "settings"; section; target? }`, which is not persisted. There is one sidebar. `Sidebar` always draws its header (the sidebar toggle and the app title) and picks its body from `screen.kind`. In settings the body is `SettingsSidebarBody`: a "Search" row, the section list, and a Back button at the bottom. The main panel shows the section and the right panel is hidden. The sidebar toggle works as in the workspace. When the sidebar is hidden, the toggle sits at the leading edge of the settings page header. Sections come from the `SETTINGS_SECTIONS` registry in `features/settings/sections.tsx`, and each section lists its settings with a label and search keywords. The settings search (`⌘P` while settings is open) ranks those settings with the catalog search's fuzzy ranker. Choosing one opens its section with `target` set, and the page scrolls to the element marked `data-setting="<id>"` and focuses its control. Each change applies and persists at once. Escape closes an open settings search first. The Back button, Escape, and `⌘,` return to the workspace. Any other shortcut that opens an overlay or a tab returns to the workspace first. Entering or leaving settings closes any open overlay, so no dialog carries over to the other screen.
 
@@ -564,56 +667,91 @@ Stores (Zustand v5). Each has one owner, and derived data is never stored:
 
 ```ts
 // state/live.ts: pure projection of backend events. No component writes here.
-type LiveState = {
+type LiveData = {
   connections: Record<ConnectionId, ConnectionState>;
   consoles: Record<TabId, ConsoleState>;
-  output: Record<TabId, OutputEntry[]>;                // ring buffer, 5,000 per tab
+  output: Record<TabId, OutputEntry[]>;                // ring buffer, 5,000 per tab; filled, but no view reads it
+  catalogVersions: Record<ConnectionId, number>;       // highest version seen; boot.ts calls useCatalog.ensure
+  historyTail: HistoryEntry[];                         // last 200 HistoryAppended entries, newest first
+};
+type LiveState = LiveData & {
   hydrate(b: BootSnapshot): void;
   apply(e: AppEvent): void;                            // keep-higher-rev; exhaustive switch on e.kind
 };
+// export const useLive = create<LiveState>()(...)
 
-// state/workspace.ts: UI-owned; persisted via workspace_save (debounced)
+// state/workspace.ts: UI-owned; tabs, order, active, and layout persist via workspace_save (debounced)
 type Tab =
   | { kind: "sql"; id: TabId; title: string; console: ConsoleConfigSnapshot }
-  | { kind: "table"; id: TabId; connectionId: ConnectionId; schema: string; table: string; page: number };
-type WorkspaceState = {
+  | { kind: "table"; id: TabId; connectionId: ConnectionId; schema: string; table: string; page: number;
+      query: TableQuery; exactRowCount?: number };    // exactRowCount: set by the pager's Last button
+type WorkspaceData = {
   tabs: Record<TabId, Tab>; order: TabId[]; active: TabId | null; layout: Layout;
   configs: Record<ConnectionId, ConnectionConfig>;
   activeResult: Record<TabId, number>;                 // which statement's result is shown
+  settings: Settings;
+  selected: RelationRef | null;                        // highlighted relation in the tree
+  overlay: Overlay;                                    // none | palette | history | settings-search | connection | cell | confirm
+  screen: Screen;                                      // workspace | settings
+  toast: { id: number; text: string } | null;
+  cursor: { line: number; col: number };               // status bar Ln/Col
 };
-// SQL text lives only in CodeMirror: editorStates: Map<TabId, EditorState> (module-level).
-// workspaceSnapshot() reads doc text from there. No second copy of the text is kept.
+// Editor text lives only in CodeMirror: editorStates: Map<TabId, EditorState> (module-level).
+// workspaceSnapshot() reads SQL tab text from there. No second copy of the text is kept.
 
-// state/catalog.ts: per connection, rebuilt when catalog version changes (memoized)
+// state/catalog.ts: per connection, rebuilt when catalog version changes
 type CatalogView = {
   catalog: Catalog;
   completion: SQLNamespace;                            // {schema: {table: [cols]}} for lang-sql
+  qualifiedTables: Completion[];                       // "schema.table", applied as "schema"."table"
   searchItems: SearchItem[];                           // tables, views, functions, "table.column"
   relationsById: Map<number, { schema: string; rel: Relation }>;
 };
+// useCatalog: { views: Record<ConnectionId, CatalogView>; ensure(id, version): Promise<void> }
 
 // state/rowCache.ts: outside React, per ResultRef, LRU of 256-row pages (max 64 pages)
-class RowCache { constructor(ref: ResultRef); get(row: number): (string | null)[] | undefined; ensure(range: { start: number; end: number }): Promise<void>; }
+class RowCache {
+  constructor(ref: ResultRef, source?: RowSource);    // source defaults to result_page / result_cell
+  get(row: number): Row | undefined;
+  isCut(row: number, col: number): boolean;
+  ensure(range: RowRange, rowCount: number): Promise<void>;
+  loadFull(row: number, col: number): Promise<string | null | undefined>;   // result_cell
+  subscribe(listener: () => void): () => void;        // with getVersion, for useSyncExternalStore
+}
+function rowCacheFor(ref: ResultRef): RowCache;        // module-level map; a new runId for a tab evicts its old caches
+function dropRowCaches(tabId: string): void;
+
+// state/tableEdits.ts: staged row edits per table tab, not persisted
+// useTableEdits: { byTab: Record<TabId, TableEdits>; submitting: Record<TabId, true>; edit; addRow; clear; beginSubmit; endSubmit }
+type TableEdits = {
+  inserts: NewRow[];
+  updates: Record<RowKey, { key: CellValue[]; values: Record<string, CellValue> }>;  // RowKey = JSON of the PK values
+  deletes: Record<RowKey, CellValue[]>;
+  failedAt: { insert: number } | { key: RowKey } | null;
+};
+
+// features/results/tableQuery.ts: useFilterDrafts, filter rows the user is still filling in, per tab
+// state/status.ts: pure derivations (isRunning, hasUncommittedWork, connectionStatus, shownResult, runSummary)
 ```
 
 The UI derives its status values instead of storing them:
 
 | Derived status | Source |
 |---|---|
-| Run button: Run or Cancel | `consoles[tab].run.kind` |
-| Status bar text | `connections[id].status` + `consoles[tab].config` + `txn` |
-| Commit/Rollback visibility | `config.mode === "Manual" && txn !== "Idle"` |
-| "6 rows · 38 ms" | `ResultMeta` |
+| Run button: Run or Cancel | `isRunning(consoles[tab])`, from `run.kind` |
+| Status bar | `connectionStatus(connections[id])`, the server version, a "Transaction rolled back: connection lost" chip while `session` is `Lost { txnLost }`, Ln/Col on SQL tabs, and the mode menu on SQL tabs (table tabs show a fixed auto-commit chip) |
+| Commit/Rollback visibility | SQL tabs only, while `hasUncommittedWork` (`config.mode === "Manual" && txn !== "Idle"`) |
+| "6 rows · 38 ms" in the results toolbar (`result-status`) | `runSummary(run, picked, now)` from `ResultMeta` |
 | Unsaved dot | Shown only while `txn !== "Idle"` in manual mode ("uncommitted work"). Consoles autosave text to the workspace, so a text-dirty dot would mean nothing. |
 
 ### Persistence
 
-Everything lives under `app_data_dir()` (override with `L1_DATA_DATA_DIR` in debug builds), in one SQLite file `l1-data.sqlite3` (rusqlite, bundled) with `PRAGMA user_version` migrations:
+Everything lives under `app_data_dir()` (override with `L1_DATA_DATA_DIR` in debug builds), in one SQLite file `l1-data.sqlite3` (rusqlite, bundled, WAL journal) with `PRAGMA user_version` migrations:
 
 - `connections(id TEXT PK, json TEXT)`. Configs only.
 - `history(id INTEGER PK, at_ms, connection_id, connection_name, database, sql, elapsed_ms, outcome_json)`, indexed on `(connection_id, id)`. Search is `LIKE`; FTS5 can come later. Pruned to the newest 10,000 entries on insert.
 - `kv(key TEXT PK, json TEXT)`. Holds `workspace` and `settings`.
-- `secrets(connection_id TEXT PK, nonce BLOB, ciphertext BLOB)`. One sealed password per connection.
+- `secrets(connection_id TEXT PK, nonce BLOB, ciphertext BLOB)`. One sealed password per connection. Migration 2 adds it.
 
 The OS credential store holds one item, a random 32-byte master key, with service `dev.l1data.app` and user `master-key`. macOS therefore asks for keychain access once, not once per connection. Each password is sealed with XChaCha20-Poly1305 under that key, with a random nonce and the connection id as associated data, and the result is stored in the `secrets` table. All passwords do not go into one keychain item because Windows Credential Manager caps an item at 2560 bytes. The first saved password creates the key. Reading a password never creates one. If the key is missing or a password fails to open (wiped keychain, copied data dir, memory store restart), the connection behaves as if it had no password, and the user enters it again at the `MissingPassword` prompt. `trait KeyStore { load, save }` has two implementations: `KeyringKeyStore` and `MemoryKeyStore`. The second exists for tests and e2e, selected by `L1_DATA_SECRET_STORE=memory` in debug builds only. SQLite access is a `std::sync::Mutex<rusqlite::Connection>`. Writes are single-row and sub-millisecond, so they run inline.
 
@@ -621,38 +759,50 @@ The OS credential store holds one item, a random 32-byte master key, with servic
 
 ```
 Cargo.toml                    # workspace: crates/engine, crates/dev-bridge, src-tauri
-package.json  vite.config.ts  tsconfig.json
+package.json  vite.config.ts  tsconfig.json  index.html
+README.md  AGENTS.md  CLAUDE.md   # AGENTS.md holds instructions for coding agents; CLAUDE.md imports it
 crates/engine/
   src/lib.rs                  # Engine facade
   src/model.rs                # every IPC type (single source)
-  src/connection.rs           # ConnectParams, TLS (postgres-native-tls), LiveConnection, metadata session
-  src/session.rs              # Session: client + driver task + notices + death watch
+  src/connection.rs           # ConnectParams, TLS (postgres-native-tls), Live/ConnSlot/ConnEntry, metadata session, draft_from_url
+  src/session.rs              # Session: client + driver task + notices + death watch; CancelHandle
   src/console.rs              # Console, SessionSlot, run task
   src/txn.rs                  # pure transaction state machine
-  src/sql/{split,classify}.rs # pure lexer, picker, classifier
-  src/text.rs                 # UTF-16 mapping, type_ref, synthesize_tag, browse_sql
+  src/sql/{mod,split,classify}.rs  # pure lexer, picker, classifier
+  src/text.rs                 # UTF-16 mapping, type_ref, synthesize_tag, quoting, browse/count/edit SQL
   src/results.rs              # Arena, pages, CSV writer
   src/catalog.rs              # 4 catalog queries -> Catalog
-  src/store.rs                # SQLite: migrations, connections, history, kv
+  src/store.rs                # SQLite: migrations, connections, history, kv, secrets
   src/secrets.rs              # Vault + KeyStore (Keyring/Memory)
-  tests/                      # pg-tests feature: Harness + scenario files
+  tests/pg.rs                 # pg-tests feature: Harness + every scenario
 src-tauri/
-  src/main.rs                 # builder, specta export, event forwarder task, plugins
+  src/main.rs                 # builder, specta export, event forwarder task, plugins, macOS menu, self-check
   src/ipc.rs                  # #[tauri::command] one-liners
-  tauri.conf.json  capabilities/default.json
+  build.rs  tauri.conf.json  capabilities/default.json
+  app-icon.svg  icons/        # icons/ is generated from app-icon.svg by dev/icons.sh
 src/                          # frontend
+  main.tsx  boot.ts  index.css
   ipc/bindings.ts             # GENERATED, checked in
-  state/{live,workspace,catalog,rowCache}.ts
-  shell/{AppLayout,TopBar,StatusBar}.tsx  shell/theme.ts
-  features/settings/{sections,SettingsScreen,SettingsSearchPalette,AppearanceSection,QueriesSection}.tsx
-  features/sidebar/{ConnectionTree,SearchPalette}.tsx
-  features/connections/ConnectionDialog.tsx
-  features/editor/{SqlEditor,editorStates,runActions,completion}.ts(x)
-  features/results/{ResultsPane,ResultGrid,OutputLog,format}.ts(x)
+  ipc/errors.ts               # typed IPC errors -> user-facing text
+  state/{live,workspace,catalog,rowCache,status,tableEdits}.ts
+  shell/{AppLayout,TopBar,StatusBar,TabBar,Overlays,RightPanel,PixelColumn,ResizeHandle,WindowChrome,WindowEdgeActions}.tsx
+  shell/{theme,hostedWindow,commands}.ts
+  ui/primitives.tsx           # shared buttons, menus, dialogs, context menus
+  features/settings/{sections,SettingsScreen,SettingsSearchPalette,SettingsSidebarBody,AppearanceSection,QueriesSection}.tsx
+  features/sidebar/{Sidebar,SidebarSearch,ConnectionTree,SearchPalette}.tsx  features/sidebar/fuzzy.ts
+  features/connections/{ConnectionDialog.tsx,connectionActions.ts}
+  features/editor/{SqlEditor.tsx,editorStates.ts,runActions.ts,sqlIdent.ts,theme.ts}
+  features/results/{ResultsPane,ResultGrid,FilterBar}.tsx  features/results/{format,tableQuery}.ts
   features/history/{HistoryPalette.tsx,historyList.ts}
+  testing/shopCatalog.ts      # catalog fixture for vitest
+  **/*.test.ts(x)             # vitest, next to the code under test
 crates/dev-bridge/             # bin (not shipped): axum on 127.0.0.1:7077, POST /invoke/:cmd + GET /events (SSE)
 src/dev/bridgeShim.ts         # loaded only in vite dev outside Tauri: mockIPC -> fetch, SSE -> emit("app-event")
-dev/{docker-compose.yml,seed.sql}   # shop + lab.type_zoo, already committed
+dev/{docker-compose.yml,seed.sql}   # shop + lab.type_zoo
+dev/bridge-smoke.sh           # curl flow against the dev-bridge
+dev/screenshot.sh             # macOS: captures the real app into docs/images/l1-data.png
+dev/icons.sh                  # regenerates src-tauri/icons
+docs/architecture.md  docs/images/
 ```
 
 Tracing a run from the button to the grid takes four files: `runActions.ts` → `ipc.rs` → `console.rs` → `live.ts`.
@@ -666,6 +816,13 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - `txn_after`: every transition in a table test
    - `OffsetMap`: emoji and CJK before the error
    - `type_ref` alias table, `synthesize_tag`, arena paging, CSV quoting
+   - classifier: transaction control, CTEs and comments before the verb, `CopyStdio` and `NoTxnBlock`, command tags
+   - `browse_sql`: the ORDER BY text before the PK tiebreak, the WHERE text ANDed with column filters, every `FilterOp` with `LIKE` wildcards escaped
+   - edit SQL (`insert_sql`, `update_sql`, `delete_sql`): quoted names and values, NULL written as `NULL` or `IS NULL`
+   - secrets: seal and open, a reopened vault, one key read per vault, a password sealed for another connection, a lost key, concurrent first seals
+   - store: migrations run once, history paging and pruning
+   - model: wire casing, `RunRequest` tags, the nested `ConnectError` tag, settings and layouts saved by older versions still load
+   - `Engine` without a DB: boot on an empty dir, passwordless saves never touch the keychain, persistence across `open`, draft validation
 2. **Engine against real Postgres** (`pnpm db:up && cargo test -p engine --features pg-tests`). `Harness` uses `MemoryKeyStore`, a temp data dir, and `L1_DATA_TEST_PG` (default `postgres://l1data:l1data@localhost:5433/shop`). Scenarios:
    - connect reports a 16.x server version
    - catalog of `shop` contains the mockup's tables with PKs and estimates after `ANALYZE`
@@ -680,20 +837,32 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - CSV export equals `COPY ... TO STDOUT CSV` output
    - history persists across `Engine::open` on the same dir
    - DDL triggers `CatalogChanged`
-3. **Frontend units** (`pnpm test`, vitest):
+   - `exact_row_count` is exact, reports `NotConnected` before connect, and fails on a missing table
+   - a forced disconnect during a manual run leaves the tab idle, and a run orphaned by disconnect never writes into the next run
+   - the console's schema sets `search_path`, `COPY ... FROM STDIN` and `TO STDOUT` are rejected as `Unsupported`, and the session survives
+   - bad credentials fail with `Auth`, and `test_connection` works
+   - `table_apply` commits every change or none, and in manual mode waits for Commit while a failure keeps the open transaction
+   - table pages sort and filter in the engine
+   - SQL comments in WHERE and ORDER BY keep the page limit
+3. **Frontend units** (`pnpm test`, vitest, 16 files):
    - `live.apply` rev ordering and exhaustiveness
-   - numeric grouping on text (`-1234567.890` → `-1,234,567.890`)
-   - catalog → `SQLNamespace` and search items
+   - numeric grouping on text (`-1234567.890` → `-1,234,567.890`), page labels, elapsed time, TSV
+   - catalog → `SQLNamespace` and search items, fuzzy ranking
    - `RowCache` page math
-4. **Contract drift**: a `src-tauri` test (`export_bindings_up_to_date`) renders bindings to a string and asserts equality with `src/ipc/bindings.ts`. A second test asserts the dev-bridge dispatch table covers exactly the registered command names.
+   - status derivations, workspace snapshot round trips (old table tabs without a query, dropped schemas), restore mapping any saved right panel to Assistant
+   - staged edits → `TableChanges`, and edits held still while a submit is in flight
+   - header sort cycling and the `ORDER BY` text round trip
+   - browse-query quoting and serialized settings writes in `runActions`
+   - grid header icons and key navigation, history list paging, settings screen, window chrome, theme, global shortcuts, the bridge shim
+4. **Contract drift**: a `src-tauri` test (`export_bindings_up_to_date`) renders bindings to a string and asserts equality with `src/ipc/bindings.ts`. A second test asserts the dev-bridge dispatch table covers exactly the registered command names. The dev-bridge also tests that `app_boot` replies with the snapshot and that bad requests are bridge errors, not command errors.
 5. **UI against the real engine** (`pnpm bridge`). `crates/dev-bridge` hosts the same `Engine` (MemoryKeyStore, temp `L1_DATA_DATA_DIR`) behind `POST /invoke/:cmd` and an SSE stream of `AppEvent`. In vite dev outside Tauri, `src/dev/bridgeShim.ts` installs `mockIPC` from `@tauri-apps/api/mocks` (with `shouldMockEvents`) that forwards every command to the bridge and re-emits SSE frames as `app-event`. The generated bindings run unchanged. An agent drives it with agent-browser or Playwright, selecting by `data-testid`:
    - create connection via the dialog, test it, save it, and see "Live" plus `customers 18.4k`-style estimates in the tree
    - ⌘P "ord it" opens `order_items`; the table tab shows 500 rows
-   - new tab: type the mockup query, ⌘↵, see status "6 rows ·", headers `region text`, `orders bigint`, right-aligned numbers
-   - run `select slow_echo(30)`, click Cancel, see Output show `canceling statement due to user request`
+   - new tab: type the mockup query, ⌘↵, see status "6 rows ·", the `orders` header tooltip `orders bigint`, right-aligned numbers
+   - run `select slow_echo(30)`, click Cancel, see the results status show `Cancelled · …`
    - switch to Manual: insert, then a second tab's count is unchanged; Commit, and the count changes
    - reload the page: tabs, text, and history are restored
-6. **Real shell.** `pnpm self-check` launches the debug binary with `L1_DATA_SELF_CHECK=1`: it boots `Engine` inside Tauri, connects to the dev DB, runs `SELECT 1` and loads the catalog, prints JSON, and exits 0. A macOS `screencapture` of `pnpm tauri dev` against the mockup covers WKWebView rendering. Driving the real webview with `@wdio/tauri-service` (embedded provider, verified to support macOS) is the planned follow-up.
+6. **Real shell.** `pnpm self-check` launches the debug binary with `L1_DATA_SELF_CHECK=1`: it boots `Engine` inside Tauri, connects to the dev DB, runs `SELECT 1` and loads the catalog, prints JSON, and exits 0. `pnpm screenshot` covers WKWebView rendering on macOS. It starts a throwaway Postgres, seeds a workspace through the dev-bridge, launches the debug app on that data dir, and captures its window with `screencapture` into `docs/images/l1-data.png`. Driving the real webview with `@wdio/tauri-service` (embedded provider, verified to support macOS) is not built.
 
 ## Synthesis decision
 
@@ -745,7 +914,7 @@ Scaffold phase (workspace, contract, shell, dev-bridge, frontend skeleton). Each
   - `ConfigureError` is `TransactionOpen | Busy | UnknownConnection`.
   - `ExportError` is `Gone | Io { message }`.
   - `StoreError` is Rust-only, because only `Engine::open` returns it.
-- **Command parameter names** (the camelCase invoke keys) are `draft`, `id`, `force`, `tabId`, `config`, `request`, `resultRef`, `start`, `len`, `row`, `col`, `path`, `query`, `workspace`, and `settings`. `resultRef` replaces `ref` because `ref` is a Rust keyword.
+- **Command parameter names** (the camelCase invoke keys) are `draft`, `id`, `force`, `schema`, `table`, `tabId`, `config`, `request`, `changes`, `resultRef`, `start`, `len`, `row`, `col`, `path`, `query`, `workspace`, and `settings`. `resultRef` replaces `ref` because `ref` is a Rust keyword.
 - **`console_cancel` takes `AppHandle`, not `State`.** Tauri requires async commands that borrow `State` to return `Result`, and `console_cancel` returns `()`.
 - **Pins.** tauri-specta `=2.0.0-rc.25` requires specta `=2.0.0-rc.25` and specta-typescript `=0.0.12`. Bindings use `dangerously_cast_bigints_to_number()`, so `u64` and `i64` (revs, run ids, row counts, epoch millis) export as `number`. All of them stay below 2^53.
 - **Bindings regeneration.** Besides debug-build startup, `pnpm bindings` reruns `export_bindings_up_to_date` with `UPDATE_BINDINGS=1`, which rewrites the file without opening a window.
@@ -755,21 +924,21 @@ Scaffold phase (workspace, contract, shell, dev-bridge, frontend skeleton). Each
 - **Window chrome.** On macOS, `main.rs` turns decorations back on with an overlay title bar and a hidden title. The native traffic lights sit over the sidebar header, and macOS handles resizing. On Windows and Linux, `tauri.conf.json` sets `decorations` to false, and the webview draws the resize edges and the minimize, maximize, and close buttons at the right of the toolbar. The toolbar and the sidebar header are drag regions on every platform. `hostedWindow()` returns `{ chrome: "native" }` on macOS, the custom controls elsewhere, and null in the dev-bridge browser, where no window controls show. The sidebar toggle leads whichever header touches the window's left edge. That is the sidebar header while the sidebar is open and the toolbar while it is hidden. `windowLeadingInset()` gives both headers the same left padding, so the toggle stays put. On macOS that padding clears the traffic lights. The "L1 Data" title follows the toggle on every platform. The window opens with the persisted theme, or no theme for System, so native chrome such as the traffic lights matches from the first frame. When that theme resolves to light, `main.rs` sets a white window background. `index.html` paints a `light-dark()` background for the same reason. `startTheme()` paints the document from the webview's `prefers-color-scheme` before the first render. After that, in the app window, each theme change awaits the window's `setTheme` before it repaints, because the webview reports the window's forced theme until then. Only the latest change repaints and then calls `setBackgroundColor`. In the browser, the repaint is immediate.
 - **Engine additions.** `Engine::data_dir()` lets the self-check report and the bridge log show the directory in use. `KeyringKeyStore` and `MemoryKeyStore` are implemented, not stubbed, and sealed passwords are keyed by `ConnectionId`.
 - **Panel sizes.** The sidebar and the right panel are plain columns on either side of the main area, with widths set in pixels from `layout.sidebarWidth` and `layout.rightPanelWidth`. They used to be react-resizable-panels panels, which kept each one as a share of the window, so their widths changed whenever the window resized. `PixelColumn` draws either column with its resize handle. The sidebar's handle sits on its right edge and the right panel's on its left. A drag updates the width live, clamps it (200 to 480 pixels for the sidebar, 260 to 560 for the right panel), and saves it once on release. ArrowLeft and ArrowRight on the focused handle move it 8 pixels and save each step. Dragging one column takes space from the main area only. The main area keeps at least 320 pixels. When the window is too narrow for both columns beside it, the right panel shrinks toward its minimum first and the sidebar after it, without changing the saved widths. A drag or arrow key starts from the drawn width, so a squeezed column follows the pointer with no jump. A vertical react-resizable-panels `Group` still holds the editor and the results, and saves the results height on release.
-- **Defaults the design left open.** `Settings::default()` sets `stop_on_error: true` and `theme: System`. `Layout::default()` is sidebar and results shown, no right panel, and `results_height: 320`.
+- **Defaults the design left open.** `Settings::default()` sets `stop_on_error: true` and `theme: System`. `Layout::default()` is sidebar and results shown, no right panel, `results_height: 320`, `sidebar_width: 256`, and `right_panel_width: 341`.
 - **Fonts** come from `@fontsource-variable/inter` and `@fontsource-variable/jetbrains-mono`, the variable-axis builds of the Fontsource packages.
 
 Engine phase (every `todo!()` in `crates/engine` filled in, self-check wired). The contract did not change; `src/ipc/bindings.ts` is byte-identical.
 
 - **`Deserialize` on `ConnectionConfig` and `HistoryOutcome`.** The store round-trips both as JSON. Rust-only derives, no wire effect.
 - **`StmtKind` carries the command tag.** `Ddl(String)` and `Other(String)` hold the tag Postgres would print (`CREATE TABLE`, `SET`, `TRUNCATE TABLE`), because tokio-postgres reports only a row count. `NoTxnBlock(String)` (`VACUUM`, `CREATE DATABASE`, `... CONCURRENTLY`, `ALTER SYSTEM`) is excluded from the implicit `BEGIN`. `COPY ... TO STDOUT` is `CopyStdio` too, since the simple protocol cannot carry it either. `UNION`/`INTERSECT`/`EXCEPT` and a leading parenthesis classify as `Query`.
-- **Console state split for sync readers.** `Console.results` (std mutex) and `Console.latest` (the last published `ConsoleState`) sit next to the tokio-mutexed `ConsoleInner`, so `result_page`, `result_cell`, and `boot()` never take the async lock. `SessionSlot::InRun` also records `backend_pid` and the stop flag, and `console_commit`/`console_rollback` move the session through the same slot, so a run during a commit reports `Busy`.
+- **Console state split for sync readers.** `Console.results` (std mutex) and `Console.latest` (the last published `ConsoleState`) sit next to the tokio-mutexed `ConsoleInner`, so `result_page`, `result_cell`, and `boot()` never take the async lock. The design's `SessionSlot::InRun` is `SessionSlot::Busy { run_id, backend_pid, cancel, stop }`. `console_commit`, `console_rollback`, and `table_apply` move the session through the same slot, so a run during a commit reports `Busy`.
 - **Connections keep their entry.** `ConnSlot::Disconnected` replaces removal on disconnect, so `rev` stays monotonic across reconnects. Only `connection_delete` removes the entry.
 - **Schema changes apply at the next run.** The run task compares the session's `search_path` with the console config and issues `SET search_path TO "<schema>"` (the schema alone) before the first statement. One path serves both the busy and the idle case. `SET TimeZone` failures (an OS zone Postgres does not know) are ignored.
 - **A FATAL answer is a dead session.** `pg_terminate_backend` delivers `FATAL 57P01` to the statement in flight before the driver task sees EOF, so the run task treats any FATAL as a loss and waits up to 500 ms for the driver's reason. `Session::closed_reason` also consults `Client::is_closed`.
 - **Cancel between statements.** The next pending statement is marked `Cancelled`, the rest `Skipped`, outcome `Cancelled`. A statement that fails with `57014` while the stop flag is set is `Cancelled`; the same code without the flag (a `statement_timeout`) is `Failed`.
 - **Catalog refresh after DDL in a transaction** waits for the commit (`ddl_pending` on the console), whether the commit is a `COMMIT` statement or `console_commit`.
 - **`has_writes`** is probed by taking the idle session out of the slot like a run does, so the console lock is never held across the query; an aborted transaction or a busy session reports `true`.
-- **A run task owns the tab only while the slot says so.** Every write a task makes to console state goes through `Console::edit(run_id, ..)`, which applies and publishes the edit only while `SessionSlot::InRun { run_id }` matches. Disconnect and close reassign the slot and finish the run themselves (statement in flight `Cancelled`, the rest `Skipped`, outcome `Cancelled`, `txn` Idle), send a `CancelRequest`, and the task gets `Orphaned` at its next write, stops, and drops its session.
+- **A run task owns the tab only while the slot says so.** Every write a task makes to console state goes through `Console::edit(run_id, ..)`, which applies and publishes the edit only while `SessionSlot::Busy { run_id }` matches. Disconnect and close reassign the slot and finish the run themselves (statement in flight `Cancelled`, the rest `Skipped`, outcome `Cancelled`, `txn` Idle), send a `CancelRequest`, and the task gets `Orphaned` at its next write, stops, and drops its session.
 - **CSV** uses CRLF records with a header row, quotes fields containing `"`, `,`, CR, or LF, writes NULL as an empty field and the empty string as `""`, which is `COPY ... CSV HEADER` modulo line endings. The pg test compares after normalizing CRLF.
 - **Values are the output function's text**, so booleans are `t`/`f` as in psql. `bool::text` would say `true`; the type-zoo test's oracle is the simple protocol on an independent session, not `::text` casts.
 - **`ServerInfo.version`** is the first token of `server_version` (`16.15` from `16.15 (Debian ...)`); the dev image is 16.15, not 16.4, so tests assert the `16.` prefix.
@@ -778,18 +947,49 @@ Engine phase (every `todo!()` in `crates/engine` filled in, self-check wired). T
 - **`dev/bridge-smoke.sh`** drives the dev-bridge with curl (save, connect, catalog, configure, run the mockup query, page) and asserts the SSE stream delivered the `Finished` snapshot with six rows.
 - **Dev-bridge panic test** replaced: no command panics any more, so the test now checks that a typed error (`catalog_get` on an unknown id) comes back as a command error, not a bridge error.
 
+Frontend phase (PRs #4 and #11 to #13). These PRs built the live store, the editor, the grid, table sort, filter, and edit, and the settings screen. Each item is a frontend decision the design above did not make.
+
+- **Table tabs own an editor.** `openTableTab` and `boot` seed it with `browseQuery(schema, table)`. `runTab` sends `RunRequest::TablePage` only while `isBrowsing(tab)`, which means the editor text still equals that query (trimmed, one trailing `;` allowed). Edited text runs as a script, like a SQL tab, and the results hide the pager, sort, filters, and editing.
+- **Consoles span the whole database.** The frontend always sends `schema: null`. `tabFromSnapshot` drops a schema saved on a SQL tab by older versions. Table consoles are always `AutoCommit`. Completion qualifies names instead (`qualifiedTables`).
+- **Paging.** A page change is saved on the tab only after the engine accepts the run. A page request that arrives mid-run waits in `queuedPages`, and the latest one wins. Changing the page size in `saveSettings` reloads every table tab at page 0. The Last button calls `exact_row_count`, stores the count as `exactRowCount`, and jumps to the last page.
+- **Sort is text.** `TableQuery.orderBy` holds the `ORDER BY` text. A header click parses it with `parseOrderBy`, cycles the column with `nextSort`, and writes it back with `formatOrderBy`. Shift-click adds a key. `FilterBar` above the grid edits the `WHERE` text, the `ORDER BY` text, and the column filters directly. `ORDER BY` text that `parseOrderBy` can't read as plain columns stays as written, and a header click then replaces it.
+- **Staged edits.** `useTableEdits` holds edits per tab, with rows keyed by the JSON of their primary-key values. A grid is editable only on a browsing table tab whose relation is of kind `Table` and whose full primary key is among the result columns. Edits are locked while a submit is in flight. ⌘S, or the toolbar, calls `submitEdits`, which sends `table_apply` and reloads the page on success. On failure, `failedAt` maps the failing `ChangeRef` back to its row. Closing a tab with pending edits asks first.
+- **Row caches are module-level.** `rowCacheFor` keys a `RowCache` by `ResultRef`, so a cache outlives the components that read it. The first cache for a new `runId` evicts the tab's older ones, and `closeTab` calls `dropRowCaches`.
+- **Settings writes are serialized.** `saveSettings` updates the store first, so a second change builds on the first. Each `settings_set` waits for the previous one and sends the settings as they are when it runs, so the last write carries every change.
+- **Keys.** ⌘W closes the active tab. The macOS menu in `main.rs` mirrors Tauri's default menu with Close Window moved to ⇧⌘W, so ⌘W reaches the webview. Global shortcuts live in `shell/commands.ts`.
+- **History is a palette, and the right panel is a placeholder.** The sidebar's clock button opens `HistoryPalette` (cmdk), which pages `history_list` and puts `historyTail` on top. The right panel draws only an Assistant placeholder.
+- **CSV export needs the desktop app.** `exportCsv` asks for a path with the native save dialog. In the dev-bridge browser that dialog throws, and the app shows a toast. Other export formats are disabled menu items marked "Soon", and Import shows a "coming soon" toast.
+- **The output log is gone.** #11 removed `OutputLog`. The engine still emits `ConsoleOutput`, and `useLive` still keeps `output` per tab, but no view renders it.
+
 ## Open questions and risks
 
-- Should the tree list every database on the server under a connection (the mockup shows a `shop` node), or only the configured database in v1? This design shows only the configured database and keeps the database name in `Catalog`.
-- Are `max_rows = 200,000` and `max_result_bytes = 512 MiB` acceptable defaults? Should a truncated result offer "Export full result", which re-runs the query streaming directly to CSV?
-- System schemas (`pg_catalog`, `information_schema`) are hidden in v1. Should they be shown behind a toggle?
-- Mockup timestamps drop seconds (`2026-10-13 10:14`). Should the grid trim PG's full text output, or show it verbatim? This design shows it verbatim, and the export is always verbatim.
-- Tabs are app-managed consoles that autosave. Do v1 tabs also need open and save of `.sql` files on disk? Adding `origin: { kind: "file", path }` to `TabSnapshot` later doesn't disturb anything else.
+Answered since the design:
+
+- **Databases in the tree.** The tree shows one node per connection, the configured database. `Catalog` keeps the database name.
+- **System schemas.** `pg_catalog`, `information_schema`, `pg_toast`, and temp schemas are filtered out in `catalog.rs`. There is no toggle.
+- **Timestamps.** The grid shows PG's text output verbatim, seconds included, and the export is verbatim too.
+- **`COPY` over stdio.** `CopyStdio` covers `COPY ... TO STDOUT` as well as `FROM STDIN`, and `console_run` rejects both with `RunError::Unsupported`.
+
+Still open:
+
+- Are `max_rows = 200,000` and `max_result_bytes = 512 MiB` acceptable defaults? The settings screen does not expose `maxResultBytes`. Should a truncated result offer "Export full result", which re-runs the query streaming directly to CSV?
+- Tabs are app-managed consoles that autosave. Do tabs also need open and save of `.sql` files on disk? Adding `origin: { kind: "file", path }` to `TabSnapshot` later doesn't disturb anything else.
 - **Risk:** tauri-specta is still a release candidate (`=2.0.0-rc.25`, and docs.rs failed to build it). Pin exact versions of `tauri-specta`, `specta`, and `specta-typescript`. The fallback is `ts-rs` for types plus a handwritten `commands.ts` checked by the drift test.
 - **Risk:** catalog size on very large databases. If the snapshot exceeds about 5 MB, switch columns to lazy per relation behind `catalog_get`. The `Relation.columns` shape stays the same.
-- **Risk:** the dev-bridge runs in Chromium, not WKWebView. Rendering differences are covered only by the shell screenshot until the `@wdio/tauri-service` follow-up lands.
-- **Risk:** `prepare` fails for statements the extended protocol can't Describe (`COPY ... FROM STDIN`). The classifier rejects `CopyStdio` up front with `RunError::Unsupported`. Other failures surface as a normal `QueryError`.
+- **Risk:** the dev-bridge runs in Chromium, not WKWebView. Rendering differences are covered only by `pnpm screenshot` until the `@wdio/tauri-service` follow-up lands.
+- **Risk:** `prepare` fails for statements the extended protocol can't Describe. The classifier rejects `CopyStdio` up front with `RunError::Unsupported`. Other failures surface as a normal `QueryError`.
+- **Risk:** table pages use `LIMIT n OFFSET m`. Postgres reads and discards every skipped row, so deep pages of a large table get slower.
+- **Risk:** the pager's total is the catalog's `reltuples` estimate (`of ~241,183`) until the user presses Last, which fetches the exact count. A filtered table shows only a lower bound (`of 500+`) until then.
+- **Risk:** server notices are invisible. The engine still sends `RAISE NOTICE` and info entries as `ConsoleOutput`, but no view renders them.
+- **Risk:** `RightPanel::Schema` and `RightPanel::History` stay in the contract with no UI. `restore` maps them to `Assistant`.
 
 ## Next implementation step
 
-The engine is complete and proven against Docker (`cargo test -p engine --features pg-tests`, `pnpm self-check`, `dev/bridge-smoke.sh`). Next is the frontend against the dev-bridge: the live store projection, the editor run actions, and the windowed grid, verified with the browser flow in verification section 5.
+The engine and the frontend are built and proven against Docker (`cargo test -p engine --features pg-tests`, `pnpm test`, `pnpm self-check`, `dev/bridge-smoke.sh`). Remaining work, in no set order:
+
+- End-to-end tests in the real WKWebView with `@wdio/tauri-service`.
+- The AI assistant. The right panel is a placeholder.
+- Import. The button shows a "coming soon" toast.
+- Export formats besides CSV. The menu lists them as disabled "Soon" items.
+- A view for server notices. The engine emits `ConsoleOutput`, and nothing renders it since #11 removed `OutputLog`.
+- Removing the dead `RightPanel::Schema` and `RightPanel::History` variants.
