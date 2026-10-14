@@ -10,7 +10,7 @@ export function SettingsSidebarBody({ section }: { section: SettingsSectionId })
   const open = useWorkspace((s) => s.open);
   return (
     <>
-      <SidebarSearch testId="settings-search-open" label="Search settings" onOpen={() => open({ kind: "settings-search" })} />
+      <SidebarSearch testId="settings-search-open" label="Search" onOpen={() => open({ kind: "settings-search" })} />
       <nav data-testid="settings-nav" aria-label="Settings" className="min-h-0 flex-1 overflow-auto pt-1">
         <ul className="flex flex-col gap-0.5">
           {SETTINGS_SECTIONS.map(({ id, label, icon: Icon }) => (

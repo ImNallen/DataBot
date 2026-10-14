@@ -29,7 +29,7 @@ it("puts the settings nav in the sidebar and the section in the main panel, with
   const html = render({ ...settingsOpen(), layout: { ...initial.layout, rightPanel: "Assistant" } });
   expect(html).toMatch(/data-testid="sidebar"[^>]*>.*data-testid="settings-nav"/);
   expect(html).toContain('data-testid="settings-back"');
-  expect(html).toMatch(/data-testid="settings-search-open"[^>]*>.*Search settings/);
+  expect(html).toMatch(/data-testid="settings-search-open"[^>]*>.*Search</);
   expect(html).toMatch(/<h1[^>]*>Appearance<\/h1>/);
   expect(html).toMatch(/aria-current="page"[^>]*data-testid="settings-section-appearance"|data-testid="settings-section-appearance"[^>]*aria-current="page"/);
   for (const absent of ["run-btn", "tab-bar", "no-tabs", "right-panel", "search-open", "new-connection"]) {
