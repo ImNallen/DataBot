@@ -380,9 +380,6 @@ export function ResultGrid({
     if (deleting.current) return;
     const picked = selectedRows();
     const storedRows = picked.filter((r) => r < rowCount);
-    const loaded = storedRows.flatMap((r) => rowIdOf(r) ?? []);
-    const marked = useTableEdits.getState().byTab[tabId]?.deletes ?? {};
-    const restore = storedRows.length > 0 && loaded.length === storedRows.length && loaded.every((r) => r.key in marked);
     deleting.current = true;
     try {
       if (storedRows.length) await cache.ensure({ start: storedRows[0]!, end: storedRows.at(-1)! + 1 }, rowCount);
@@ -391,6 +388,8 @@ export function ResultGrid({
     }
     const added = picked.flatMap((r) => newRowAt(r)?.id ?? []);
     const stored = storedRows.flatMap((r) => rowIdOf(r) ?? []);
+    const marked = useTableEdits.getState().byTab[tabId]?.deletes ?? {};
+    const restore = stored.length > 0 && stored.every((r) => r.key in marked);
     if (!edit((e) => markDeleted(removeNewRows(e, added), stored, !restore))) refused();
   };
   const insertsSeen = useRef(edits.inserts.length);
