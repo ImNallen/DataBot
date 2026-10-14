@@ -6,7 +6,7 @@ use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
 
-use engine::model::{AppEvent, Theme};
+use engine::model::{AppEvent, ColorScheme};
 use engine::{Engine, EngineConfig, KeyStore, KeyringKeyStore, MemoryKeyStore};
 use specta_typescript::Typescript;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
@@ -128,11 +128,11 @@ const CLOSE_WINDOW: &str = "close-window";
 
 const LIGHT_BACKGROUND: tauri::window::Color = tauri::window::Color(255, 255, 255, 255);
 
-fn window_theme(theme: Theme) -> Option<tauri::Theme> {
-    match theme {
-        Theme::System => None,
-        Theme::Light => Some(tauri::Theme::Light),
-        Theme::Dark => Some(tauri::Theme::Dark),
+fn window_theme(scheme: ColorScheme) -> Option<tauri::Theme> {
+    match scheme {
+        ColorScheme::System => None,
+        ColorScheme::Light => Some(tauri::Theme::Light),
+        ColorScheme::Dark => Some(tauri::Theme::Dark),
     }
 }
 
@@ -244,7 +244,7 @@ fn main() {
             }
             forward_events(app.handle().clone(), engine.subscribe());
             let window = WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?
-                .theme(window_theme(engine.settings().theme));
+                .theme(window_theme(engine.settings().color_scheme));
             // macOS keeps the native traffic lights over the webview; Windows and Linux draw their own chrome.
             #[cfg(target_os = "macos")]
             let window = window

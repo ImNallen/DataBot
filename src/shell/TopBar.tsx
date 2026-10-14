@@ -79,7 +79,7 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
           <Button data-testid="run-btn" variant="primary" className="w-[104px] justify-center pr-2 pl-2.5 font-medium" onClick={() => runActive()}>
             <IconPlayerPlayFilled size={13} className="text-run-icon" />
             Run
-            <Kbd className="bg-white/15 text-[#dbe5fd]">⌘↵</Kbd>
+            <Kbd className="bg-run-fg/15 text-run-fg/85">⌘↵</Kbd>
           </Button>
         ))}
 

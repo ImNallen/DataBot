@@ -40,6 +40,8 @@ export type AppEvent = {
 	kind: "HistoryAppended",
 } & HistoryEntry;
 
+export type Appearance = "light" | "dark";
+
 /**  Nothing is applied when any of these comes back. */
 export type ApplyError = { kind: "Busy" } | { kind: "NotConfigured" } | { kind: "Connect"; error: ConnectError } | 
 /**  The tab's transaction already failed; roll it back first. */
@@ -84,6 +86,8 @@ export type ChangeRef = {
 	kind: ChangeKind,
 	index: number,
 };
+
+export type ColorScheme = "System" | "Light" | "Dark";
 
 export type ColumnFilter = {
 	column: string,
@@ -186,6 +190,21 @@ export type ConsoleState = {
 };
 
 export type CountError = { kind: "NotConnected" } | { kind: "Failed"; message: string };
+
+/**  A user theme: one card in the picker, holding every variant it was created or imported with. */
+export type CustomTheme = {
+	id: string,
+	name: string,
+	variants: CustomThemeVariant[],
+};
+
+/**  `colors` maps the frontend's token names to CSS colours; the engine only stores it. */
+export type CustomThemeVariant = {
+	id: string,
+	name: string,
+	appearance: Appearance,
+	colors: { [key in string]: string },
+};
 
 export type DisconnectError = { kind: "OpenTransactions"; tabs: OpenTxn[] } | { kind: "Store"; message: string };
 
@@ -376,7 +395,12 @@ export type Settings = {
 	maxResultBytes: number,
 	tablePageSize: number,
 	stopOnError: boolean,
-	theme: Theme,
+	colorScheme: ColorScheme,
+	/**  Theme id painted while the scheme resolves to light. */
+	lightTheme: string,
+	/**  Theme id painted while the scheme resolves to dark. */
+	darkTheme: string,
+	customThemes: CustomTheme[],
 };
 
 export type SslMode = "Disable" | "Prefer" | "Require" | "VerifyCa" | "VerifyFull";
@@ -416,8 +440,6 @@ export type TableQuery = {
 	/**  A boolean SQL expression ANDed with `filters`; empty means none. */
 	where: string,
 };
-
-export type Theme = "System" | "Light" | "Dark";
 
 export type TruncateReason = "RowLimit" | "ByteLimit";
 
