@@ -1,10 +1,10 @@
-import { IconChevronLeft } from "@tabler/icons-react";
+import { IconArrowLeft } from "@tabler/icons-react";
 import { useEffect } from "react";
 import type { HostedWindow } from "../../shell/hostedWindow";
 import { WindowControls } from "../../shell/WindowChrome";
 import { windowLeadingInset } from "../../shell/WindowEdgeActions";
 import { useWorkspace } from "../../state/workspace";
-import { cx } from "../../ui/primitives";
+import { cx, Kbd } from "../../ui/primitives";
 import { SETTINGS_SECTIONS, settingsSection, type SettingsSectionId } from "./sections";
 
 export function SettingsNav({ hosted, section }: { hosted: HostedWindow | null; section: SettingsSectionId }) {
@@ -13,17 +13,9 @@ export function SettingsNav({ hosted, section }: { hosted: HostedWindow | null; 
   return (
     <nav data-testid="settings-nav" aria-label="Settings" className="flex h-full flex-col bg-sidebar">
       <div data-tauri-drag-region="deep" className={cx("flex h-[52px] shrink-0 items-center pr-3", windowLeadingInset(hosted))}>
-        <button
-          type="button"
-          data-testid="settings-back"
-          onClick={closeSettings}
-          className="flex h-7 items-center gap-1 rounded-md pr-2 pl-1 text-[13.5px] text-muted hover:bg-hover hover:text-fg"
-        >
-          <IconChevronLeft size={16} />
-          Back to app
-        </button>
+        <span className="truncate text-[14px] font-semibold tracking-[-0.01em] text-tree">Settings</span>
       </div>
-      <ul className="flex flex-col gap-0.5 pt-1">
+      <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-auto pt-1">
         {SETTINGS_SECTIONS.map(({ id, label, icon: Icon }) => (
           <li key={id}>
             <button
@@ -42,6 +34,18 @@ export function SettingsNav({ hosted, section }: { hosted: HostedWindow | null; 
           </li>
         ))}
       </ul>
+      <div className="mx-2 flex shrink-0 items-center py-2">
+        <button
+          type="button"
+          data-testid="settings-back"
+          onClick={closeSettings}
+          className="flex h-7 items-center gap-1.5 rounded-md pr-2.5 pl-1.5 text-[13.5px] text-muted hover:bg-hover hover:text-fg"
+        >
+          <IconArrowLeft size={16} />
+          Back to app
+          <Kbd className="ml-1 bg-border text-muted">Esc</Kbd>
+        </button>
+      </div>
     </nav>
   );
 }
