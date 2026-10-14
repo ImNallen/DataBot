@@ -52,7 +52,7 @@ export function chooseTheme(theme: Theme): Promise<void> {
 export function AppearanceSection() {
   const current = useWorkspace((s) => s.settings.theme);
   return (
-    <fieldset>
+    <fieldset data-setting="theme">
       <legend className="text-[13px] font-medium text-fg">Theme</legend>
       <p className="mt-0.5 text-[12px] text-dim">System follows the appearance of your operating system.</p>
       <div className="mt-4 grid grid-cols-3 gap-3">

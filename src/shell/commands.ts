@@ -12,10 +12,12 @@ const inWorkspace = (run: () => void) => () => {
 
 const open = (overlay: Overlay) => inWorkspace(() => ws().open(overlay));
 
+const searchCatalog = open({ kind: "palette" });
+
 export const START_COMMANDS: Command[] = [
   { id: "new-query", label: "New query tab", key: "t", run: inWorkspace(() => openSqlTab()) },
   { id: "new-connection", label: "New connection", key: "n", run: open({ kind: "connection", editing: null }) },
-  { id: "search", label: "Search", key: "p", run: open({ kind: "palette" }) },
+  { id: "search", label: "Search", key: "p", run: () => (ws().screen.kind === "settings" ? ws().open({ kind: "settings-search" }) : searchCatalog()) },
   { id: "settings", label: "Settings", key: ",", run: () => (ws().screen.kind === "settings" ? ws().closeSettings() : ws().openSettings()) },
 ];
 

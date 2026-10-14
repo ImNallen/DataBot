@@ -1,20 +1,21 @@
 import { IconArrowLeft } from "@tabler/icons-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { HostedWindow } from "../../shell/hostedWindow";
 import { WindowControls } from "../../shell/WindowChrome";
-import { windowLeadingInset } from "../../shell/WindowEdgeActions";
-import { useWorkspace } from "../../state/workspace";
+import { SidebarToggle, windowLeadingInset } from "../../shell/WindowEdgeActions";
+import { useWorkspace, type Screen } from "../../state/workspace";
 import { cx } from "../../ui/primitives";
+import { SidebarHeader, SidebarSearch } from "../sidebar/Sidebar";
 import { SETTINGS_SECTIONS, settingsSection, type SettingsSectionId } from "./sections";
 
 export function SettingsNav({ hosted, section }: { hosted: HostedWindow | null; section: SettingsSectionId }) {
   const openSettings = useWorkspace((s) => s.openSettings);
   const closeSettings = useWorkspace((s) => s.closeSettings);
+  const open = useWorkspace((s) => s.open);
   return (
     <nav data-testid="settings-nav" aria-label="Settings" className="flex h-full flex-col bg-sidebar">
-      <div data-tauri-drag-region="deep" className={cx("flex h-[52px] shrink-0 items-center pr-3", windowLeadingInset(hosted))}>
-        <span className="truncate text-[14px] font-semibold tracking-[-0.01em] text-tree">Settings</span>
-      </div>
+      <SidebarHeader hosted={hosted} />
+      <SidebarSearch testId="settings-search-open" label="Search settings" onOpen={() => open({ kind: "settings-search" })} />
       <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-auto pt-1">
         {SETTINGS_SECTIONS.map(({ id, label, icon: Icon }) => (
           <li key={id}>
@@ -60,12 +61,32 @@ function useEscapeToLeave() {
   }, []);
 }
 
-export function SettingsPage({ hosted, section }: { hosted: HostedWindow | null; section: SettingsSectionId }) {
+type SettingsScreen = Extract<Screen, { kind: "settings" }>;
+
+function useRevealTarget(screen: SettingsScreen) {
+  const body = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!screen.target) return;
+    const row = body.current?.querySelector(`[data-setting="${screen.target}"]`);
+    row?.scrollIntoView({ block: "nearest" });
+    (row?.querySelector<HTMLElement>("input:checked") ?? row?.querySelector<HTMLElement>("input"))?.focus({ preventScroll: true });
+  }, [screen]);
+  return body;
+}
+
+export function SettingsPage({ hosted, screen }: { hosted: HostedWindow | null; screen: SettingsScreen }) {
   useEscapeToLeave();
-  const { label, Body } = settingsSection(section);
+  const body = useRevealTarget(screen);
+  const sidebar = useWorkspace((s) => s.layout.sidebar);
+  const { label, Body } = settingsSection(screen.section);
   return (
     <div data-testid="settings-page" className="flex min-h-0 flex-1 flex-col">
       <header data-tauri-drag-region="deep" className="relative flex h-[52px] shrink-0 items-center">
+        {!sidebar && (
+          <div className={cx("absolute inset-y-0 left-0 flex items-center", windowLeadingInset(hosted))}>
+            <SidebarToggle />
+          </div>
+        )}
         <div className="mx-auto w-full max-w-[640px] min-w-0 px-8">
           <h1 className="truncate text-[14px] font-medium text-fg">{label}</h1>
         </div>
@@ -76,7 +97,7 @@ export function SettingsPage({ hosted, section }: { hosted: HostedWindow | null;
         )}
       </header>
       <div className="min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable_both-edges]">
-        <div className="mx-auto max-w-[640px] px-8 pt-6 pb-16">
+        <div ref={body} className="mx-auto max-w-[640px] px-8 pt-6 pb-16">
           <Body />
         </div>
       </div>

@@ -5,6 +5,7 @@ import { SqlEditor } from "../features/editor/SqlEditor";
 import { HistoryPalette } from "../features/history/HistoryPalette";
 import { ResultsPane } from "../features/results/ResultsPane";
 import { SettingsNav, SettingsPage } from "../features/settings/SettingsScreen";
+import { SettingsSearchPalette } from "../features/settings/SettingsSearchPalette";
 import { SearchPalette } from "../features/sidebar/SearchPalette";
 import { Sidebar } from "../features/sidebar/Sidebar";
 import { useWorkspace, type Screen } from "../state/workspace";
@@ -120,8 +121,8 @@ function screenPanels(screen: Screen, hosted: HostedWindow | null, sidebar: bool
       };
     case "settings":
       return {
-        side: <SettingsNav hosted={hosted} section={screen.section} />,
-        main: <SettingsPage hosted={hosted} section={screen.section} />,
+        side: sidebar ? <SettingsNav hosted={hosted} section={screen.section} /> : null,
+        main: <SettingsPage hosted={hosted} screen={screen} />,
         right: false,
       };
     default: {
@@ -186,6 +187,7 @@ export function AppLayout() {
         )}
       </Group>
       <SearchPalette />
+      <SettingsSearchPalette />
       <HistoryPalette />
       <ConnectionDialog />
       <Overlays />

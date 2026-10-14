@@ -35,8 +35,17 @@ it("toggles the settings screen on its shortcut, starting at Appearance", () => 
 
 it("leaves settings for the workspace before a shortcut opens an overlay there", () => {
   useWorkspace.getState().openSettings("queries");
+  press("n")?.run();
+  expect([useWorkspace.getState().screen, useWorkspace.getState().overlay]).toEqual([{ kind: "workspace" }, { kind: "connection", editing: null }]);
+});
+
+it("searches settings, not the catalog, while settings is open", () => {
+  useWorkspace.getState().openSettings("queries");
   press("p")?.run();
-  expect([useWorkspace.getState().screen, useWorkspace.getState().overlay]).toEqual([{ kind: "workspace" }, { kind: "palette" }]);
+  expect([useWorkspace.getState().screen, useWorkspace.getState().overlay]).toEqual([
+    { kind: "settings", section: "queries" },
+    { kind: "settings-search" },
+  ]);
 });
 
 it("closes settings, not the active tab, on the close-tab shortcut", () => {

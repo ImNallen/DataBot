@@ -6,6 +6,7 @@ import { AppLayout } from "../../shell/AppLayout";
 import { startTheme } from "../../shell/theme";
 import { useWorkspace, type WorkspaceData } from "../../state/workspace";
 import { chooseTheme } from "./AppearanceSection";
+import { searchSettings } from "./sections";
 
 const initial = { ...useWorkspace.getInitialState() };
 
@@ -24,14 +25,31 @@ function render(patch: Partial<WorkspaceData>) {
 const settingsOpen = (section: "appearance" | "queries" = "appearance") => ({ screen: { kind: "settings", section } }) as const;
 
 it("puts the settings nav in the sidebar panel and the section in the main panel, with no workspace chrome", () => {
-  const html = render({ ...settingsOpen(), layout: { ...initial.layout, sidebar: false, rightPanel: "Assistant" } });
+  const html = render({ ...settingsOpen(), layout: { ...initial.layout, rightPanel: "Assistant" } });
   expect(html).toMatch(/data-testid="sidebar"[^>]*>.*data-testid="settings-nav"/);
   expect(html).toContain('data-testid="settings-back"');
+  expect(html).toMatch(/data-testid="settings-search-open"[^>]*>.*Search settings/);
   expect(html).toMatch(/<h1[^>]*>Appearance<\/h1>/);
   expect(html).toMatch(/aria-current="page"[^>]*data-testid="settings-section-appearance"|data-testid="settings-section-appearance"[^>]*aria-current="page"/);
-  for (const absent of ["run-btn", "tab-bar", "no-tabs", "right-panel", "toggle-sidebar", "app-title"]) {
+  for (const absent of ["run-btn", "tab-bar", "no-tabs", "right-panel", "search-open", "new-connection"]) {
     expect(html).not.toContain(`data-testid="${absent}"`);
   }
+});
+
+const sidebarHeader = (html: string) => /<div data-tauri-drag-region="deep" class="flex h-\[52px\][^"]*">(?:(?!<\/div>).)*<\/div>/.exec(html)?.[0];
+
+it("keeps the sidebar header, toggle and app title, identical in settings and the workspace", () => {
+  const settings = sidebarHeader(render(settingsOpen()));
+  const workspace = sidebarHeader(render({ screen: { kind: "workspace" } }));
+  expect(settings).toContain('data-testid="toggle-sidebar"');
+  expect(settings).toContain('data-testid="app-title"');
+  expect(settings).toBe(workspace);
+});
+
+it("hides the settings nav with the sidebar and moves the toggle into the page header", () => {
+  const html = render({ ...settingsOpen(), layout: { ...initial.layout, sidebar: false } });
+  expect(html).not.toContain('data-testid="settings-nav"');
+  expect(html).toMatch(/<header[^>]*>(?:(?!<\/header>).)*data-testid="toggle-sidebar"/);
 });
 
 it("returns to the workspace layout once settings close", () => {
@@ -39,6 +57,20 @@ it("returns to the workspace layout once settings close", () => {
   expect(html).not.toContain('data-testid="settings-nav"');
   expect(html).toContain('data-testid="app-title"');
   expect(html).toContain('data-testid="no-tabs"');
+});
+
+it.each([
+  ["dark", "theme"],
+  ["page", "tablePageSize"],
+  ["error", "stopOnError"],
+  ["row limit", "maxRows"],
+])("ranks %s to the %s setting first", (query, id) => {
+  expect(searchSettings(query)[0]?.id).toBe(id);
+});
+
+it("lists every setting in registry order for an empty query, and nothing for a miss", () => {
+  expect(searchSettings(" ").map((s) => s.id)).toEqual(["theme", "maxRows", "tablePageSize", "stopOnError"]);
+  expect(searchSettings("zzqx")).toEqual([]);
 });
 
 it("offers the three themes as one native radio group with the saved one checked", () => {

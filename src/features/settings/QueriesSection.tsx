@@ -2,10 +2,11 @@ import { useState, type ReactNode } from "react";
 import { useWorkspace } from "../../state/workspace";
 import { cx, inputClass } from "../../ui/primitives";
 import { saveSettings } from "../editor/runActions";
+import type { SettingId } from "./sections";
 
-function SettingRow({ id, label, hint, children }: { id: string; label: string; hint: string; children: ReactNode }) {
+function SettingRow({ setting, id, label, hint, children }: { setting: SettingId; id: string; label: string; hint: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-6 border-b border-border py-4 first:pt-0 last:border-b-0">
+    <div data-setting={setting} className="flex items-center justify-between gap-6 border-b border-border py-4 first:pt-0 last:border-b-0">
       <label htmlFor={id} className="min-w-0">
         <span className="block text-[13px] text-fg">{label}</span>
         <span className="mt-0.5 block text-[12px] text-dim">{hint}</span>
@@ -51,13 +52,13 @@ export function QueriesSection() {
   const settings = useWorkspace((s) => s.settings);
   return (
     <div>
-      <SettingRow id="setting-max-rows" label="Row limit per result" hint="Rows past this are counted but not kept.">
+      <SettingRow setting="maxRows" id="setting-max-rows" label="Row limit per result" hint="Rows past this are counted but not kept.">
         <NumberInput key={settings.maxRows} id="setting-max-rows" field="maxRows" value={settings.maxRows} />
       </SettingRow>
-      <SettingRow id="setting-page-size" label="Table page size" hint="Rows per page when browsing a table.">
+      <SettingRow setting="tablePageSize" id="setting-page-size" label="Table page size" hint="Rows per page when browsing a table.">
         <NumberInput key={settings.tablePageSize} id="setting-page-size" field="tablePageSize" value={settings.tablePageSize} />
       </SettingRow>
-      <SettingRow id="setting-stop-on-error" label="Stop a script at the first error" hint="Later statements are skipped once one fails.">
+      <SettingRow setting="stopOnError" id="setting-stop-on-error" label="Stop a script at the first error" hint="Later statements are skipped once one fails.">
         <input
           id="setting-stop-on-error"
           data-testid="setting-stopOnError"
