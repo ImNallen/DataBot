@@ -4,7 +4,7 @@ import type { HostedWindow } from "../../shell/hostedWindow";
 import { WindowControls } from "../../shell/WindowChrome";
 import { windowLeadingInset } from "../../shell/WindowEdgeActions";
 import { useWorkspace } from "../../state/workspace";
-import { cx, Kbd } from "../../ui/primitives";
+import { cx } from "../../ui/primitives";
 import { SETTINGS_SECTIONS, settingsSection, type SettingsSectionId } from "./sections";
 
 export function SettingsNav({ hosted, section }: { hosted: HostedWindow | null; section: SettingsSectionId }) {
@@ -34,16 +34,15 @@ export function SettingsNav({ hosted, section }: { hosted: HostedWindow | null; 
           </li>
         ))}
       </ul>
-      <div className="mx-2 flex shrink-0 items-center py-2">
+      <div className="mx-2 shrink-0 py-2">
         <button
           type="button"
           data-testid="settings-back"
           onClick={closeSettings}
-          className="flex h-7 items-center gap-1.5 rounded-md pr-2.5 pl-1.5 text-[13.5px] text-muted hover:bg-hover hover:text-fg"
+          className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13.5px] text-muted hover:bg-hover hover:text-fg"
         >
           <IconArrowLeft size={16} />
-          Back to app
-          <Kbd className="ml-1 bg-border text-muted">Esc</Kbd>
+          Back
         </button>
       </div>
     </nav>
