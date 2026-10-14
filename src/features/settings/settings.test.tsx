@@ -23,6 +23,9 @@ function render(patch: Partial<WorkspaceData>) {
   return renderToStaticMarkup(<AppLayout />);
 }
 
+const breadcrumb = (html: string) =>
+  /data-testid="settings-breadcrumb"[^>]*>(.*?)<\/h1>/.exec(html)?.[1]?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
 const settingsOpen = (section: "appearance" | "queries" = "appearance") => ({ screen: { kind: "settings", section } }) as const;
 
 it("puts the settings nav in the sidebar and the section in the main panel, with no workspace chrome", () => {
@@ -30,7 +33,7 @@ it("puts the settings nav in the sidebar and the section in the main panel, with
   expect(html).toMatch(/data-testid="sidebar"[^>]*>.*data-testid="settings-nav"/);
   expect(html).toContain('data-testid="settings-back"');
   expect(html).toMatch(/data-testid="settings-search-open"[^>]*>.*Search</);
-  expect(html).toMatch(/<h1[^>]*>Appearance<\/h1>/);
+  expect(breadcrumb(html)).toBe("Settings / Appearance");
   expect(html).toMatch(/aria-current="page"[^>]*data-testid="settings-section-appearance"|data-testid="settings-section-appearance"[^>]*aria-current="page"/);
   for (const absent of ["run-btn", "tab-bar", "no-tabs", "right-panel", "search-open", "new-connection"]) {
     expect(html).not.toContain(`data-testid="${absent}"`);
@@ -115,7 +118,7 @@ it("offers the three themes as one native radio group with the saved one checked
 
 it("shows the query settings with their saved values", () => {
   const html = render({ ...settingsOpen("queries"), settings: { ...initial.settings, maxRows: 1234, tablePageSize: 77, stopOnError: false } });
-  expect(html).toMatch(/<h1[^>]*>Queries<\/h1>/);
+  expect(breadcrumb(html)).toBe("Settings / Queries");
   expect(html).toMatch(/data-testid="setting-maxRows"[^>]*value="1234"/);
   expect(html).toMatch(/data-testid="setting-tablePageSize"[^>]*value="77"/);
   expect(html).toMatch(/data-testid="setting-stopOnError"(?![^>]*checked)[^>]*>/);

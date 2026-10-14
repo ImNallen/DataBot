@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { HostedWindow } from "../../shell/hostedWindow";
 import { WindowControls } from "../../shell/WindowChrome";
-import { SidebarToggle, windowLeadingInset } from "../../shell/WindowEdgeActions";
+import { SidebarToggle, windowEdgeInset, windowLeadingInset } from "../../shell/WindowEdgeActions";
 import { useWorkspace, type Screen } from "../../state/workspace";
 import { cx } from "../../ui/primitives";
 import { settingsSection } from "./sections";
@@ -37,20 +37,17 @@ export function SettingsPage({ hosted, screen }: { hosted: HostedWindow | null; 
   const { label, Body } = settingsSection(screen.section);
   return (
     <div data-testid="settings-page" className="flex min-h-0 flex-1 flex-col">
-      <header data-tauri-drag-region="deep" className="relative flex h-[52px] shrink-0 items-center">
-        {!sidebar && (
-          <div className={cx("absolute inset-y-0 left-0 flex items-center", windowLeadingInset(hosted))}>
-            <SidebarToggle />
-          </div>
-        )}
-        <div className="mx-auto w-full max-w-[640px] min-w-0 px-8">
-          <h1 className="truncate text-[14px] font-medium text-fg">{label}</h1>
-        </div>
-        {hosted?.chrome === "custom" && (
-          <div className="absolute inset-y-0 right-2 flex items-center">
-            <WindowControls hosted={hosted} />
-          </div>
-        )}
+      <header
+        data-tauri-drag-region="deep"
+        className={cx("flex h-[52px] shrink-0 items-center gap-2", windowEdgeInset(hosted), sidebar ? "pl-4" : windowLeadingInset(hosted))}
+      >
+        {!sidebar && <SidebarToggle />}
+        <h1 data-testid="settings-breadcrumb" className="flex min-w-0 flex-1 items-center gap-2 text-[14px]">
+          <span className="truncate px-0.5 text-dim">Settings</span>
+          <span className="text-faint">/</span>
+          <span className="truncate font-medium text-fg">{label}</span>
+        </h1>
+        {hosted?.chrome === "custom" && <WindowControls hosted={hosted} />}
       </header>
       <div className="min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable_both-edges]">
         <div ref={body} className="mx-auto max-w-[640px] px-8 pt-6 pb-16">
