@@ -79,7 +79,7 @@ function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
         </Menu.Trigger>
         <MenuContent align="end">
           {PAGE_SIZES.map((n) => (
-            <MenuItem key={n} testId={`page-size-${n}`} checked={n === size} onSelect={() => void saveSettings({ ...useWorkspace.getState().settings, tablePageSize: n })}>
+            <MenuItem key={n} testId={`page-size-${n}`} checked={n === size} onSelect={() => void saveSettings({ tablePageSize: n })}>
               {groupDigits(String(n))} per page
             </MenuItem>
           ))}

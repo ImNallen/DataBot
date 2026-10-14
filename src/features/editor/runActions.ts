@@ -195,11 +195,13 @@ export function loadTableOnce(tabId: TabId): void {
   if (useLive.getState().consoles[tabId]?.run.kind !== "Finished") void runTab(tabId);
 }
 
-export async function saveSettings(next: Settings): Promise<void> {
-  const resized = next.tablePageSize !== ws().settings.tablePageSize;
-  await commands.settingsSet(next);
+// The store updates before the IPC so a second change made meanwhile builds on this one.
+export async function saveSettings(patch: Partial<Settings>): Promise<void> {
+  const prev = ws().settings;
+  const next = { ...prev, ...patch };
   ws().setSettings(next);
-  if (!resized) return;
+  await commands.settingsSet(next);
+  if (next.tablePageSize === prev.tablePageSize) return;
   for (const tab of Object.values(ws().tabs)) if (tab.kind === "table") setTablePage(tab.id, 0);
 }
 

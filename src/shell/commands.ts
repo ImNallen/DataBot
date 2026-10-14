@@ -3,13 +3,20 @@ import { useWorkspace, type Overlay } from "../state/workspace";
 
 export type Command = { id: string; label: string; key: string; run: () => void };
 
-const open = (overlay: Overlay) => () => useWorkspace.getState().open(overlay);
+const ws = () => useWorkspace.getState();
+
+const inWorkspace = (run: () => void) => () => {
+  ws().closeSettings();
+  run();
+};
+
+const open = (overlay: Overlay) => inWorkspace(() => ws().open(overlay));
 
 export const START_COMMANDS: Command[] = [
-  { id: "new-query", label: "New query tab", key: "t", run: () => openSqlTab() },
+  { id: "new-query", label: "New query tab", key: "t", run: inWorkspace(() => openSqlTab()) },
   { id: "new-connection", label: "New connection", key: "n", run: open({ kind: "connection", editing: null }) },
   { id: "search", label: "Search", key: "p", run: open({ kind: "palette" }) },
-  { id: "settings", label: "Settings", key: ",", run: open({ kind: "settings" }) },
+  { id: "settings", label: "Settings", key: ",", run: () => (ws().screen.kind === "settings" ? ws().closeSettings() : ws().openSettings()) },
 ];
 
 const CLOSE_TAB: Command = {
@@ -17,8 +24,9 @@ const CLOSE_TAB: Command = {
   label: "Close tab",
   key: "w",
   run: () => {
-    const active = useWorkspace.getState().active;
-    if (active) void closeTab(active);
+    const { screen, active, closeSettings } = ws();
+    if (screen.kind === "settings") closeSettings();
+    else if (active) void closeTab(active);
   },
 };
 

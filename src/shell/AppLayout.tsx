@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, type PanelSize } from "react-resizable-panels";
 import { ConnectionDialog } from "../features/connections/ConnectionDialog";
 import { SqlEditor } from "../features/editor/SqlEditor";
 import { HistoryPalette } from "../features/history/HistoryPalette";
 import { ResultsPane } from "../features/results/ResultsPane";
+import { SettingsNav, SettingsPage } from "../features/settings/SettingsScreen";
 import { SearchPalette } from "../features/sidebar/SearchPalette";
 import { Sidebar } from "../features/sidebar/Sidebar";
-import { useWorkspace } from "../state/workspace";
+import { useWorkspace, type Screen } from "../state/workspace";
 import { Kbd } from "../ui/primitives";
 import { START_COMMANDS, commandForKey, shortcutLabel } from "./commands";
 import { Overlays } from "./Overlays";
@@ -15,7 +16,7 @@ import { RightPanel } from "./RightPanel";
 import { StatusBar } from "./StatusBar";
 import { TabBar } from "./TabBar";
 import { ResizeEdges } from "./WindowChrome";
-import { hostedWindow } from "./hostedWindow";
+import { hostedWindow, type HostedWindow } from "./hostedWindow";
 import { TopBar } from "./TopBar";
 
 function useGlobalKeys() {
@@ -100,9 +101,40 @@ function MainArea() {
   );
 }
 
+type ScreenPanels = { side: ReactNode; main: ReactNode; right: boolean };
+
+function screenPanels(screen: Screen, hosted: HostedWindow | null, sidebar: boolean): ScreenPanels {
+  switch (screen.kind) {
+    case "workspace":
+      return {
+        side: sidebar ? <Sidebar hosted={hosted} /> : null,
+        main: (
+          <>
+            <TopBar hosted={hosted} />
+            <TabBar />
+            <MainArea />
+            <StatusBar />
+          </>
+        ),
+        right: true,
+      };
+    case "settings":
+      return {
+        side: <SettingsNav hosted={hosted} section={screen.section} />,
+        main: <SettingsPage hosted={hosted} section={screen.section} />,
+        right: false,
+      };
+    default: {
+      const unreachable: never = screen;
+      return unreachable;
+    }
+  }
+}
+
 export function AppLayout() {
   useGlobalKeys();
   const [hosted] = useState(() => hostedWindow());
+  const screen = useWorkspace((s) => s.screen);
   const sidebar = useWorkspace((s) => s.layout.sidebar);
   const sidebarWidth = useWorkspace((s) => s.layout.sidebarWidth);
   const sidebarSize = usePersistedPixels("sidebarWidth");
@@ -113,12 +145,13 @@ export function AppLayout() {
     sidebarSize.onLayoutChanged();
     rightPanelSize.onLayoutChanged();
   };
+  const panels = screenPanels(screen, hosted, sidebar);
 
   return (
     <div className="relative flex h-full">
       {hosted?.chrome === "custom" && <ResizeEdges hosted={hosted} />}
       <Group orientation="horizontal" className="min-w-0 flex-1" onLayoutChanged={persistWidths}>
-        {sidebar && (
+        {panels.side && (
           <>
             <Panel
               id="sidebar"
@@ -128,18 +161,15 @@ export function AppLayout() {
               groupResizeBehavior="preserve-pixel-size"
               onResize={sidebarSize.onResize}
             >
-              <Sidebar hosted={hosted} />
+              {panels.side}
             </Panel>
             <ResizeHandle id="sidebar-resize" label="Resize sidebar" line="vertical" lineColor="bg-hover" />
           </>
         )}
         <Panel id="main" className="flex min-w-0 flex-col bg-bg">
-          <TopBar hosted={hosted} />
-          <TabBar />
-          <MainArea />
-          <StatusBar />
+          {panels.main}
         </Panel>
-        {rightPanel && (
+        {panels.right && rightPanel && (
           <>
             <ResizeHandle id="right-panel-resize" label="Resize right panel" line="vertical" lineColor="bg-border" />
             <Panel

@@ -7,6 +7,7 @@ import { ConnectionTree } from "./ConnectionTree";
 
 export function Sidebar({ hosted }: { hosted: HostedWindow | null }) {
   const open = useWorkspace((s) => s.open);
+  const openSettings = useWorkspace((s) => s.openSettings);
 
   return (
     <aside className="flex h-full flex-col bg-sidebar">
@@ -47,7 +48,7 @@ export function Sidebar({ hosted }: { hosted: HostedWindow | null }) {
           data-testid="open-settings"
           aria-label="Settings"
           title="Settings"
-          onClick={() => open({ kind: "settings" })}
+          onClick={() => openSettings()}
         >
           <IconAdjustmentsHorizontal size={16} />
         </IconButton>
