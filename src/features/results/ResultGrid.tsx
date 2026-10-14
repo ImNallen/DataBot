@@ -107,8 +107,9 @@ const headerTextWidth = (name: string, { interfaceFont }: GridLook) =>
 
 function naturalWidths(columns: ColumnMeta[], cache: RowCache, sampleRows: number, headerExtra: number, look: GridLook): number[] {
   const charW = codeCharWidth(look);
-  // The cell's px-2 padding follows the density's spacing scale.
-  const chrome = 2 * CELL_PAD_X * DENSITY_FACTOR[look.density] + CELL_BORDER;
+  // Padding, gaps, and header controls are spacing utilities, so they follow the density's scale.
+  const factor = DENSITY_FACTOR[look.density];
+  const chrome = 2 * CELL_PAD_X * factor + CELL_BORDER;
   return columns.map((c, i) => {
     let longest = 0;
     for (let r = 0; r < sampleRows; r++) {
@@ -116,7 +117,7 @@ function naturalWidths(columns: ColumnMeta[], cache: RowCache, sampleRows: numbe
       const shown = v == null ? 4 : isRightAligned(c.type.category) ? groupDigits(v).length : Math.min(v.length, 60);
       longest = Math.max(longest, shown);
     }
-    const header = headerTextWidth(c.name, look) + HEADER_ICON + 6 + headerExtra;
+    const header = headerTextWidth(c.name, look) + HEADER_ICON + (HEADER_GAP + headerExtra) * factor;
     const content = Math.max(header, longest * charW);
     return Math.min(MAX_COL, Math.max(MIN_COL, Math.ceil(content + chrome)));
   });
