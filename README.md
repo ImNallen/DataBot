@@ -18,6 +18,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 - The results grid streams large results in pages, and **Export** writes them to CSV. The **Output** tab logs notices, command results, and errors.
 - Each tab runs in auto-commit or manual-transaction mode on its own session, so `SET` and temp tables stay with the tab.
 - `⌘P` searches tables and columns across connections. **Query history** opens a past statement in a new SQL tab.
+- **Settings** (`⌘,`) opens in place of the sidebar and editor. **Appearance** picks a System, Light, or Dark theme. **Queries** sets the row limit, the table page size, and whether a script stops at its first error.
 - The OS credential store holds one master key, and saved passwords are sealed under it. macOS asks for keychain access once per launch.
 
 ## Quickstart

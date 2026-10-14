@@ -316,7 +316,9 @@ pub struct Layout { pub sidebar: bool, pub results: bool, pub right_panel: Optio
 #[derive(Clone, Serialize, Deserialize, Type)] pub enum RightPanel { Assistant, Schema, History }
 
 #[derive(Clone, Serialize, Deserialize, Type)]
-pub struct Settings { pub max_rows: u32 /* 200_000 */, pub max_result_bytes: u64 /* 512 MiB */, pub table_page_size: u32 /* 500 */, pub stop_on_error: bool }
+pub struct Settings { pub max_rows: u32 /* 200_000 */, pub max_result_bytes: u64 /* 512 MiB */, pub table_page_size: u32 /* 500 */, pub stop_on_error: bool, pub theme: Theme /* System */ }
+#[derive(Clone, Copy, Default, Serialize, Deserialize, Type)] pub enum Theme { #[default] System, Light, Dark }
+// Settings saved before `theme` existed load with Theme::System.
 
 #[derive(Serialize, Type)]
 pub struct BootSnapshot {
@@ -555,7 +557,8 @@ Session-loss rules:
 - **Framework: React 19.** cmdk covers the ⌘P palette, Radix primitives cover menus and dialogs, and TanStack Virtual covers the grid. The AI panel later lands in React's ecosystem. Agents write React most reliably, which speeds the verify loop.
 - **Editor: CodeMirror 6, used directly** (no wrapper library). One `EditorView` is mounted, and the `EditorState` is swapped per tab, so undo history survives tab switches. `sql({ dialect: PostgreSQL, schema, defaultSchema, upperCaseKeywords: true })` provides highlighting and schema completion. A lint source renders `QueryError.position` as a diagnostic.
 - **Grid: a hand-built DOM grid on `@tanstack/react-virtual`.** Fixed 36 px rows. Rows are always virtualized. Columns are virtualized when there are more than 40. The header shows name and type in two lines, and a sticky row-number column is on the left. Numeric categories are right aligned with digit grouping, inserted textually so precision is never lost. NULL renders as a dim `NULL`. Cut cells show an ellipsis, and clicking one calls `result_cell`. Selection of a cell range is copied as TSV.
-- **Styling: Tailwind v4** with CSS variables for the dark theme tokens from the mockup.
+- **Styling: Tailwind v4** with CSS variables for every colour. `index.css` holds the dark values from the mockup and a `:root[data-theme="light"]` block that overrides each one. The CodeMirror theme and syntax colours read the same variables. `shell/theme.ts` sets `data-theme` and `color-scheme` on the root element before the first render. It follows `prefers-color-scheme` while the setting is System.
+- **Settings is a screen, not an overlay.** The workspace store holds `screen: { kind: "workspace" } | { kind: "settings"; section }`, which is not persisted. While settings is open, the sidebar panel shows the section list and the main panel shows the section. The right panel is hidden. Sections come from the `SETTINGS_SECTIONS` registry in `features/settings/sections.tsx`. Each change applies and persists at once. Back to app, Escape, and `⌘,` return to the workspace. A shortcut that opens an overlay or a tab returns to the workspace first.
 
 Stores (Zustand v5). Each has one owner, and derived data is never stored:
 
@@ -640,7 +643,8 @@ src-tauri/
 src/                          # frontend
   ipc/bindings.ts             # GENERATED, checked in
   state/{live,workspace,catalog,rowCache}.ts
-  shell/{AppLayout,TopBar,StatusBar}.tsx
+  shell/{AppLayout,TopBar,StatusBar}.tsx  shell/theme.ts
+  features/settings/{sections,SettingsScreen,AppearanceSection,QueriesSection}.tsx
   features/sidebar/{ConnectionTree,SearchPalette}.tsx
   features/connections/ConnectionDialog.tsx
   features/editor/{SqlEditor,editorStates,runActions,completion}.ts(x)
@@ -748,9 +752,9 @@ Scaffold phase (workspace, contract, shell, dev-bridge, frontend skeleton). Each
 - **Dispatch coverage source.** The dev-bridge test parses the generated `bindings.ts`, not a hand-kept constant. The drift test already proves that file equals the Tauri registration. The test compares command names and camelCase argument names.
 - **Dev-bridge protocol.** The route is `/invoke/{cmd}` (axum 0.8 path syntax). A command's own result is 200 `{status:"ok",data}` or 200 `{status:"error",error}`. An unknown command (404), bad argument (400), or engine panic (500) returns `{message}`, and the shim throws it as a real `Error`, so `typedError` rethrows instead of returning a typed error. The body is parsed as JSON whatever the content-type, so a bare `curl -d '{}'` works. `L1_DATA_DATA_DIR` overrides the bridge's temporary data directory.
 - **Window creation.** The `main` window is declared in `tauri.conf.json` with `"create": false` and built in `setup`, so `L1_DATA_SELF_CHECK=1` runs without a window. The self-check prints `{"ok":false,...,"connect":{"status":"notImplemented"}}` and exits 1 until the engine phase adds the connect, `SELECT 1`, and catalog steps.
-- **Window chrome.** On macOS, `main.rs` turns decorations back on with an overlay title bar and a hidden title. The native traffic lights sit over the sidebar header, and macOS handles resizing. On Windows and Linux, `tauri.conf.json` sets `decorations` to false, and the webview draws the resize edges and the minimize, maximize, and close buttons at the right of the toolbar. The toolbar and the sidebar header are drag regions on every platform. `hostedWindow()` returns `{ chrome: "native" }` on macOS, the custom controls elsewhere, and null in the dev-bridge browser, where no window controls show. The sidebar toggle leads whichever header touches the window's left edge. That is the sidebar header while the sidebar is open and the toolbar while it is hidden. `windowLeadingInset()` gives both headers the same left padding, so the toggle stays put. On macOS that padding clears the traffic lights. The "L1 Data" title follows the toggle on every platform.
+- **Window chrome.** On macOS, `main.rs` turns decorations back on with an overlay title bar and a hidden title. The native traffic lights sit over the sidebar header, and macOS handles resizing. On Windows and Linux, `tauri.conf.json` sets `decorations` to false, and the webview draws the resize edges and the minimize, maximize, and close buttons at the right of the toolbar. The toolbar and the sidebar header are drag regions on every platform. `hostedWindow()` returns `{ chrome: "native" }` on macOS, the custom controls elsewhere, and null in the dev-bridge browser, where no window controls show. The sidebar toggle leads whichever header touches the window's left edge. That is the sidebar header while the sidebar is open and the toolbar while it is hidden. `windowLeadingInset()` gives both headers the same left padding, so the toggle stays put. On macOS that padding clears the traffic lights. The "L1 Data" title follows the toggle on every platform. The window opens with the persisted theme, or no theme for System, so native chrome such as the traffic lights matches from the first frame. When that theme resolves to light, `main.rs` sets a white window background. `index.html` paints a `light-dark()` background for the same reason. After launch, `startTheme()` calls the window's `setTheme` and `setBackgroundColor` whenever the theme changes.
 - **Engine additions.** `Engine::data_dir()` lets the self-check report and the bridge log show the directory in use. `KeyringKeyStore` and `MemoryKeyStore` are implemented, not stubbed, and sealed passwords are keyed by `ConnectionId`.
-- **Defaults the design left open.** `Settings::default()` sets `stop_on_error: true`. `Layout::default()` is sidebar and results shown, no right panel, and `results_height: 320`.
+- **Defaults the design left open.** `Settings::default()` sets `stop_on_error: true` and `theme: System`. `Layout::default()` is sidebar and results shown, no right panel, and `results_height: 320`.
 - **Fonts** come from `@fontsource-variable/inter` and `@fontsource-variable/jetbrains-mono`, the variable-axis builds of the Fontsource packages.
 
 Engine phase (every `todo!()` in `crates/engine` filled in, self-check wired). The contract did not change; `src/ipc/bindings.ts` is byte-identical.
