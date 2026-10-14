@@ -156,7 +156,7 @@ export function HistoryPalette() {
         <Dialog.Content
           aria-describedby={undefined}
           data-testid="history-palette"
-          className="fixed top-[14%] left-1/2 z-50 w-[560px] -translate-x-1/2 overflow-hidden rounded-xl border border-control bg-raised shadow-[0_24px_64px_rgba(0,0,0,0.7)] outline-none"
+          className="fixed top-[14%] left-1/2 z-50 w-[560px] -translate-x-1/2 overflow-hidden rounded-xl border border-control bg-raised shadow-[var(--shadow-dialog)] outline-none"
         >
           <Dialog.Title className="sr-only">Query history</Dialog.Title>
           <HistoryBrowser close={close} />

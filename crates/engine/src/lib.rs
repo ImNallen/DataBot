@@ -784,6 +784,10 @@ impl Engine {
         }
     }
 
+    pub fn settings(&self) -> Settings {
+        self.shared.settings()
+    }
+
     pub fn set_settings(&self, s: Settings) {
         if let Err(e) = self.shared.store.kv_set(KV_SETTINGS, &s) {
             eprintln!("settings save failed: {e}");

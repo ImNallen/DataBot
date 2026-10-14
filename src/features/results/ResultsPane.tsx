@@ -60,7 +60,7 @@ function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
   return (
     <div
       data-testid="table-pager"
-      className="absolute bottom-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-control bg-raised p-1 text-[12.5px] text-muted shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
+      className="absolute bottom-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-control bg-raised p-1 text-[12.5px] text-muted shadow-[var(--shadow-float)]"
     >
       <IconButton aria-label="First page" disabled={tab.page === 0} onClick={() => setTablePage(tab.id, 0)}>
         <IconChevronLeftPipe size={15} />
@@ -79,7 +79,7 @@ function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
         </Menu.Trigger>
         <MenuContent align="end">
           {PAGE_SIZES.map((n) => (
-            <MenuItem key={n} testId={`page-size-${n}`} checked={n === size} onSelect={() => void saveSettings({ ...useWorkspace.getState().settings, tablePageSize: n })}>
+            <MenuItem key={n} testId={`page-size-${n}`} checked={n === size} onSelect={() => void saveSettings({ tablePageSize: n })}>
               {groupDigits(String(n))} per page
             </MenuItem>
           ))}

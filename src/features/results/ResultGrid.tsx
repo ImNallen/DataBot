@@ -522,7 +522,7 @@ export function ResultGrid({
                   onClick={(e) => e.stopPropagation()}
                   onMouseDown={(e) => startResize(e, vc.index)}
                   onDoubleClick={() => resetWidth(vc.index)}
-                  className="absolute top-0 -right-[3px] z-10 h-full w-[5px] cursor-col-resize hover:bg-[#3a5f9e]"
+                  className="absolute top-0 -right-[3px] z-10 h-full w-[5px] cursor-col-resize hover:bg-focus"
                 />
               </div>
             );
@@ -603,7 +603,7 @@ export function ResultGrid({
                       changed && c.name in changed && "bg-amber/15",
                       selected && "bg-cell-select",
                       deleted && "text-faint line-through",
-                      focused && "outline outline-1 -outline-offset-1 outline-[#3a5f9e]",
+                      focused && "outline outline-1 -outline-offset-1 outline-focus",
                     )}
                     style={{ left: vc.start, width: vc.size }}
                   >
@@ -628,7 +628,7 @@ export function ResultGrid({
                           }
                         }}
                         onBlur={() => finishEdit(true)}
-                        className="absolute inset-0 z-10 bg-bg px-2 font-mono text-[13px] text-fg outline outline-1 -outline-offset-1 outline-[#3a5f9e]"
+                        className="absolute inset-0 z-10 bg-bg px-2 font-mono text-[13px] text-fg outline outline-1 -outline-offset-1 outline-focus"
                       />
                     ) : value === DEFAULT ? (
                       <span className="text-faint italic">DEFAULT</span>

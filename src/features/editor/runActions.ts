@@ -195,11 +195,18 @@ export function loadTableOnce(tabId: TabId): void {
   if (useLive.getState().consoles[tabId]?.run.kind !== "Finished") void runTab(tabId);
 }
 
-export async function saveSettings(next: Settings): Promise<void> {
-  const resized = next.tablePageSize !== ws().settings.tablePageSize;
-  await commands.settingsSet(next);
+// The store updates before the IPC so a second change made meanwhile builds on this one.
+// Writes run one at a time, each sending the settings as they are when it runs, so the last write holds every change.
+let settingsWrites: Promise<unknown> = Promise.resolve();
+
+export async function saveSettings(patch: Partial<Settings>): Promise<void> {
+  const prev = ws().settings;
+  const next = { ...prev, ...patch };
   ws().setSettings(next);
-  if (!resized) return;
+  const write = settingsWrites.then(() => commands.settingsSet(ws().settings));
+  settingsWrites = write.catch(() => {});
+  await write;
+  if (next.tablePageSize === prev.tablePageSize) return;
   for (const tab of Object.values(ws().tabs)) if (tab.kind === "table") setTablePage(tab.id, 0);
 }
 

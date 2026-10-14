@@ -13,6 +13,14 @@ const LINE = {
   },
 } as const;
 
+export const handleLook = (line: keyof typeof LINE, lineColor: string) => ({
+  root: cx("group relative z-10 outline-none after:absolute", LINE[line].line, lineColor),
+  pill: cx(
+    "pointer-events-none absolute rounded-full bg-handle transition-colors group-hover:bg-handle-hover group-focus-visible:bg-handle-hover group-data-[separator=focus]:bg-handle-hover group-data-[separator=hover]:bg-handle-hover group-data-[separator=active]:bg-run",
+    LINE[line].pill,
+  ),
+});
+
 export function ResizeHandle({
   id,
   label,
@@ -24,18 +32,10 @@ export function ResizeHandle({
   line: keyof typeof LINE;
   lineColor: string;
 }) {
+  const look = handleLook(line, lineColor);
   return (
-    <Separator
-      id={id}
-      aria-label={label}
-      className={cx("group relative z-10 outline-none after:absolute", LINE[line].line, lineColor)}
-    >
-      <div
-        className={cx(
-          "pointer-events-none absolute rounded-full bg-[#2a2a2a] transition-colors group-hover:bg-[#4a4a4a] group-data-[separator=focus]:bg-[#4a4a4a] group-data-[separator=hover]:bg-[#4a4a4a] group-data-[separator=active]:bg-run",
-          LINE[line].pill,
-        )}
-      />
+    <Separator id={id} aria-label={label} className={look.root}>
+      <div className={look.pill} />
     </Separator>
   );
 }

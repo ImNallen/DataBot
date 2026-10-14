@@ -1,21 +1,24 @@
-import { useEffect, useRef, useState } from "react";
-import { Group, Panel, type PanelSize } from "react-resizable-panels";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Group, Panel } from "react-resizable-panels";
 import { ConnectionDialog } from "../features/connections/ConnectionDialog";
 import { SqlEditor } from "../features/editor/SqlEditor";
 import { HistoryPalette } from "../features/history/HistoryPalette";
 import { ResultsPane } from "../features/results/ResultsPane";
+import { SettingsPage } from "../features/settings/SettingsScreen";
+import { SettingsSearchPalette } from "../features/settings/SettingsSearchPalette";
 import { SearchPalette } from "../features/sidebar/SearchPalette";
 import { Sidebar } from "../features/sidebar/Sidebar";
-import { useWorkspace } from "../state/workspace";
+import { useWorkspace, type Screen } from "../state/workspace";
 import { Kbd } from "../ui/primitives";
 import { START_COMMANDS, commandForKey, shortcutLabel } from "./commands";
 import { Overlays } from "./Overlays";
+import { PixelColumn } from "./PixelColumn";
 import { ResizeHandle } from "./ResizeHandle";
 import { RightPanel } from "./RightPanel";
 import { StatusBar } from "./StatusBar";
 import { TabBar } from "./TabBar";
 import { ResizeEdges } from "./WindowChrome";
-import { hostedWindow } from "./hostedWindow";
+import { hostedWindow, type HostedWindow } from "./hostedWindow";
 import { TopBar } from "./TopBar";
 
 function useGlobalKeys() {
@@ -53,28 +56,19 @@ function StartCommands() {
   );
 }
 
-// Saved on release only: a store update mid-drag re-renders the Group and the library drops the drag.
-function usePersistedPixels(key: "sidebarWidth" | "rightPanelWidth" | "resultsHeight") {
-  const px = useRef<number | null>(null);
-  return {
-    onResize: (size: PanelSize) => {
-      px.current = Math.round(size.inPixels);
-    },
-    onLayoutChanged: () => {
-      const { layout, setLayout } = useWorkspace.getState();
-      if (px.current !== null && px.current !== layout[key]) setLayout({ [key]: px.current });
-    },
-  };
-}
-
 function MainArea() {
   const active = useWorkspace((s) => (s.active ? s.tabs[s.active] : undefined));
   const showResults = useWorkspace((s) => s.layout.results);
   const resultsHeight = useWorkspace((s) => s.layout.resultsHeight);
-  const resultsSize = usePersistedPixels("resultsHeight");
+  const resultsPx = useRef<number | null>(null);
+  // Saved on release only: a store update mid-drag re-renders the Group and the library drops the drag.
+  const saveResultsHeight = () => {
+    const { layout, setLayout } = useWorkspace.getState();
+    if (resultsPx.current !== null && resultsPx.current !== layout.resultsHeight) setLayout({ resultsHeight: resultsPx.current });
+  };
 
   return (
-    <Group orientation="vertical" className="min-h-0 flex-1" onLayoutChanged={resultsSize.onLayoutChanged}>
+    <Group orientation="vertical" className="min-h-0 flex-1" onLayoutChanged={saveResultsHeight}>
       <Panel id="editor" minSize={80}>
         {active ? (
           <SqlEditor tabId={active.id} />
@@ -90,7 +84,9 @@ function MainArea() {
             defaultSize={resultsHeight}
             minSize={120}
             groupResizeBehavior="preserve-pixel-size"
-            onResize={resultsSize.onResize}
+            onResize={(size) => {
+              resultsPx.current = Math.round(size.inPixels);
+            }}
           >
             <ResultsPane tabId={active?.id ?? null} />
           </Panel>
@@ -100,62 +96,60 @@ function MainArea() {
   );
 }
 
+type ScreenPanels = { main: ReactNode; right: boolean };
+
+function screenPanels(screen: Screen, hosted: HostedWindow | null): ScreenPanels {
+  switch (screen.kind) {
+    case "workspace":
+      return {
+        main: (
+          <>
+            <TopBar hosted={hosted} />
+            <TabBar />
+            <MainArea />
+            <StatusBar />
+          </>
+        ),
+        right: true,
+      };
+    case "settings":
+      return {
+        main: <SettingsPage hosted={hosted} screen={screen} />,
+        right: false,
+      };
+    default: {
+      const unreachable: never = screen;
+      return unreachable;
+    }
+  }
+}
+
 export function AppLayout() {
   useGlobalKeys();
   const [hosted] = useState(() => hostedWindow());
+  const screen = useWorkspace((s) => s.screen);
   const sidebar = useWorkspace((s) => s.layout.sidebar);
-  const sidebarWidth = useWorkspace((s) => s.layout.sidebarWidth);
-  const sidebarSize = usePersistedPixels("sidebarWidth");
   const rightPanel = useWorkspace((s) => s.layout.rightPanel);
-  const rightPanelWidth = useWorkspace((s) => s.layout.rightPanelWidth);
-  const rightPanelSize = usePersistedPixels("rightPanelWidth");
-  const persistWidths = () => {
-    sidebarSize.onLayoutChanged();
-    rightPanelSize.onLayoutChanged();
-  };
+  const panels = screenPanels(screen, hosted);
 
   return (
     <div className="relative flex h-full">
       {hosted?.chrome === "custom" && <ResizeEdges hosted={hosted} />}
-      <Group orientation="horizontal" className="min-w-0 flex-1" onLayoutChanged={persistWidths}>
-        {sidebar && (
-          <>
-            <Panel
-              id="sidebar"
-              defaultSize={sidebarWidth}
-              minSize={200}
-              maxSize={480}
-              groupResizeBehavior="preserve-pixel-size"
-              onResize={sidebarSize.onResize}
-            >
-              <Sidebar hosted={hosted} />
-            </Panel>
-            <ResizeHandle id="sidebar-resize" label="Resize sidebar" line="vertical" lineColor="bg-hover" />
-          </>
-        )}
-        <Panel id="main" className="flex min-w-0 flex-col bg-bg">
-          <TopBar hosted={hosted} />
-          <TabBar />
-          <MainArea />
-          <StatusBar />
-        </Panel>
-        {rightPanel && (
-          <>
-            <ResizeHandle id="right-panel-resize" label="Resize right panel" line="vertical" lineColor="bg-border" />
-            <Panel
-              id="right"
-              defaultSize={rightPanelWidth}
-              minSize={260}
-              maxSize={560}
-              groupResizeBehavior="preserve-pixel-size"
-              onResize={rightPanelSize.onResize}
-            >
-              <RightPanel hosted={hosted} />
-            </Panel>
-          </>
-        )}
-      </Group>
+      {sidebar && (
+        <PixelColumn column="sidebar">
+          <Sidebar hosted={hosted} />
+        </PixelColumn>
+      )}
+      <div data-testid="main" className="flex min-w-80 flex-1 flex-col bg-bg">
+        {panels.main}
+      </div>
+      {panels.right && rightPanel && (
+        <PixelColumn column="right">
+          <RightPanel hosted={hosted} />
+        </PixelColumn>
+      )}
       <SearchPalette />
+      <SettingsSearchPalette />
       <HistoryPalette />
       <ConnectionDialog />
       <Overlays />

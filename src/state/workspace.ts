@@ -10,6 +10,7 @@ import type {
   TabSnapshot,
   Workspace,
 } from "../ipc/bindings";
+import type { SettingId, SettingsSectionId } from "../features/settings/sections";
 
 export type SqlTab = { kind: "sql"; id: TabId; title: string; console: ConsoleConfigSnapshot };
 export type TableTab = {
@@ -36,10 +37,12 @@ export type Overlay =
   | { kind: "none" }
   | { kind: "palette" }
   | { kind: "history" }
+  | { kind: "settings-search" }
   | { kind: "connection"; editing: ConnectionId | null }
-  | { kind: "settings" }
   | { kind: "cell"; title: string; value: string | null }
   | { kind: "confirm"; title: string; body: string; confirmLabel: string; onConfirm: () => void };
+
+export type Screen = { kind: "workspace" } | { kind: "settings"; section: SettingsSectionId; target?: SettingId };
 
 export type WorkspaceData = {
   tabs: Record<TabId, Tab>;
@@ -51,12 +54,13 @@ export type WorkspaceData = {
   settings: Settings;
   selected: RelationRef | null;
   overlay: Overlay;
+  screen: Screen;
   toast: { id: number; text: string } | null;
   cursor: { line: number; col: number };
 };
 
 const DEFAULT_LAYOUT: Layout = { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341 };
-const DEFAULT_SETTINGS: Settings = { maxRows: 200_000, maxResultBytes: 512 * 1024 * 1024, tablePageSize: 500, stopOnError: true };
+const DEFAULT_SETTINGS: Settings = { maxRows: 200_000, maxResultBytes: 512 * 1024 * 1024, tablePageSize: 500, stopOnError: true, theme: "System" };
 
 export function tabFromSnapshot(t: TabSnapshot): Tab {
   switch (t.kind) {
@@ -117,6 +121,8 @@ type WorkspaceActions = {
   select(r: RelationRef | null): void;
   open(o: Overlay): void;
   close(): void;
+  openSettings(section?: SettingsSectionId, target?: SettingId): void;
+  closeSettings(): void;
   notify(text: string): void;
   setCursor(line: number, col: number): void;
 };
@@ -133,6 +139,7 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
   settings: DEFAULT_SETTINGS,
   selected: null,
   overlay: { kind: "none" },
+  screen: { kind: "workspace" },
   toast: null,
   cursor: { line: 1, col: 1 },
 
@@ -199,6 +206,8 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
   select: (selected) => set({ selected }),
   open: (overlay) => set({ overlay }),
   close: () => set({ overlay: { kind: "none" } }),
+  openSettings: (section = "appearance", target) => set({ screen: { kind: "settings", section, target }, overlay: { kind: "none" } }),
+  closeSettings: () => set({ screen: { kind: "workspace" }, overlay: { kind: "none" } }),
   notify: (text) => set({ toast: { id: ++toastSeq, text } }),
   setCursor: (line, col) => set({ cursor: { line, col } }),
 }));

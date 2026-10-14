@@ -3,6 +3,7 @@ import { commands, type AppEvent } from "./ipc/bindings";
 import { useCatalog } from "./state/catalog";
 import { useLive, type LiveData } from "./state/live";
 import { useWorkspace, workspaceSnapshot } from "./state/workspace";
+import { startTheme } from "./shell/theme";
 import { seedEditor, textOf } from "./features/editor/editorStates";
 import { browseQuery, installRunBehavior, onEditorDocChanged, openSqlTab } from "./features/editor/runActions";
 
@@ -40,6 +41,7 @@ export async function boot(): Promise<void> {
   useLive.getState().hydrate(snapshot);
   for (const tab of snapshot.workspace.tabs) seedEditor(tab.id, tab.kind === "Sql" ? tab.text : browseQuery(tab.schema, tab.table));
   useWorkspace.getState().restore(snapshot.workspace, snapshot.connections, snapshot.settings);
+  startTheme();
   if (snapshot.workspace.tabs.length === 0) openSqlTab();
   startPersistence();
   startCatalogSync();
