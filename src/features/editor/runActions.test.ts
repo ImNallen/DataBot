@@ -52,9 +52,9 @@ it("writes settings one at a time, so the write that lands last carries every ch
   });
   const flush = () => new Promise((r) => setTimeout(r, 0));
 
-  const saves = Promise.all([saveSettings({ maxRows: 5 }), saveSettings({ theme: "Dark" })]);
+  const saves = Promise.all([saveSettings({ maxRows: 5 }), saveSettings({ colorScheme: "Dark" })]);
   for (await flush(); pending.length > 0; await flush()) pending.pop()!.finish();
   await saves;
 
-  expect({ overlapped, persisted }).toMatchObject({ overlapped: false, persisted: { maxRows: 5, theme: "Dark" } });
+  expect({ overlapped, persisted }).toMatchObject({ overlapped: false, persisted: { maxRows: 5, colorScheme: "Dark" } });
 });

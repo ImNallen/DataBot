@@ -47,7 +47,7 @@ export function Button({ variant = "outline", className, ...rest }: ButtonProps)
   const look = {
     ghost: "text-muted hover:bg-hover hover:text-fg",
     outline: "border border-control text-fg hover:bg-hover",
-    primary: "bg-run text-white hover:bg-run-hover",
+    primary: "bg-run text-run-fg hover:bg-run-hover",
     danger: "border border-control text-danger hover:bg-hover",
   }[variant];
   return (

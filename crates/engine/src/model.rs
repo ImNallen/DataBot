@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use uuid::Uuid;
@@ -612,11 +614,27 @@ pub enum RightPanel {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub enum Theme {
+pub enum ColorScheme {
     #[default]
     System,
     Light,
     Dark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    Light,
+    Dark,
+}
+
+/// A user theme. `colors` maps the frontend's token names to CSS colours; the engine only stores it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct CustomTheme {
+    pub id: String,
+    pub name: String,
+    pub appearance: Appearance,
+    pub colors: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -626,11 +644,19 @@ pub struct Settings {
     pub max_result_bytes: u64,
     pub table_page_size: u32,
     pub stop_on_error: bool,
-    pub theme: Theme,
+    pub color_scheme: ColorScheme,
+    /// Theme id painted while the scheme resolves to light.
+    pub light_theme: String,
+    /// Theme id painted while the scheme resolves to dark.
+    pub dark_theme: String,
+    pub custom_themes: Vec<CustomTheme>,
 }
 
-// Hand-written for the same reason as `TableQuery`: settings saved before `theme` existed still load,
-// and the TS binding keeps `theme` required.
+const DEFAULT_LIGHT_THEME: &str = "l1-light";
+const DEFAULT_DARK_THEME: &str = "l1-dark";
+
+// Hand-written for the same reason as `TableQuery`: settings saved by older builds still load
+// (`theme` became `colorScheme`; the theme fields came later), and the TS binding keeps every field required.
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -640,11 +666,24 @@ impl<'de> Deserialize<'de> for Settings {
             max_result_bytes: u64,
             table_page_size: u32,
             stop_on_error: bool,
+            #[serde(default, alias = "theme")]
+            color_scheme: ColorScheme,
+            light_theme: Option<String>,
+            dark_theme: Option<String>,
             #[serde(default)]
-            theme: Theme,
+            custom_themes: Vec<CustomTheme>,
         }
-        let Stored { max_rows, max_result_bytes, table_page_size, stop_on_error, theme } = Stored::deserialize(d)?;
-        Ok(Settings { max_rows, max_result_bytes, table_page_size, stop_on_error, theme })
+        let s = Stored::deserialize(d)?;
+        Ok(Settings {
+            max_rows: s.max_rows,
+            max_result_bytes: s.max_result_bytes,
+            table_page_size: s.table_page_size,
+            stop_on_error: s.stop_on_error,
+            color_scheme: s.color_scheme,
+            light_theme: s.light_theme.unwrap_or_else(|| DEFAULT_LIGHT_THEME.into()),
+            dark_theme: s.dark_theme.unwrap_or_else(|| DEFAULT_DARK_THEME.into()),
+            custom_themes: s.custom_themes,
+        })
     }
 }
 
@@ -655,7 +694,10 @@ impl Default for Settings {
             max_result_bytes: 512 * 1024 * 1024,
             table_page_size: 500,
             stop_on_error: true,
-            theme: Theme::System,
+            color_scheme: ColorScheme::System,
+            light_theme: DEFAULT_LIGHT_THEME.into(),
+            dark_theme: DEFAULT_DARK_THEME.into(),
+            custom_themes: Vec::new(),
         }
     }
 }
@@ -854,14 +896,38 @@ mod tests {
     }
 
     #[test]
-    fn settings_saved_before_theme_existed_load_as_system() {
+    fn settings_saved_before_theme_existed_load_with_default_themes() {
         let s: Settings = serde_json::from_value(json!({
             "maxRows": 10, "maxResultBytes": 20, "tablePageSize": 30, "stopOnError": false
         }))
         .unwrap();
-        assert_eq!((s.max_rows, s.table_page_size, s.stop_on_error, s.theme), (10, 30, false, Theme::System));
-        let round: Settings = serde_json::from_value(serde_json::to_value(Settings { theme: Theme::Light, ..s }).unwrap()).unwrap();
-        assert_eq!(round.theme, Theme::Light);
+        assert_eq!((s.max_rows, s.table_page_size, s.stop_on_error, s.color_scheme), (10, 30, false, ColorScheme::System));
+        assert_eq!((s.light_theme.as_str(), s.dark_theme.as_str(), s.custom_themes.len()), ("l1-light", "l1-dark", 0));
+    }
+
+    #[test]
+    fn settings_saved_with_the_old_theme_key_keep_their_scheme() {
+        let s: Settings = serde_json::from_value(json!({
+            "maxRows": 10, "maxResultBytes": 20, "tablePageSize": 30, "stopOnError": false, "theme": "Dark"
+        }))
+        .unwrap();
+        assert_eq!((s.color_scheme, s.light_theme.as_str(), s.dark_theme.as_str()), (ColorScheme::Dark, "l1-light", "l1-dark"));
+    }
+
+    #[test]
+    fn settings_round_trip_custom_themes() {
+        let custom = CustomTheme {
+            id: "custom-1".into(),
+            name: "Dusk".into(),
+            appearance: Appearance::Dark,
+            colors: BTreeMap::from([("background".into(), "#101018".into()), ("accent".into(), "#e0a040".into())]),
+        };
+        let s = Settings { color_scheme: ColorScheme::Light, dark_theme: "custom-1".into(), custom_themes: vec![custom.clone()], ..Settings::default() };
+        let value = serde_json::to_value(&s).unwrap();
+        assert_eq!(value["customThemes"][0]["appearance"], json!("dark"));
+        assert_eq!(value["colorScheme"], json!("Light"));
+        let round: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!((round.color_scheme, round.dark_theme.as_str(), round.custom_themes), (ColorScheme::Light, "custom-1", vec![custom]));
     }
 
     #[test]

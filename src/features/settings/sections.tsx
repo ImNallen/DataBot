@@ -18,7 +18,14 @@ export const SETTINGS_SECTIONS = [
     label: "Appearance",
     icon: IconPalette,
     Body: AppearanceSection,
-    settings: [{ id: "theme", label: "Theme", keywords: "appearance dark light system mode colour color" }],
+    settings: [
+      { id: "colorScheme", label: "Color scheme", keywords: "appearance dark light system mode colour color" },
+      {
+        id: "themes",
+        label: "Themes",
+        keywords: "theme palette colours colors accent custom create import vs code open vsx dracula catppuccin nord tokyo night",
+      },
+    ],
   },
   {
     id: "queries",

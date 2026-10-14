@@ -6,7 +6,9 @@ import { AppLayout } from "../../shell/AppLayout";
 import { clampWidth } from "../../shell/PixelColumn";
 import { startTheme } from "../../shell/theme";
 import { useWorkspace, type WorkspaceData } from "../../state/workspace";
-import { chooseTheme } from "./AppearanceSection";
+import { fakeRoot } from "../../testing/fakeRoot";
+import { BUILT_IN_FAMILIES } from "../../themes/catalog";
+import { chooseColorScheme, chooseThemes } from "./AppearanceSection";
 import { searchSettings } from "./sections";
 
 const initial = { ...useWorkspace.getInitialState() };
@@ -89,7 +91,9 @@ it("returns to the workspace layout once settings close", () => {
 });
 
 it.each([
-  ["dark", "theme"],
+  ["dark", "colorScheme"],
+  ["dracula", "themes"],
+  ["theme", "themes"],
   ["page", "tablePageSize"],
   ["error", "stopOnError"],
   ["row limit", "maxRows"],
@@ -98,22 +102,31 @@ it.each([
 });
 
 it("lists every setting in registry order for an empty query, and nothing for a miss", () => {
-  expect(searchSettings(" ").map((s) => s.id)).toEqual(["theme", "maxRows", "tablePageSize", "stopOnError"]);
+  expect(searchSettings(" ").map((s) => s.id)).toEqual(["colorScheme", "themes", "maxRows", "tablePageSize", "stopOnError"]);
   expect(searchSettings("zzqx")).toEqual([]);
 });
 
-it("offers the three themes as one native radio group with the saved one checked", () => {
-  const html = render({ ...settingsOpen(), settings: { ...initial.settings, theme: "Dark" } });
-  const radios = (html.match(/<input type="radio"[^>]*>/g) ?? []).map((tag) => [
-    /name="(\w+)"/.exec(tag)?.[1],
-    /value="(\w+)"/.exec(tag)?.[1],
-    tag.includes('checked=""'),
+const radios = (html: string, name: string) =>
+  (html.match(/<input type="radio"[^>]*>/g) ?? [])
+    .filter((tag) => tag.includes(`name="${name}"`))
+    .map((tag) => [/value="([\w-]+)"/.exec(tag)?.[1], tag.includes('checked=""')]);
+
+it("offers the three color schemes as one native radio group with the saved one checked", () => {
+  const html = render({ ...settingsOpen(), settings: { ...initial.settings, colorScheme: "Dark" } });
+  expect(radios(html, "colorScheme")).toEqual([
+    ["System", false],
+    ["Light", false],
+    ["Dark", true],
   ]);
-  expect(radios).toEqual([
-    ["theme", "System", false],
-    ["theme", "Light", false],
-    ["theme", "Dark", true],
-  ]);
+});
+
+it("offers every theme variant in a light radio group and a dark one, with the saved picks checked", () => {
+  const custom = { id: "custom-dusk", name: "Dusk", appearance: "dark", colors: { background: "#1b1824", accent: "#e0a040" } } as const;
+  const html = render({ ...settingsOpen(), settings: { ...initial.settings, lightTheme: "ocean-light", darkTheme: "custom-dusk", customThemes: [custom] } });
+  const checked = (name: string) => radios(html, name).filter(([, on]) => on).map(([id]) => id);
+  expect(radios(html, "lightTheme").map(([id]) => id)).toEqual(["l1-light", "grove-light", "ocean-light", "ember-light", "iris-light", "rose-light"]);
+  expect(radios(html, "darkTheme").map(([id]) => id)).toEqual(["l1-dark", "grove-dark", "ocean-dark", "ember-dark", "iris-dark", "rose-dark", "custom-dusk"]);
+  expect([checked("lightTheme"), checked("darkTheme")]).toEqual([["ocean-light"], ["custom-dusk"]]);
 });
 
 it("shows the query settings with their saved values", () => {
@@ -124,19 +137,50 @@ it("shows the query settings with their saved values", () => {
   expect(html).toMatch(/data-testid="setting-stopOnError"(?![^>]*checked)[^>]*>/);
 });
 
-it("paints the app light and persists Light when the Light theme is chosen", async () => {
-  const root = { dataset: {} as Record<string, string>, style: {} as Record<string, string> };
+function paintAndRecordSaves() {
+  const root = fakeRoot();
   vi.stubGlobal("document", { documentElement: root });
   vi.stubGlobal("window", { matchMedia: () => ({ matches: true, addEventListener: () => {}, removeEventListener: () => {} }), crypto });
   const saved: Settings[] = [];
   mockIPC((cmd, args) => {
     if (cmd === "settings_set") saved.push((args as { settings: Settings }).settings);
   });
-  const stop = startTheme();
+  return { root, saved, stop: startTheme() };
+}
+
+const variant = (family: string, appearance: "light" | "dark") => {
+  const v = BUILT_IN_FAMILIES.find((f) => f.id === family)?.variants[appearance];
+  if (!v) throw new Error(`no ${family} ${appearance}`);
+  return v;
+};
+
+it("paints the app light and persists Light when the Light color scheme is chosen", async () => {
+  const { root, saved, stop } = paintAndRecordSaves();
   expect(root.dataset.theme).toBe("dark");
 
-  await chooseTheme("Light");
+  await chooseColorScheme("Light");
   stop();
   expect([root.dataset.theme, root.style.colorScheme]).toEqual(["light", "light"]);
-  expect(saved).toEqual([{ ...initial.settings, theme: "Light" }]);
+  expect(saved).toEqual([{ ...initial.settings, colorScheme: "Light" }]);
+});
+
+it("switches a pinned scheme when a theme of the other appearance is picked, and keeps System as it is", async () => {
+  const { root, saved, stop } = paintAndRecordSaves();
+  await chooseColorScheme("Light");
+  await chooseThemes([variant("grove", "dark")]);
+  expect([root.dataset.theme, root.style.vars.get("--color-bg")]).toEqual(["dark", "#0c1310"]);
+
+  await chooseColorScheme("System");
+  await chooseThemes([variant("iris", "light")]);
+  stop();
+  expect(root.dataset.theme).toBe("dark");
+  expect(saved.at(-1)).toEqual({ ...initial.settings, colorScheme: "System", lightTheme: "iris-light", darkTheme: "grove-dark" });
+});
+
+it("sets both picks from a two-variant family without touching the scheme", async () => {
+  const { saved, stop } = paintAndRecordSaves();
+  await chooseColorScheme("Dark");
+  await chooseThemes([variant("rose", "light"), variant("rose", "dark")]);
+  stop();
+  expect(saved.at(-1)).toEqual({ ...initial.settings, colorScheme: "Dark", lightTheme: "rose-light", darkTheme: "rose-dark" });
 });
