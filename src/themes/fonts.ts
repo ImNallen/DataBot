@@ -1,3 +1,5 @@
+import { isMac } from "../shell/hostedWindow";
+
 export type FontKind = "interface" | "code";
 
 /**
@@ -10,6 +12,8 @@ const FALLBACK: Record<FontKind, string> = {
   interface: "ui-sans-serif, system-ui, sans-serif",
   code: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
 };
+
+const APPLE = typeof navigator !== "undefined" && isMac(navigator.userAgent);
 
 const installed = (kind: FontKind, family: string): FontEntry => ({ family, stack: `"${family}", ${FALLBACK[kind]}`, probe: `"${family}"` });
 
@@ -25,8 +29,12 @@ export const FONTS: Record<FontKind, readonly FontEntry[]> = {
   ],
   code: [
     { family: "JetBrains Mono", stack: `"JetBrains Mono Variable", ${FALLBACK.code}`, probe: null },
-    // WKWebView exposes SF Mono only through the ui-monospace keyword, never by name.
-    { family: "SF Mono", stack: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace', probe: 'ui-monospace, "SF Mono"' },
+    // WKWebView exposes SF Mono only through the ui-monospace keyword, which other engines resolve to another face or ignore.
+    {
+      family: "SF Mono",
+      stack: '"SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace',
+      probe: APPLE ? 'ui-monospace, "SF Mono", SFMono-Regular' : '"SF Mono", SFMono-Regular',
+    },
     installed("code", "Menlo"),
     installed("code", "Monaco"),
     installed("code", "Fira Code"),
