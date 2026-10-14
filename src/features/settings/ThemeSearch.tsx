@@ -22,7 +22,9 @@ function useThemeSearch(query: string): Search {
     const abort = new AbortController();
     const timer = setTimeout(() => {
       searchThemes(trimmed, abort.signal).then(
-        (results) => setSearch({ kind: "done", query: trimmed, results }),
+        (results) => {
+          if (!abort.signal.aborted) setSearch({ kind: "done", query: trimmed, results });
+        },
         (e: unknown) => {
           if (!abort.signal.aborted) setSearch({ kind: "error", message: e instanceof Error ? e.message : String(e) });
         },

@@ -126,7 +126,7 @@ const VS_CODE_SOURCES: Partial<Record<Token, Source>> = {
 const isColorful = (hex: string) => chroma(hex) >= 0.1;
 
 function candidates(theme: VsCodeTheme, source: Source): string[] {
-  const scoped = (source.scopes ?? []).flatMap((scope) => theme.tokenColors.find((r) => r.scopes.includes(scope))?.foreground ?? []);
+  const scoped = (source.scopes ?? []).flatMap((scope) => theme.tokenColors.findLast((r) => r.scopes.includes(scope))?.foreground ?? []);
   const keyed = source.keys.flatMap((k) => theme.colors[k] ?? []);
   return [...scoped, ...keyed].filter((c) => parseHex(c) !== null);
 }

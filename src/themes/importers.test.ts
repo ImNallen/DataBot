@@ -82,11 +82,23 @@ it("takes the appearance from the manifest's uiTheme, then the theme's type, the
   });
 });
 
-it("lets an including theme override the colours it includes", () => {
-  const parent = asVsCodeTheme({ name: "Base", colors: { "editor.background": "#101010", "button.background": "#ff0000" } });
-  const child = asVsCodeTheme({ name: "Child", include: "./base.json", colors: { "button.background": "#00ff00" } });
+it("lets an including theme override the colours and syntax colours it includes", () => {
+  const parent = asVsCodeTheme({
+    name: "Base",
+    colors: { "editor.background": "#101010", "button.background": "#ff0000" },
+    tokenColors: [
+      { scope: "keyword", settings: { foreground: "#cc0000" } },
+      { scope: "string", settings: { foreground: "#00cc00" } },
+    ],
+  });
+  const child = asVsCodeTheme({
+    name: "Child",
+    include: "./base.json",
+    colors: { "button.background": "#00ff00" },
+    tokenColors: [{ scope: "keyword", settings: { foreground: "#3355ff" } }],
+  });
   const merged = parent && child && vsCodeThemeToDraft(mergeVsCodeThemes(parent, child), "x");
-  expect(merged).toMatchObject({ name: "Child", colors: { background: "#101010", accent: "#00ff00" } });
+  expect(merged).toMatchObject({ name: "Child", colors: { background: "#101010", accent: "#00ff00", keyword: "#3355ff", green: "#00cc00" } });
 });
 
 it("reads an L1 theme, dropping unknown keys and flattening alpha on opaque tokens", () => {
