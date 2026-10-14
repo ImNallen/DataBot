@@ -8,7 +8,7 @@ export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
 }
 
-const MENU_PANEL = "z-50 min-w-[180px] rounded-lg border border-control bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.6)]";
+const MENU_PANEL = "z-50 min-w-[180px] rounded-lg border border-control bg-raised p-1 shadow-[var(--shadow-popover)]";
 const MENU_ITEM = "flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px] outline-none data-[highlighted]:bg-selected";
 
 export function PgBadge() {
@@ -77,7 +77,7 @@ export function IconButton({ className, ...rest }: ButtonHTMLAttributes<HTMLButt
 }
 
 export function DialogBackdrop() {
-  return <Dialog.Overlay className="fixed inset-0 z-40 bg-[#1f1f1f]/50 backdrop-blur-[6px]" />;
+  return <Dialog.Overlay className="fixed inset-0 z-40 bg-backdrop/50 backdrop-blur-[6px]" />;
 }
 
 export function MenuContent({ children, align = "start" }: { children: ReactNode; align?: "start" | "end" }) {
@@ -189,7 +189,7 @@ export function Modal({
         <Dialog.Content
           data-testid={testId}
           style={{ width }}
-          className="fixed top-[18%] left-1/2 z-50 max-h-[72vh] -translate-x-1/2 overflow-auto rounded-xl border border-control bg-raised p-5 shadow-[0_24px_64px_rgba(0,0,0,0.7)] outline-none"
+          className="fixed top-[18%] left-1/2 z-50 max-h-[72vh] -translate-x-1/2 overflow-auto rounded-xl border border-control bg-raised p-5 shadow-[var(--shadow-dialog)] outline-none"
         >
           <div className="mb-4 flex items-start justify-between gap-4">
             <div>
@@ -214,4 +214,4 @@ export function Modal({
 }
 
 export const inputClass =
-  "h-8 w-full rounded-lg border border-control bg-bg px-2.5 text-[13px] text-fg outline-none placeholder:text-faint focus:border-[#2c4a7a]";
+  "h-8 w-full rounded-lg border border-control bg-bg px-2.5 text-[13px] text-fg outline-none placeholder:text-faint focus:border-accent-border";

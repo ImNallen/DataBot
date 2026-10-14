@@ -32,7 +32,7 @@ export function ResizeHandle({
     >
       <div
         className={cx(
-          "pointer-events-none absolute rounded-full bg-[#2a2a2a] transition-colors group-hover:bg-[#4a4a4a] group-data-[separator=focus]:bg-[#4a4a4a] group-data-[separator=hover]:bg-[#4a4a4a] group-data-[separator=active]:bg-run",
+          "pointer-events-none absolute rounded-full bg-handle transition-colors group-hover:bg-handle-hover group-data-[separator=focus]:bg-handle-hover group-data-[separator=hover]:bg-handle-hover group-data-[separator=active]:bg-run",
           LINE[line].pill,
         )}
       />

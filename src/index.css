@@ -29,6 +29,76 @@
   --color-run-hover: #4a7cf3;
   --color-danger: #ff6467;
   --color-cell-select: #172338;
+  --color-run-icon: #00d492;
+  --color-focus: #3a5f9e;
+  --color-accent-border: #2c4a7a;
+  --color-handle: #2a2a2a;
+  --color-handle-hover: #4a4a4a;
+  --color-backdrop: #1f1f1f;
+}
+
+:root {
+  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.6);
+  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, 0.7);
+  --scrollbar: #262626;
+  --scrollbar-hover: #333333;
+  --code: #e5e5e5;
+  --code-punct: #d4d4d4;
+  --code-selection: #1f3554;
+  --code-bracket: #262626;
+  --code-selection-match: #99ff7780;
+  --code-search-match: rgba(255, 185, 0, 0.18);
+  --code-search-current: rgba(255, 185, 0, 0.4);
+  --code-executed: rgba(80, 162, 255, 0.13);
+}
+
+:root[data-theme="light"] {
+  --color-bg: #ffffff;
+  --color-sidebar: #f7f7f8;
+  --color-results: #fbfbfb;
+  --color-raised: #ffffff;
+  --color-hover: #f0f0f1;
+  --color-selected: #e8e9eb;
+  --color-pill: #ededee;
+  --color-border: #e6e6e8;
+  --color-grid: #ececee;
+  --color-control: #dcdcdf;
+  --color-fg: #171717;
+  --color-tree: #1c1e22;
+  --color-muted: #4b4b4f;
+  --color-dim: #67676c;
+  --color-faint: #8e8e94;
+  --color-green: #007f55;
+  --color-live: #00a36c;
+  --color-amber: #a65800;
+  --color-keyword: #1d64d8;
+  --color-badge: #1f5bd8;
+  --color-badge-bg: #e7effd;
+  --color-run: #346bf1;
+  --color-run-hover: #2a5ce0;
+  --color-danger: #d03539;
+  --color-cell-select: #dce8fb;
+  --color-run-icon: #00d492;
+  --color-focus: #5b8def;
+  --color-accent-border: #7aa2ee;
+  --color-handle: #d4d4d8;
+  --color-handle-hover: #a0a0a6;
+  --color-backdrop: #a0a0a6;
+
+  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.12);
+  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, 0.18);
+  --scrollbar: #d4d4d8;
+  --scrollbar-hover: #b4b4bb;
+  --code: #1f1f22;
+  --code-punct: #4b4b4f;
+  --code-selection: #cfe0fb;
+  --code-bracket: #e2e2e5;
+  --code-selection-match: rgba(0, 153, 102, 0.16);
+  --code-search-match: rgba(255, 185, 0, 0.3);
+  --code-search-current: rgba(255, 160, 0, 0.55);
+  --code-executed: rgba(37, 99, 235, 0.1);
 }
 
 html,
@@ -63,7 +133,7 @@ textarea,
 
 @layer base {
   :where(button, [tabindex], [role="tab"]):focus-visible {
-    outline: 1px solid #3a5f9e;
+    outline: 1px solid var(--color-focus);
     outline-offset: -1px;
   }
 }
@@ -77,13 +147,13 @@ textarea,
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #262626;
+  background: var(--scrollbar);
   border: 2px solid transparent;
   border-radius: 6px;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #333333;
+  background: var(--scrollbar-hover);
   background-clip: padding-box;
 }
 

@@ -18,7 +18,7 @@ function Toast() {
     <div
       role="status"
       data-testid="toast"
-      className="fixed bottom-10 left-1/2 z-50 max-w-[520px] -translate-x-1/2 rounded-lg border border-control bg-raised px-3.5 py-2 text-[13px] text-fg shadow-[0_12px_32px_rgba(0,0,0,0.6)]"
+      className="fixed bottom-10 left-1/2 z-50 max-w-[520px] -translate-x-1/2 rounded-lg border border-control bg-raised px-3.5 py-2 text-[13px] text-fg shadow-[var(--shadow-popover)]"
     >
       {toast.text}
     </div>
