@@ -11,7 +11,7 @@ import type {
 } from "../ipc/bindings";
 
 export type SqlTab = { kind: "sql"; id: TabId; title: string; console: ConsoleConfigSnapshot };
-export type TableTab = { kind: "table"; id: TabId; connectionId: ConnectionId; schema: string; table: string; page: number };
+export type TableTab = { kind: "table"; id: TabId; connectionId: ConnectionId; schema: string; table: string; page: number; exactRowCount?: number };
 export type Tab = SqlTab | TableTab;
 
 export type RelationRef = { connectionId: ConnectionId; schema: string; relation: string };
@@ -45,7 +45,7 @@ const DEFAULT_SETTINGS: Settings = { maxRows: 200_000, maxResultBytes: 512 * 102
 export function tabFromSnapshot(t: TabSnapshot): Tab {
   switch (t.kind) {
     case "Sql":
-      return { kind: "sql", id: t.id, title: t.title, console: t.console };
+      return { kind: "sql", id: t.id, title: t.title, console: { ...t.console, schema: null } };
     case "Table":
       return { kind: "table", id: t.id, connectionId: t.connectionId, schema: t.schema, table: t.table, page: t.page };
     default: {
@@ -91,7 +91,7 @@ type WorkspaceActions = {
   setActive(id: TabId): void;
   renameTab(id: TabId, title: string): void;
   patchSqlConsole(id: TabId, patch: Partial<ConsoleConfigSnapshot>): void;
-  setTablePage(id: TabId, page: number): void;
+  setTablePage(id: TabId, page: number, exactRowCount?: number): void;
   setLayout(patch: Partial<Layout>): void;
   setActiveResult(id: TabId, index: number): void;
   upsertConfig(c: ConnectionConfig): void;
@@ -152,10 +152,10 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
       const t = s.tabs[id];
       return t?.kind === "sql" ? { tabs: { ...s.tabs, [id]: { ...t, console: { ...t.console, ...patch } } } } : {};
     }),
-  setTablePage: (id, page) =>
+  setTablePage: (id, page, exactRowCount) =>
     set((s) => {
       const t = s.tabs[id];
-      return t?.kind === "table" ? { tabs: { ...s.tabs, [id]: { ...t, page } } } : {};
+      return t?.kind === "table" ? { tabs: { ...s.tabs, [id]: { ...t, page, ...(exactRowCount !== undefined && { exactRowCount }) } } } : {};
     }),
   setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...patch } })),
   setActiveResult: (id, index) => set((s) => ({ activeResult: { ...s.activeResult, [id]: index } })),

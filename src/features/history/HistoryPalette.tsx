@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
-import { Clock } from "lucide-react";
+import { IconClock } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { commands, type HistoryOutcome } from "../../ipc/bindings";
 import { useLive } from "../../state/live";
@@ -92,7 +92,7 @@ function HistoryBrowser({ close }: { close: () => void }) {
   return (
     <Command shouldFilter={false} label="Query history" value={selected} onValueChange={setSelected}>
       <div className="flex h-12 items-center gap-2.5 border-b border-control px-4">
-        <Clock size={16} className="shrink-0 text-green" />
+        <IconClock size={16} className="shrink-0 text-green" />
         <Command.Input
           data-testid="history-input"
           autoFocus

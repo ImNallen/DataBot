@@ -1,11 +1,15 @@
+import * as ContextMenu from "@radix-ui/react-context-menu";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Check, X } from "lucide-react";
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { IconCheck, IconChevronRight, IconX } from "@tabler/icons-react";
+import type { ButtonHTMLAttributes, ReactElement, ReactNode } from "react";
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
 }
+
+const MENU_PANEL = "z-50 min-w-[180px] rounded-lg border border-control bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.6)]";
+const MENU_ITEM = "flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px] outline-none data-[highlighted]:bg-selected";
 
 export function PgBadge() {
   return (
@@ -59,13 +63,12 @@ export function Button({ variant = "outline", className, ...rest }: ButtonProps)
   );
 }
 
-export function IconButton({ className, active, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }) {
+export function IconButton({ className, ...rest }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
       type="button"
       className={cx(
-        "inline-grid size-7 place-items-center rounded-md transition-colors",
-        active ? "bg-hover text-fg" : "text-muted hover:bg-hover hover:text-fg",
+        "inline-grid size-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-40",
         className,
       )}
       {...rest}
@@ -83,7 +86,7 @@ export function MenuContent({ children, align = "start" }: { children: ReactNode
       <Menu.Content
         align={align}
         sideOffset={6}
-        className="z-50 min-w-[180px] rounded-lg border border-control bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.6)]"
+        className={MENU_PANEL}
       >
         {children}
       </Menu.Content>
@@ -97,25 +100,60 @@ export function MenuItem({
   onSelect,
   testId,
   danger,
+  disabled,
 }: {
   children: ReactNode;
   checked?: boolean;
-  onSelect: () => void;
+  onSelect?: () => void;
   testId?: string;
   danger?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <Menu.Item
       data-testid={testId}
       onSelect={onSelect}
-      className={cx(
-        "flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px] outline-none data-[highlighted]:bg-selected",
-        danger ? "text-danger" : "text-fg",
-      )}
+      disabled={disabled}
+      className={cx(MENU_ITEM, danger ? "text-danger" : "text-fg", "data-[disabled]:opacity-40")}
     >
-      <span className="grid w-3.5 place-items-center">{checked && <Check size={13} className="text-muted" />}</span>
+      <span className="grid w-3.5 place-items-center">{checked && <IconCheck size={13} className="text-muted" />}</span>
       {children}
     </Menu.Item>
+  );
+}
+
+export function ContextMenuArea({ menu, children }: { menu: ReactNode; children: ReactElement }) {
+  return (
+    <ContextMenu.Root modal={false}>
+      <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content className={MENU_PANEL}>{menu}</ContextMenu.Content>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
+  );
+}
+
+export function ContextMenuItem({ children, onSelect, testId }: { children: ReactNode; onSelect: () => void; testId?: string }) {
+  return (
+    <ContextMenu.Item data-testid={testId} onSelect={onSelect} className={cx(MENU_ITEM, "pr-3 text-fg")}>
+      {children}
+    </ContextMenu.Item>
+  );
+}
+
+export function ContextSubmenu({ label, children, testId }: { label: ReactNode; children: ReactNode; testId?: string }) {
+  return (
+    <ContextMenu.Sub>
+      <ContextMenu.SubTrigger data-testid={testId} className={cx(MENU_ITEM, "pr-1 text-fg data-[state=open]:bg-selected")}>
+        {label}
+        <IconChevronRight size={14} className="ml-auto text-muted" />
+      </ContextMenu.SubTrigger>
+      <ContextMenu.Portal>
+        <ContextMenu.SubContent sideOffset={6} alignOffset={-5} className={MENU_PANEL}>
+          {children}
+        </ContextMenu.SubContent>
+      </ContextMenu.Portal>
+    </ContextMenu.Sub>
   );
 }
 
@@ -164,7 +202,7 @@ export function Modal({
             </div>
             <Dialog.Close asChild>
               <IconButton aria-label="Close" className="-mt-1 -mr-1">
-                <X size={15} />
+                <IconX size={15} />
               </IconButton>
             </Dialog.Close>
           </div>

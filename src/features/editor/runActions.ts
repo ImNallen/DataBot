@@ -5,6 +5,7 @@ import {
   type ConnectionId,
   type ConsoleConfig,
   type RunRequest,
+  type Settings,
   type TabId,
   type TxnMode,
 } from "../../ipc/bindings";
@@ -12,7 +13,7 @@ import { configureErrorText, disconnectErrorText, runErrorText, txnErrorText } f
 import { useLive } from "../../state/live";
 import { dropRowCaches } from "../../state/rowCache";
 import { isRunning } from "../../state/status";
-import { nextUntitled, tabConnectionId, useWorkspace, type RelationRef, type Tab } from "../../state/workspace";
+import { nextUntitled, tabConnectionId, useWorkspace, type RelationRef, type Tab, type TableTab } from "../../state/workspace";
 import {
   dropEditor,
   editorStateOf,
@@ -22,12 +23,13 @@ import {
   showDiagnostics,
   textOf,
 } from "./editorStates";
+import { sqlIdent } from "./sqlIdent";
 
 const ws = () => useWorkspace.getState();
 const notify = (text: string) => ws().notify(text);
 
 function consoleConfig(tab: Tab): ConsoleConfig | null {
-  if (tab.kind === "table") return { connectionId: tab.connectionId, schema: tab.schema, mode: "AutoCommit" };
+  if (tab.kind === "table") return { connectionId: tab.connectionId, schema: null, mode: "AutoCommit" };
   const { connectionId, schema, mode } = tab.console;
   return connectionId ? { connectionId, schema, mode } : null;
 }
@@ -54,14 +56,35 @@ async function ensureConsole(tab: Tab): Promise<boolean> {
 
 const sent = new Map<TabId, { runId: number; text: string }>();
 
-async function runTab(tabId: TabId): Promise<void> {
+export function browseQuery(schema: string, table: string): string {
+  return `SELECT * FROM ${sqlIdent(schema)}.${sqlIdent(table)}`;
+}
+
+export function isBrowsing(tab: TableTab): boolean {
+  return textOf(tab.id).trim().replace(/;$/, "") === browseQuery(tab.schema, tab.table);
+}
+
+type PageTarget = { page: number; exactRowCount?: number };
+
+// A page change is saved on the tab only once the engine accepts the run. One that arrives mid-run waits for that
+// run to finish, and the latest one wins. It runs only as a page load, never as the editor's script.
+const queuedPages = new Map<TabId, PageTarget>();
+
+async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
   const tab = ws().tabs[tabId];
-  if (!tab || isRunning(useLive.getState().consoles[tabId])) return;
+  if (!tab) return;
+  if (target && (tab.kind !== "table" || !isBrowsing(tab))) return;
+  if (isRunning(useLive.getState().consoles[tabId])) {
+    if (target) queuedPages.set(tabId, target);
+    return;
+  }
   if (!(await ensureConsole(tab))) return;
 
   let request: RunRequest;
   let text = "";
-  if (tab.kind === "sql") {
+  if (tab.kind === "table" && isBrowsing(tab)) {
+    request = { kind: "tablePage", schema: tab.schema, table: tab.table, page: target?.page ?? tab.page };
+  } else {
     const state = editorStateOf(tabId);
     const sel = state.selection.main;
     text = state.doc.toString();
@@ -71,8 +94,6 @@ async function runTab(tabId: TabId): Promise<void> {
       target: sel.empty ? { kind: "cursor", offset: sel.head } : { kind: "selection", from: sel.from, to: sel.to },
     };
     showDiagnostics(tabId, []);
-  } else {
-    request = { kind: "tablePage", schema: tab.schema, table: tab.table, page: tab.page };
   }
 
   const res = await commands.consoleRun(tabId, request);
@@ -80,7 +101,8 @@ async function runTab(tabId: TabId): Promise<void> {
     notify(runErrorText(res.error));
     return;
   }
-  if (tab.kind === "sql") {
+  if (target && request.kind === "tablePage") ws().setTablePage(tabId, target.page, target.exactRowCount);
+  if (request.kind === "script") {
     sent.set(tabId, { runId: res.data.runId, text });
     flashRanges(tabId, res.data.statements);
     showRunErrors(useLive.getState());
@@ -104,7 +126,7 @@ export async function endTransaction(tabId: TabId, verb: "commit" | "rollback"):
   if (res.status === "error") notify(txnErrorText(res.error));
 }
 
-async function reconfigure(tabId: TabId, patch: { connectionId?: ConnectionId; schema?: string | null; mode?: TxnMode }) {
+async function reconfigure(tabId: TabId, patch: { connectionId?: ConnectionId; mode?: TxnMode }) {
   const tab = ws().tabs[tabId];
   if (tab?.kind !== "sql") return;
   const next = { ...tab.console, ...patch };
@@ -119,8 +141,7 @@ async function reconfigure(tabId: TabId, patch: { connectionId?: ConnectionId; s
 }
 
 export const setTabMode = (tabId: TabId, mode: TxnMode) => reconfigure(tabId, { mode });
-export const setTabSchema = (tabId: TabId, schema: string) => reconfigure(tabId, { schema });
-export const setTabConnection = (tabId: TabId, connectionId: ConnectionId) => reconfigure(tabId, { connectionId, schema: "public" });
+export const setTabConnection = (tabId: TabId, connectionId: ConnectionId) => reconfigure(tabId, { connectionId });
 
 function defaultConnection(): ConnectionId | null {
   const s = ws();
@@ -138,7 +159,7 @@ export function openSqlTab(opts: { connectionId?: ConnectionId | null; text?: st
     kind: "sql",
     id,
     title: opts.title ?? nextUntitled(Object.values(ws().tabs)),
-    console: { connectionId: opts.connectionId ?? defaultConnection(), schema: "public", mode: "AutoCommit" },
+    console: { connectionId: opts.connectionId ?? defaultConnection(), schema: null, mode: "AutoCommit" },
   });
   return id;
 }
@@ -153,6 +174,7 @@ export function openTableTab(ref: RelationRef): void {
     return;
   }
   const id = crypto.randomUUID();
+  seedEditor(id, browseQuery(ref.schema, ref.relation));
   ws().addTab({ kind: "table", id, connectionId: ref.connectionId, schema: ref.schema, table: ref.relation, page: 0 });
 }
 
@@ -164,13 +186,32 @@ export function loadTableOnce(tabId: TabId): void {
   if (useLive.getState().consoles[tabId]?.run.kind !== "Finished") void runTab(tabId);
 }
 
-export function setTablePage(tabId: TabId, page: number): void {
-  ws().setTablePage(tabId, page);
-  void runTab(tabId);
+export async function saveSettings(next: Settings): Promise<void> {
+  const resized = next.tablePageSize !== ws().settings.tablePageSize;
+  await commands.settingsSet(next);
+  ws().setSettings(next);
+  if (!resized) return;
+  for (const tab of Object.values(ws().tabs)) if (tab.kind === "table") setTablePage(tab.id, 0);
+}
+
+export async function lastTablePage(tabId: TabId): Promise<void> {
+  const tab = ws().tabs[tabId];
+  if (tab?.kind !== "table") return;
+  const res = await commands.exactRowCount(tab.connectionId, tab.schema, tab.table);
+  if (res.status === "error") {
+    notify(res.error.kind === "NotConnected" ? "Connect to jump to the last page." : res.error.message);
+    return;
+  }
+  setTablePage(tabId, Math.max(0, Math.ceil(res.data / ws().settings.tablePageSize) - 1), res.data);
+}
+
+export function setTablePage(tabId: TabId, page: number, exactRowCount?: number): void {
+  void runTab(tabId, { page, exactRowCount });
 }
 
 function forgetTab(tabId: TabId) {
   sent.delete(tabId);
+  queuedPages.delete(tabId);
   loadedTables.delete(tabId);
   dropRowCaches(tabId);
   dropEditor(tabId);
@@ -211,13 +252,23 @@ function showRunErrors(s: ReturnType<typeof useLive.getState>) {
   }
 }
 
-const docListeners: (() => void)[] = [];
-export function onEditorDocChanged(listener: () => void): void {
-  docListeners.push(listener);
+const docListeners = new Set<() => void>();
+export function onEditorDocChanged(listener: () => void): () => void {
+  docListeners.add(listener);
+  return () => docListeners.delete(listener);
+}
+
+function runQueuedPages(s: ReturnType<typeof useLive.getState>) {
+  for (const [tabId, target] of queuedPages) {
+    if (isRunning(s.consoles[tabId])) continue;
+    queuedPages.delete(tabId);
+    void runTab(tabId, target);
+  }
 }
 
 export function installRunBehavior(): void {
   useLive.subscribe(showRunErrors);
+  useLive.subscribe(runQueuedPages);
   installEditorBehavior([
     Prec.highest(
       keymap.of([

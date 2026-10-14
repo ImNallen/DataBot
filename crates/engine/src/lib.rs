@@ -472,6 +472,14 @@ impl Engine {
         self.shared.refresh_catalog(id).await
     }
 
+    pub async fn exact_row_count(&self, id: ConnectionId, schema: String, table: String) -> Result<u64, CountError> {
+        let live = self.shared.live(id).ok_or(CountError::NotConnected)?;
+        let sql = format!("SELECT count(*) FROM {}.{}", text::quote_ident(&schema), text::quote_ident(&table));
+        let meta = live.meta.lock().await;
+        let row = meta.client.query_one(&sql, &[]).await.map_err(|e| CountError::Failed { message: connection::error_text(&e) })?;
+        Ok(row.get::<_, i64>(0) as u64)
+    }
+
     pub async fn console_configure(&self, tab: TabId, c: ConsoleConfig) -> Result<ConsoleState, ConfigureError> {
         let s = &self.shared;
         if s.config(c.connection_id).is_none() {

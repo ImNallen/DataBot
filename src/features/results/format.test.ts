@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactCount, formatElapsed, groupDigits, shortType, toTsv } from "./format";
+import { compactCount, formatElapsed, groupDigits, pageStatus, shortType, toTsv } from "./format";
 
 describe("groupDigits", () => {
   it("groups the integer part and keeps sign and fraction verbatim", () => {
@@ -65,6 +65,29 @@ describe("shortType", () => {
     expect(shortType("character(3)")).toBe("char(3)");
     expect(shortType("numeric(12,2)")).toBe("numeric(12,2)");
     expect(shortType("lab.mood")).toBe("lab.mood");
+  });
+});
+
+describe("pageStatus", () => {
+  it("uses the row estimate for the total until a short page shows the exact count", () => {
+    expect(pageStatus(0, 500, 500, 241183, undefined)).toEqual({ label: "1–500 of ~241,183", isLast: false });
+    expect(pageStatus(2, 100, 100, 241183, undefined)).toEqual({ label: "201–300 of ~241,183", isLast: false });
+    expect(pageStatus(482, 500, 183, 241183, undefined)).toEqual({ label: "241,001–241,183 of 241,183", isLast: true });
+  });
+
+  it("uses a counted total, so a full last page is known to be last", () => {
+    expect(pageStatus(481, 500, 500, 241000, 241000)).toEqual({ label: "240,501–241,000 of 241,000", isLast: true });
+    expect(pageStatus(0, 500, 500, 241000, 241000)).toEqual({ label: "1–500 of 241,000", isLast: false });
+  });
+
+  it("falls back to a lower bound when the estimate is missing or stale", () => {
+    expect(pageStatus(0, 500, 500, null, undefined).label).toBe("1–500 of 500+");
+    expect(pageStatus(3, 10, 10, 20, undefined).label).toBe("31–40 of 40+");
+  });
+
+  it("reports empty pages without a range", () => {
+    expect(pageStatus(0, 500, 0, 0, undefined)).toEqual({ label: "0 of 0", isLast: true });
+    expect(pageStatus(2, 500, 0, 1000, 1000)).toEqual({ label: "0 of 1,000", isLast: true });
   });
 });
 

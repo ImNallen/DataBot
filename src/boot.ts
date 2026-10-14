@@ -4,7 +4,7 @@ import { useCatalog } from "./state/catalog";
 import { useLive, type LiveData } from "./state/live";
 import { useWorkspace, workspaceSnapshot } from "./state/workspace";
 import { seedEditor, textOf } from "./features/editor/editorStates";
-import { installRunBehavior, onEditorDocChanged, openSqlTab } from "./features/editor/runActions";
+import { browseQuery, installRunBehavior, onEditorDocChanged, openSqlTab } from "./features/editor/runActions";
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -38,7 +38,7 @@ export async function boot(): Promise<void> {
   await listen<AppEvent>("app-event", (e) => useLive.getState().apply(e.payload));
   const snapshot = await commands.appBoot();
   useLive.getState().hydrate(snapshot);
-  for (const tab of snapshot.workspace.tabs) if (tab.kind === "Sql") seedEditor(tab.id, tab.text);
+  for (const tab of snapshot.workspace.tabs) seedEditor(tab.id, tab.kind === "Sql" ? tab.text : browseQuery(tab.schema, tab.table));
   useWorkspace.getState().restore(snapshot.workspace, snapshot.connections, snapshot.settings);
   if (snapshot.workspace.tabs.length === 0) openSqlTab();
   startPersistence();

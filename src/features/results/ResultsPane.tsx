@@ -1,18 +1,73 @@
+import * as Menu from "@radix-ui/react-dropdown-menu";
 import { save } from "@tauri-apps/plugin-dialog";
-import { Check, ChevronLeft, ChevronRight, CircleAlert, Download } from "lucide-react";
-import { useEffect, useState } from "react";
+import { IconAlertCircle, IconCheck, IconChevronDown, IconChevronLeft, IconChevronLeftPipe, IconChevronRight, IconChevronRightPipe, IconDownload, IconUpload } from "@tabler/icons-react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { commands, type QueryError, type ResultMeta, type RunState, type TabId } from "../../ipc/bindings";
 import { exportErrorText } from "../../ipc/errors";
 import { useLive } from "../../state/live";
 import { rowResults, runStatements, runSummary, shownResult, type Summary } from "../../state/status";
-import { useWorkspace } from "../../state/workspace";
-import { Button, cx, IconButton, Spinner } from "../../ui/primitives";
-import { loadTableOnce, setTablePage } from "../editor/runActions";
-import { pluralRows } from "./format";
-import { OutputLog } from "./OutputLog";
+import { useCatalog } from "../../state/catalog";
+import { useWorkspace, type TableTab } from "../../state/workspace";
+import { cx, IconButton, MenuContent, MenuItem, Spinner } from "../../ui/primitives";
+import { isBrowsing, lastTablePage, loadTableOnce, onEditorDocChanged, saveSettings, setTablePage } from "../editor/runActions";
+import { groupDigits, pageStatus, pluralRows } from "./format";
 import { ResultGrid } from "./ResultGrid";
 
-type Pane = "result" | "output";
+const EXPORT_FORMATS = [
+  { label: "CSV", ready: true },
+  { label: "JSON", ready: false },
+  { label: "Markdown", ready: false },
+  { label: "XML", ready: false },
+];
+
+const PAGE_SIZES = [10, 100, 250, 500, 1000];
+const PAGER_INSET = 52;
+
+function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
+  const size = useWorkspace((s) => s.settings.tablePageSize);
+  const estimate = useCatalog(
+    (s) =>
+      s.views[tab.connectionId]?.catalog.schemas.find((sc) => sc.name === tab.schema)?.relations.find((r) => r.name === tab.table)
+        ?.rowEstimate ?? null,
+  );
+  const { label, isLast } = pageStatus(tab.page, size, rows, estimate, tab.exactRowCount);
+  return (
+    <div
+      data-testid="table-pager"
+      className="absolute bottom-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-control bg-raised p-1 text-[12.5px] text-muted shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
+    >
+      <IconButton aria-label="First page" disabled={tab.page === 0} onClick={() => setTablePage(tab.id, 0)}>
+        <IconChevronLeftPipe size={15} />
+      </IconButton>
+      <IconButton aria-label="Previous page" disabled={tab.page === 0} onClick={() => setTablePage(tab.id, tab.page - 1)}>
+        <IconChevronLeft size={15} />
+      </IconButton>
+      <Menu.Root modal={false}>
+        <Menu.Trigger
+          data-testid="table-page"
+          aria-label="Rows per page"
+          className="inline-flex h-7 items-center gap-1 rounded-md pr-1.5 pl-2 whitespace-nowrap text-fg tabular-nums outline-none hover:bg-hover data-[state=open]:bg-hover"
+        >
+          {label}
+          <IconChevronDown size={13} className="text-muted" />
+        </Menu.Trigger>
+        <MenuContent align="end">
+          {PAGE_SIZES.map((n) => (
+            <MenuItem key={n} testId={`page-size-${n}`} checked={n === size} onSelect={() => void saveSettings({ ...useWorkspace.getState().settings, tablePageSize: n })}>
+              {groupDigits(String(n))} per page
+            </MenuItem>
+          ))}
+        </MenuContent>
+      </Menu.Root>
+      <IconButton aria-label="Next page" disabled={isLast} onClick={() => setTablePage(tab.id, tab.page + 1)}>
+        <IconChevronRight size={15} />
+      </IconButton>
+      <IconButton aria-label="Last page" disabled={isLast} onClick={() => void lastTablePage(tab.id)}>
+        <IconChevronRightPipe size={15} />
+      </IconButton>
+    </div>
+  );
+}
 
 function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
@@ -31,8 +86,8 @@ function SummaryText({ summary }: { summary: Summary }) {
       data-tone={summary.tone}
       className={cx("flex min-w-0 items-center gap-1.5 text-[13px]", summary.tone === "error" ? "text-danger" : "text-dim")}
     >
-      {summary.tone === "ok" && <Check size={15} className="shrink-0 text-green" />}
-      {summary.tone === "error" && <CircleAlert size={14} className="shrink-0" />}
+      {summary.tone === "ok" && <IconCheck size={15} className="shrink-0 text-green" />}
+      {summary.tone === "error" && <IconAlertCircle size={14} className="shrink-0" />}
       {summary.tone === "running" && <Spinner />}
       <span className="truncate">{summary.text}</span>
     </span>
@@ -60,6 +115,7 @@ function ErrorPanel({ error }: { error: QueryError }) {
       <div className="text-danger">{error.message}</div>
       {error.detail && <div className="text-muted">{error.detail}</div>}
       {error.hint && <div className="text-muted">Hint: {error.hint}</div>}
+      {error.context && <div className="whitespace-pre-wrap text-dim">Context: {error.context}</div>}
       {error.sqlstate && <div className="font-mono text-[11.5px] text-faint">SQLSTATE {error.sqlstate}</div>}
     </div>
   );
@@ -69,9 +125,9 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div className="grid flex-1 place-items-center bg-results text-[13px] text-dim">{children}</div>;
 }
 
-function ResultBody({ run, picked }: { run: RunState; picked: number | undefined }) {
+function ResultBody({ run, picked, bottomInset }: { run: RunState; picked: number | undefined; bottomInset: number }) {
   const shown = shownResult(run, picked);
-  if (shown) return <ResultGrid key={`${shown.meta.ref.runId}:${shown.index}`} meta={shown.meta} done={shown.done} />;
+  if (shown) return <ResultGrid key={`${shown.meta.ref.runId}:${shown.index}`} meta={shown.meta} done={shown.done} bottomInset={bottomInset} />;
   if (run.kind === "Idle") return <Empty>Run a statement with ⌘↵ to see its result here.</Empty>;
   if (run.kind === "Running") {
     return (
@@ -90,47 +146,27 @@ function ResultBody({ run, picked }: { run: RunState; picked: number | undefined
 }
 
 export function ResultsPane({ tabId }: { tabId: TabId }) {
-  const [pane, setPane] = useState<Pane>("result");
   const tab = useWorkspace((s) => s.tabs[tabId]);
   const picked = useWorkspace((s) => s.activeResult[tabId]);
   const setActiveResult = useWorkspace((s) => s.setActiveResult);
-  const pageSize = useWorkspace((s) => s.settings.tablePageSize);
   const run = useLive((s) => s.consoles[tabId]?.run) ?? { kind: "Idle" as const };
   const now = useNow(run.kind === "Running");
   const results = rowResults(run);
   const shown = shownResult(run, picked);
   const summary = runSummary(run, picked, now);
-  const failedRun = run.kind === "Finished" && run.outcome === "Failed";
 
   const isTable = tab?.kind === "table";
+  const browsingNow = () => tab?.kind === "table" && isBrowsing(tab);
+  const browsing = useSyncExternalStore(onEditorDocChanged, browsingNow, browsingNow);
+  const pager = tab?.kind === "table" && browsing && shown ? tab : null;
   useEffect(() => {
     if (isTable) loadTableOnce(tabId);
   }, [tabId, isTable]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-results">
+    <section className="flex h-full min-h-0 flex-col border-b border-border bg-results">
       <div className="flex h-[41px] shrink-0 items-center gap-3 border-b border-grid pr-2 pl-2.5">
-        <div className="flex items-center gap-1" role="tablist">
-          {(["result", "output"] as const).map((p) => (
-            <button
-              key={p}
-              type="button"
-              role="tab"
-              aria-selected={pane === p}
-              data-testid={`pane-${p}`}
-              onClick={() => setPane(p)}
-              className={cx(
-                "h-7 rounded-md px-2.5 text-[13.5px]",
-                pane === p ? "bg-pill text-fg" : "text-dim hover:text-muted",
-                p === "output" && failedRun && pane !== p && "text-danger/80",
-              )}
-            >
-              {p === "result" ? "Result" : "Output"}
-            </button>
-          ))}
-        </div>
-
-        {pane === "result" && results.length > 1 && (
+        {results.length > 1 && (
           <div data-testid="result-selector" className="flex items-center gap-0.5 rounded-md border border-control p-0.5">
             {results.map((r, i) => (
               <button
@@ -152,38 +188,51 @@ export function ResultsPane({ tabId }: { tabId: TabId }) {
 
         <div className="flex-1" />
 
-        {tab?.kind === "table" && (
-          <div className="flex items-center gap-1 text-[12.5px] text-dim">
-            <IconButton aria-label="Previous page" disabled={tab.page === 0} onClick={() => setTablePage(tabId, tab.page - 1)}>
-              <ChevronLeft size={15} />
-            </IconButton>
-            <span data-testid="table-page" className="tabular-nums">
-              Page {tab.page + 1}
-            </span>
-            <IconButton
-              aria-label="Next page"
-              disabled={!shown || shown.meta.rowCount < pageSize}
-              onClick={() => setTablePage(tabId, tab.page + 1)}
-            >
-              <ChevronRight size={15} />
-            </IconButton>
-          </div>
-        )}
-
         {summary && <SummaryText summary={summary} />}
 
-        <Button
-          data-testid="export-btn"
-          className="h-[30px] gap-2 px-2.5 text-[#d4d4d4]"
-          disabled={!shown || run.kind === "Running"}
-          onClick={() => shown && void exportCsv(shown.meta)}
-        >
-          <Download size={14} className="text-green" />
-          Export
-        </Button>
+        <div className="flex items-center gap-0.5">
+          <Menu.Root modal={false}>
+            <Menu.Trigger
+              data-testid="export-format"
+              aria-label="Export format"
+              className="inline-flex h-7 items-center gap-1 rounded-md pr-1.5 pl-2 text-[12.5px] text-muted outline-none hover:bg-hover hover:text-fg data-[state=open]:bg-hover data-[state=open]:text-fg"
+            >
+              CSV
+              <IconChevronDown size={13} />
+            </Menu.Trigger>
+            <MenuContent align="end">
+              {EXPORT_FORMATS.map((f) => (
+                <MenuItem key={f.label} testId={`export-format-${f.label}`} checked={f.ready} disabled={!f.ready}>
+                  {f.label}
+                  {!f.ready && <span className="ml-auto pl-4 text-[11.5px] text-dim">Soon</span>}
+                </MenuItem>
+              ))}
+            </MenuContent>
+          </Menu.Root>
+          <IconButton
+            data-testid="export-btn"
+            aria-label="Export CSV"
+            title="Export CSV"
+              disabled={!shown || run.kind === "Running"}
+            onClick={() => shown && void exportCsv(shown.meta)}
+          >
+            <IconDownload size={16} />
+          </IconButton>
+          <IconButton
+            data-testid="import-btn"
+            aria-label="Import"
+            title="Import"
+            onClick={() => useWorkspace.getState().notify("Import is coming soon.")}
+          >
+            <IconUpload size={16} />
+          </IconButton>
+        </div>
       </div>
 
-      {pane === "result" ? <ResultBody run={run} picked={picked} /> : <OutputLog tabId={tabId} />}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <ResultBody run={run} picked={picked} bottomInset={pager ? PAGER_INSET : 0} />
+        {pager && <TablePager tab={pager} rows={shown?.meta.rowCount ?? 0} />}
+      </div>
     </section>
   );
 }

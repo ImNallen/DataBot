@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Group, Panel, type PanelSize } from "react-resizable-panels";
 import { ConnectionDialog } from "../features/connections/ConnectionDialog";
 import { SqlEditor } from "../features/editor/SqlEditor";
-import { openSqlTab } from "../features/editor/runActions";
+import { closeTab, openSqlTab } from "../features/editor/runActions";
 import { HistoryPalette } from "../features/history/HistoryPalette";
 import { ResultsPane } from "../features/results/ResultsPane";
 import { SearchPalette } from "../features/sidebar/SearchPalette";
@@ -24,6 +24,11 @@ function useGlobalKeys() {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
         useWorkspace.getState().open({ kind: "palette" });
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "w") {
+        e.preventDefault();
+        const active = useWorkspace.getState().active;
+        if (active) void closeTab(active);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -58,13 +63,6 @@ function MainArea() {
           <span>No open tabs.</span>
           <Button onClick={() => openSqlTab()}>New SQL tab</Button>
         </div>
-      </div>
-    );
-  }
-  if (active.kind === "table") {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col">
-        <ResultsPane tabId={active.id} />
       </div>
     );
   }

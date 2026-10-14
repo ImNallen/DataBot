@@ -25,6 +25,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ipc::connection_disconnect,
             ipc::catalog_get,
             ipc::catalog_refresh,
+            ipc::exact_row_count,
             ipc::console_configure,
             ipc::console_run,
             ipc::console_cancel,
@@ -64,6 +65,65 @@ fn engine_config(app: &tauri::App) -> Result<EngineConfig, Box<dyn Error>> {
     };
     Ok(EngineConfig { data_dir, keys })
 }
+
+// Tauri's default macOS menu binds Cmd+W to Close Window, which would swallow the key before the webview's
+// close-tab shortcut sees it. This mirrors that menu with Close Window moved to Shift+Cmd+W.
+#[cfg(target_os = "macos")]
+fn macos_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+    let close_window = || MenuItem::with_id(app, CLOSE_WINDOW, "Close Window", true, Some("Shift+CmdOrCtrl+W"));
+    let about = AboutMetadata { name: Some(app.package_info().name.clone()), version: Some(app.package_info().version.to_string()), ..Default::default() };
+    Menu::with_items(
+        app,
+        &[
+            &Submenu::with_items(
+                app,
+                app.package_info().name.clone(),
+                true,
+                &[
+                    &PredefinedMenuItem::about(app, None, Some(about))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::services(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::hide(app, None)?,
+                    &PredefinedMenuItem::hide_others(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::quit(app, None)?,
+                ],
+            )?,
+            &Submenu::with_items(app, "File", true, &[&close_window()?])?,
+            &Submenu::with_items(
+                app,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, None)?,
+                    &PredefinedMenuItem::redo(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, None)?,
+                    &PredefinedMenuItem::copy(app, None)?,
+                    &PredefinedMenuItem::paste(app, None)?,
+                    &PredefinedMenuItem::select_all(app, None)?,
+                ],
+            )?,
+            &Submenu::with_items(app, "View", true, &[&PredefinedMenuItem::fullscreen(app, None)?])?,
+            &Submenu::with_items(
+                app,
+                "Window",
+                true,
+                &[
+                    &PredefinedMenuItem::minimize(app, None)?,
+                    &PredefinedMenuItem::maximize(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &close_window()?,
+                ],
+            )?,
+        ],
+    )
+}
+
+#[cfg(target_os = "macos")]
+const CLOSE_WINDOW: &str = "close-window";
 
 fn forward_events(app: AppHandle, mut events: broadcast::Receiver<AppEvent>) {
     tauri::async_runtime::spawn(async move {
@@ -152,8 +212,17 @@ fn main() {
 
     let self_checking = std::env::var("L1_DATA_SELF_CHECK").as_deref() == Ok("1");
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let app = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let app = app.menu(macos_menu).on_menu_event(|app, event| {
+        if event.id() == CLOSE_WINDOW
+            && let Some(window) = app.webview_windows().into_values().find(|w| w.is_focused().unwrap_or(false))
+            && let Err(e) = window.close()
+        {
+            eprintln!("close window failed: {e}");
+        }
+    });
+    app.plugin(tauri_plugin_dialog::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             let engine = tauri::async_runtime::block_on(Engine::open(engine_config(app)?))?;

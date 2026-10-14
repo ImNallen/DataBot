@@ -181,6 +181,17 @@ async fn connect_reports_server_and_catalog_has_the_mockup_tables() {
 }
 
 #[tokio::test]
+async fn exact_row_count_is_exact_and_reports_missing_tables() {
+    let h = Harness::start().await;
+    assert!(matches!(h.engine.exact_row_count(h.conn, "public".into(), "coupons".into()).await, Err(CountError::NotConnected)));
+    h.engine.connect(h.conn).await.unwrap();
+    assert_eq!(h.engine.exact_row_count(h.conn, "public".into(), "coupons".into()).await.unwrap(), 3);
+    assert_eq!(h.engine.exact_row_count(h.conn, "lab".into(), "type_zoo".into()).await.unwrap(), 2);
+    let missing = h.engine.exact_row_count(h.conn, "public".into(), "nope".into()).await;
+    assert!(matches!(&missing, Err(CountError::Failed { message }) if message.contains("does not exist")), "{missing:?}");
+}
+
+#[tokio::test]
 async fn mockup_query_returns_six_regions_with_bigint_orders() {
     let mut h = Harness::start().await;
     let tab = h.sql_tab(TxnMode::AutoCommit).await;

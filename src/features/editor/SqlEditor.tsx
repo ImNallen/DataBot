@@ -1,15 +1,14 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { TabId } from "../../ipc/bindings";
 import { useCatalog } from "../../state/catalog";
-import { useWorkspace } from "../../state/workspace";
+import { tabConnectionId, useWorkspace } from "../../state/workspace";
 import { activateEditor, configureSql, focusEditor, mountEditor } from "./editorStates";
 
 export function SqlEditor({ tabId }: { tabId: TabId }) {
   const host = useRef<HTMLDivElement>(null);
   const tab = useWorkspace((s) => s.tabs[tabId]);
-  const connectionId = tab?.kind === "sql" ? tab.console.connectionId : null;
-  const schema = tab?.kind === "sql" ? (tab.console.schema ?? "public") : undefined;
-  const completion = useCatalog((s) => (connectionId ? s.views[connectionId]?.completion : undefined));
+  const connectionId = tabConnectionId(tab);
+  const view = useCatalog((s) => (connectionId ? s.views[connectionId] : undefined));
 
   useLayoutEffect(() => {
     activateEditor(tabId);
@@ -21,8 +20,8 @@ export function SqlEditor({ tabId }: { tabId: TabId }) {
   }, []);
 
   useEffect(() => {
-    configureSql(tabId, completion, schema);
-  }, [tabId, completion, schema]);
+    configureSql(tabId, view?.completion, view?.qualifiedTables ?? []);
+  }, [tabId, view]);
 
   useEffect(() => {
     focusEditor();

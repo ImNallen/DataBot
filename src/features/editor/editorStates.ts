@@ -1,4 +1,12 @@
-import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
+import {
+  autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
+  completionKeymap,
+  ifNotIn,
+  type Completion,
+  type CompletionSource,
+} from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { PostgreSQL, sql, type SQLNamespace } from "@codemirror/lang-sql";
 import { bracketMatching, indentOnInput } from "@codemirror/language";
@@ -49,8 +57,22 @@ const flashField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 });
 
-function sqlLanguage(schema: SQLNamespace | undefined, defaultSchema: string | undefined): Extension {
-  return sql({ dialect: PostgreSQL, schema, defaultSchema, upperCaseKeywords: true });
+function qualifiedTables(tables: readonly Completion[]): CompletionSource {
+  return ifNotIn(["String", "QuotedIdentifier", "LineComment", "BlockComment"], (ctx) => {
+    const word = ctx.matchBefore(/[\w$]+/);
+    if (!word && !ctx.explicit) return null;
+    const from = word?.from ?? ctx.pos;
+    const isMemberAccess = ctx.state.sliceDoc(from - 1, from) === ".";
+    if (isMemberAccess) return null;
+    return { from, options: tables, validFor: /^[\w$]*$/ };
+  });
+}
+
+function sqlLanguage(namespace: SQLNamespace | undefined, tables: readonly Completion[]): Extension {
+  return [
+    sql({ dialect: PostgreSQL, schema: namespace, upperCaseKeywords: true }),
+    PostgreSQL.language.data.of({ autocomplete: qualifiedTables(tables) }),
+  ];
 }
 
 export function installEditorBehavior(ext: Extension): void {
@@ -73,7 +95,7 @@ function createState(text: string): EditorState {
       autocompletion({ icons: false }),
       highlightSelectionMatches(),
       keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
-      sqlConfig.of(sqlLanguage(undefined, undefined)),
+      sqlConfig.of(sqlLanguage(undefined, [])),
       flashField,
       editorTheme,
       editorHighlighting,
@@ -143,8 +165,8 @@ export function focusEditor(): void {
   view?.focus();
 }
 
-export function configureSql(id: TabId, schema: SQLNamespace | undefined, defaultSchema: string | undefined): void {
-  updateEditor(id, () => ({ effects: sqlConfig.reconfigure(sqlLanguage(schema, defaultSchema)) }));
+export function configureSql(id: TabId, namespace: SQLNamespace | undefined, tables: readonly Completion[]): void {
+  updateEditor(id, () => ({ effects: sqlConfig.reconfigure(sqlLanguage(namespace, tables)) }));
 }
 
 export function flashRanges(id: TabId, ranges: DocRange[]): void {

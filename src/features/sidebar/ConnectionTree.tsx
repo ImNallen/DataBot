@@ -1,5 +1,5 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Braces, ChevronRight, Database, Ellipsis, Eye, KeyRound, Table2 } from "lucide-react";
+import { IconBraces, IconChevronRight, IconDatabase, IconDots, IconEye, IconKey, IconTable } from "@tabler/icons-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { ColumnInfo, ConnectionConfig, FunctionInfo, Relation, SchemaInfo } from "../../ipc/bindings";
 import { isViewKind, useCatalog } from "../../state/catalog";
@@ -7,7 +7,18 @@ import { connectErrorText } from "../../ipc/errors";
 import { useLive } from "../../state/live";
 import { connectionStatus } from "../../state/status";
 import { useWorkspace } from "../../state/workspace";
-import { cx, MenuContent, MenuItem, MenuSeparator, PgBadge, Spinner, StatusDot } from "../../ui/primitives";
+import {
+  ContextMenuArea,
+  ContextMenuItem,
+  ContextSubmenu,
+  cx,
+  MenuContent,
+  MenuItem,
+  MenuSeparator,
+  PgBadge,
+  Spinner,
+  StatusDot,
+} from "../../ui/primitives";
 import { connect, confirmDelete, disconnect, refreshCatalog } from "../connections/connectionActions";
 import { insertAtCursor } from "../editor/editorStates";
 import { openSqlTab, openTableTab } from "../editor/runActions";
@@ -25,10 +36,12 @@ function Row({
   selected,
   onClick,
   onDoubleClick,
+  onToggle,
   icon,
   label,
   trailing,
   menu,
+  contextMenu,
   quietChevron,
 }: {
   quietChevron?: boolean;
@@ -39,12 +52,14 @@ function Row({
   selected?: boolean;
   onClick?: () => void;
   onDoubleClick?: () => void;
+  onToggle?: () => void;
   icon?: ReactNode;
   label: ReactNode;
   trailing?: ReactNode;
   menu?: ReactNode;
+  contextMenu?: ReactNode;
 }) {
-  return (
+  const row = (
     <div
       data-testid={`tree-node-${path}`}
       role="treeitem"
@@ -56,12 +71,22 @@ function Row({
       style={{ paddingLeft: 8 + depth * INDENT }}
       className={cx(
         "group mx-2 flex h-7 cursor-default items-center gap-1.5 rounded-md pr-2.5",
-        selected ? "bg-selected" : "hover:bg-hover",
+        selected ? "bg-selected" : "hover:bg-hover data-[state=open]:bg-hover",
       )}
     >
-      <span className={cx("shrink-0 place-items-center text-muted", expandable ? "grid w-3.5" : "hidden")}>
+      <span
+        onClick={
+          onToggle &&
+          ((e) => {
+            e.stopPropagation();
+            onToggle();
+          })
+        }
+        onDoubleClick={onToggle && ((e) => e.stopPropagation())}
+        className={cx("shrink-0 place-items-center self-stretch text-muted", expandable ? "grid w-3.5" : "hidden")}
+      >
         {expandable && (
-          <ChevronRight
+          <IconChevronRight
             size={14}
             className={cx("transition-transform duration-100", open && "rotate-90", quietChevron && !open && "invisible group-hover:visible")}
           />
@@ -72,6 +97,17 @@ function Row({
       {trailing}
       {menu}
     </div>
+  );
+  return contextMenu ? <ContextMenuArea menu={contextMenu}>{row}</ContextMenuArea> : row;
+}
+
+function NewMenu({ connectionId }: { connectionId: string }) {
+  return (
+    <ContextSubmenu label="New" testId="tree-menu-new">
+      <ContextMenuItem testId="tree-menu-query-console" onSelect={() => openSqlTab({ connectionId })}>
+        Query Console
+      </ContextMenuItem>
+    </ContextSubmenu>
   );
 }
 
@@ -85,7 +121,7 @@ function ColumnRow({ path, depth, column }: { path: string; depth: number; colum
       path={`${path}/${column.name}`}
       depth={depth}
       expandable={false}
-      icon={column.pk ? <KeyRound size={13} className="text-amber" /> : <span className="size-[3px] rounded-full bg-faint" />}
+      icon={column.pk ? <IconKey size={13} className="text-amber" /> : <span className="size-[3px] rounded-full bg-faint" />}
       label={<span className="text-[13px]">{column.name}</span>}
       trailing={<span className="max-w-[55%] min-w-0 truncate pl-2 font-mono text-[10.5px] text-muted">{shortType(column.typeDisplay)}</span>}
     />
@@ -123,12 +159,11 @@ function RelationRow({
         quietChevron
         open={open}
         selected={selected}
-        onClick={() => {
-          select({ connectionId, schema, relation: rel.name });
-          expanded.toggle(me);
-        }}
+        onClick={() => select({ connectionId, schema, relation: rel.name })}
+        onToggle={() => expanded.toggle(me)}
         onDoubleClick={() => openTableTab({ connectionId, schema, relation: rel.name })}
-        icon={view ? <Eye size={15} className="text-muted" /> : <Table2 size={15} className="text-muted" />}
+        contextMenu={<NewMenu connectionId={connectionId} />}
+        icon={view ? <IconEye size={15} className="text-muted" /> : <IconTable size={15} className="text-muted" />}
         label={rel.name}
         trailing={!view && rel.rowEstimate !== null ? <Count>{compactCount(rel.rowEstimate)}</Count> : undefined}
       />
@@ -198,6 +233,7 @@ function SchemaNode({ path, depth, connectionId, schema, expanded }: { path: str
         open={open}
         onClick={() => expanded.toggle(me)}
         label={schema.name}
+        contextMenu={<NewMenu connectionId={connectionId} />}
         trailing={<Count>{`${tables.length} ${tables.length === 1 ? "table" : "tables"}`}</Count>}
       />
       {open && (
@@ -206,7 +242,7 @@ function SchemaNode({ path, depth, connectionId, schema, expanded }: { path: str
             <RelationRow key={rel.oid} path={me} depth={depth + 1} connectionId={connectionId} schema={schema.name} rel={rel} expanded={expanded} />
           ))}
           {views.length > 0 && (
-            <Group path={`${me}/views`} depth={depth + 1} icon={<Eye size={15} className="text-muted" />} label="Views" count={views.length} expanded={expanded}>
+            <Group path={`${me}/views`} depth={depth + 1} icon={<IconEye size={15} className="text-muted" />} label="Views" count={views.length} expanded={expanded}>
               {views.map((rel) => (
                 <RelationRow key={rel.oid} path={`${me}/views`} depth={depth + 2} connectionId={connectionId} schema={schema.name} rel={rel} expanded={expanded} />
               ))}
@@ -216,7 +252,7 @@ function SchemaNode({ path, depth, connectionId, schema, expanded }: { path: str
             <Group
               path={`${me}/functions`}
               depth={depth + 1}
-              icon={<Braces size={14} className="text-muted" />}
+              icon={<IconBraces size={14} className="text-muted" />}
               label="Functions"
               count={schema.functions.length}
               expanded={expanded}
@@ -241,7 +277,7 @@ function ConnectionMenu({ config, connected }: { config: ConnectionConfig; conne
         onClick={(e) => e.stopPropagation()}
         className="ml-1 hidden size-5 shrink-0 place-items-center rounded text-muted outline-none group-hover:grid hover:bg-control hover:text-fg data-[state=open]:grid"
       >
-        <Ellipsis size={14} />
+        <IconDots size={14} />
       </Menu.Trigger>
       <MenuContent align="end">
         {connected ? (
@@ -329,8 +365,9 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
             expandable
             open={expanded.has(`${path}/${db.database}`)}
             onClick={() => expanded.toggle(`${path}/${db.database}`)}
-            icon={<Database size={15} className="text-muted" />}
+            icon={<IconDatabase size={15} className="text-muted" />}
             label={db.database}
+            contextMenu={<NewMenu connectionId={config.id} />}
           />
           {expanded.has(`${path}/${db.database}`) &&
             db.schemas.map((s) => (
@@ -359,15 +396,10 @@ export function ConnectionTree() {
   const list = Object.values(configs).sort((a, b) => a.name.localeCompare(b.name));
 
   return (
-    <div data-testid="conn-tree" role="tree" className="min-h-0 flex-1 overflow-y-auto pb-3">
+    <div data-testid="conn-tree" role="tree" className="min-h-0 flex-1 overflow-y-auto pt-2 pb-3">
       {list.map((c) => (
         <ConnectionNode key={c.id} config={c} expanded={expanded} />
       ))}
-      {list.length === 0 && (
-        <div className="px-5 py-3 text-[12.5px] leading-5 text-dim">
-          No connections yet. Use + to add a PostgreSQL server.
-        </div>
-      )}
     </div>
   );
 }
