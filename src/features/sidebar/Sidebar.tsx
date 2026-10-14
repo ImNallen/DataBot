@@ -11,7 +11,7 @@ function SidebarHeader({ hosted }: { hosted: HostedWindow | null }) {
   return (
     <div data-tauri-drag-region="deep" className={cx("flex h-[52px] shrink-0 items-center gap-2 pr-3", windowLeadingInset(hosted))}>
       <SidebarToggle />
-      <span data-testid="app-title" className="min-w-0 flex-1 truncate text-[14px] tracking-[-0.01em] text-tree">
+      <span data-testid="app-title" className="min-w-0 flex-1 truncate text-ui-14 tracking-[-0.01em] text-tree">
         <span className="font-semibold">L1</span> <span className="font-normal text-muted">Data</span>
       </span>
     </div>

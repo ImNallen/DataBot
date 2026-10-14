@@ -21,7 +21,7 @@ export function SettingsSidebarBody({ section }: { section: SettingsSectionId })
                 aria-current={id === section ? "page" : undefined}
                 onClick={() => openSettings(id)}
                 className={cx(
-                  "mx-2 flex h-7 w-[calc(100%-16px)] items-center gap-2 rounded-md px-2 text-left text-[14px] text-tree",
+                  "mx-2 flex h-7 w-[calc(100%-16px)] items-center gap-2 rounded-md px-2 text-left text-ui-14 text-tree",
                   id === section ? "bg-selected" : "hover:bg-hover",
                 )}
               >
@@ -37,7 +37,7 @@ export function SettingsSidebarBody({ section }: { section: SettingsSectionId })
           type="button"
           data-testid="settings-back"
           onClick={closeSettings}
-          className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13.5px] text-muted hover:bg-hover hover:text-fg"
+          className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-ui-13.5 text-muted hover:bg-hover hover:text-fg"
         >
           <IconArrowLeft size={16} />
           Back

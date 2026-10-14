@@ -41,7 +41,7 @@ function useThemeSearch(query: string): Search {
 const downloads = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
 
 function Status({ children, tone = "dim" }: { children: ReactNode; tone?: "dim" | "danger" }) {
-  return <div className={cx("flex h-16 items-center justify-center gap-2 text-[12.5px]", tone === "danger" ? "text-danger" : "text-dim")}>{children}</div>;
+  return <div className={cx("flex h-16 items-center justify-center gap-2 text-ui-12.5", tone === "danger" ? "text-danger" : "text-dim")}>{children}</div>;
 }
 
 export function ThemeSearch({ onImported }: { onImported: () => void }) {
@@ -72,10 +72,10 @@ export function ThemeSearch({ onImported }: { onImported: () => void }) {
   return (
     <div className="flex flex-col gap-2">
       <div>
-        <label htmlFor="theme-search" className="block text-[13px] text-fg">
+        <label htmlFor="theme-search" className="block text-ui-13 text-fg">
           Search community themes
         </label>
-        <span className="block text-[12px] text-dim">Find open-source themes from Open VSX.</span>
+        <span className="block text-ui-12 text-dim">Find open-source themes from Open VSX.</span>
       </div>
       <div className="relative">
         <IconSearch size={14} className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-dim" />
@@ -89,7 +89,7 @@ export function ThemeSearch({ onImported }: { onImported: () => void }) {
           className={cx(inputClass, "pl-8")}
         />
       </div>
-      <div className="flex items-center gap-1 text-[12px]">
+      <div className="flex items-center gap-1 text-ui-12">
         <span className="mr-1 text-dim">Popular</span>
         {POPULAR.map((name) => (
           <button
@@ -123,13 +123,13 @@ export function ThemeSearch({ onImported }: { onImported: () => void }) {
                 className="flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left hover:bg-hover disabled:opacity-60"
               >
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] text-fg">{ext.displayName}</span>
-                  <span className="block truncate text-[12px] text-dim">{ext.publisher}</span>
+                  <span className="block truncate text-ui-13 text-fg">{ext.displayName}</span>
+                  <span className="block truncate text-ui-12 text-dim">{ext.publisher}</span>
                 </span>
                 {importing === ext.id ? (
                   <Spinner />
                 ) : (
-                  <span className="flex shrink-0 items-center gap-1 text-[12px] text-dim tabular-nums">
+                  <span className="flex shrink-0 items-center gap-1 text-ui-12 text-dim tabular-nums">
                     <IconDownload size={12} />
                     {downloads.format(ext.downloadCount)}
                   </span>
@@ -140,7 +140,7 @@ export function ThemeSearch({ onImported }: { onImported: () => void }) {
         </ul>
       )}
       {error && (
-        <p role="alert" className="text-[12px] text-danger">
+        <p role="alert" className="text-ui-12 text-danger">
           {error}
         </p>
       )}

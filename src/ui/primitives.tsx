@@ -9,11 +9,11 @@ export function cx(...parts: (string | false | null | undefined)[]): string {
 }
 
 const MENU_PANEL = "z-50 min-w-[180px] rounded-lg border border-control bg-raised p-1 shadow-[var(--shadow-popover)]";
-const MENU_ITEM = "flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px] outline-none data-[highlighted]:bg-selected";
+const MENU_ITEM = "flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-ui-13 outline-none data-[highlighted]:bg-selected";
 
 export function PgBadge() {
   return (
-    <span className="inline-grid h-4 min-w-[18px] place-items-center rounded-[4px] bg-badge-bg px-[3px] font-mono text-[8.5px] font-bold leading-none tracking-tight text-badge">
+    <span className="inline-grid h-4 min-w-[18px] place-items-center rounded-[4px] bg-badge-bg px-[3px] font-mono text-ui-8.5 font-bold leading-none tracking-tight text-badge">
       PG
     </span>
   );
@@ -21,7 +21,7 @@ export function PgBadge() {
 
 export function Kbd({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <kbd className={cx("inline-flex h-[18px] items-center rounded-[4px] px-1.5 font-sans text-[10.5px] font-medium leading-none", className)}>
+    <kbd className={cx("inline-flex h-[18px] items-center rounded-[4px] px-1.5 font-sans text-ui-10.5 font-medium leading-none", className)}>
       {children}
     </kbd>
   );
@@ -54,7 +54,7 @@ export function Button({ variant = "outline", className, ...rest }: ButtonProps)
     <button
       type="button"
       className={cx(
-        "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] whitespace-nowrap transition-colors disabled:pointer-events-none disabled:opacity-40",
+        "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-ui-13 whitespace-nowrap transition-colors disabled:pointer-events-none disabled:opacity-40",
         look,
         className,
       )}
@@ -158,7 +158,7 @@ export function ContextSubmenu({ label, children, testId }: { label: ReactNode; 
 }
 
 export function MenuLabel({ children }: { children: ReactNode }) {
-  return <Menu.Label className="px-2 pt-1.5 pb-1 text-[11.5px] text-dim">{children}</Menu.Label>;
+  return <Menu.Label className="px-2 pt-1.5 pb-1 text-ui-11.5 text-dim">{children}</Menu.Label>;
 }
 
 export function MenuSeparator() {
@@ -193,9 +193,9 @@ export function Modal({
         >
           <div className="mb-4 flex items-start justify-between gap-4">
             <div>
-              <Dialog.Title className="text-[14px] font-semibold text-fg">{title}</Dialog.Title>
+              <Dialog.Title className="text-ui-14 font-semibold text-fg">{title}</Dialog.Title>
               {description ? (
-                <Dialog.Description className="mt-1 text-[12.5px] text-dim">{description}</Dialog.Description>
+                <Dialog.Description className="mt-1 text-ui-12.5 text-dim">{description}</Dialog.Description>
               ) : (
                 <Dialog.Description className="sr-only">{title}</Dialog.Description>
               )}
@@ -214,4 +214,4 @@ export function Modal({
 }
 
 export const inputClass =
-  "h-8 w-full rounded-lg border border-control bg-bg px-2.5 text-[13px] text-fg outline-none placeholder:text-faint focus:border-accent-border";
+  "h-8 w-full rounded-lg border border-control bg-bg px-2.5 text-ui-13 text-fg outline-none placeholder:text-faint focus:border-accent-border";

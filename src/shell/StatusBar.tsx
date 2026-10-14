@@ -22,7 +22,7 @@ export function StatusBar() {
   const txn = liveConsole?.txn;
 
   return (
-    <footer className="flex h-9 shrink-0 items-center gap-1.5 px-2 text-[11.5px] text-dim">
+    <footer className="flex h-9 shrink-0 items-center gap-1.5 px-2 text-ui-11.5 text-dim">
       <span data-testid="status-connection" data-tone={status.tone} className={CHIP}>
         <StatusDot tone={config ? status.tone : "off"} />
         {config ? status.label : "No connection"}

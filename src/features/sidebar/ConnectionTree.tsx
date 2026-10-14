@@ -93,7 +93,7 @@ function Row({
         )}
       </span>
       {icon && <span className="grid w-[18px] shrink-0 place-items-center">{icon}</span>}
-      <span className="min-w-0 flex-1 truncate text-[14px] text-tree">{label}</span>
+      <span className="min-w-0 flex-1 truncate text-ui-14 text-tree">{label}</span>
       {trailing}
       {menu}
     </div>
@@ -112,7 +112,7 @@ function NewMenu({ connectionId }: { connectionId: string }) {
 }
 
 function Count({ children }: { children: ReactNode }) {
-  return <span className="shrink-0 pl-2 text-[11.5px] text-muted tabular-nums">{children}</span>;
+  return <span className="shrink-0 pl-2 text-ui-11.5 text-muted tabular-nums">{children}</span>;
 }
 
 function ColumnRow({ path, depth, column }: { path: string; depth: number; column: ColumnInfo }) {
@@ -122,8 +122,8 @@ function ColumnRow({ path, depth, column }: { path: string; depth: number; colum
       depth={depth}
       expandable={false}
       icon={column.pk ? <IconKey size={13} className="text-amber" /> : <span className="size-[3px] rounded-full bg-faint" />}
-      label={<span className="text-[13px]">{column.name}</span>}
-      trailing={<span className="max-w-[55%] min-w-0 truncate pl-2 font-mono text-[10.5px] text-muted">{shortType(column.typeDisplay)}</span>}
+      label={<span className="text-ui-13">{column.name}</span>}
+      trailing={<span className="max-w-[55%] min-w-0 truncate pl-2 font-mono text-ui-10.5 text-muted">{shortType(column.typeDisplay)}</span>}
     />
   );
 }
@@ -184,11 +184,11 @@ function FunctionRow({ path, depth, fn }: { path: string; depth: number; fn: Fun
         if (tab?.kind === "sql") insertAtCursor(tab.id, `${fn.name}()`);
       }}
       label={
-        <span title={`${fn.name}(${fn.args}) → ${fn.returns}`} className="text-[13.5px]">
+        <span title={`${fn.name}(${fn.args}) → ${fn.returns}`} className="text-ui-13.5">
           {fn.name}
         </span>
       }
-      trailing={<span className="shrink-0 truncate pl-2 font-mono text-[11px] text-muted">{fn.returns}</span>}
+      trailing={<span className="shrink-0 truncate pl-2 font-mono text-ui-11 text-muted">{fn.returns}</span>}
     />
   );
 }
@@ -340,7 +340,7 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         icon={<PgBadge />}
         label={<span className="font-medium">{config.name}</span>}
         trailing={
-          <span className="flex shrink-0 items-center gap-1.5 pl-2 text-[11.5px] text-muted">
+          <span className="flex shrink-0 items-center gap-1.5 pl-2 text-ui-11.5 text-muted">
             {status.tone === "pending" ? <Spinner /> : status.tone !== "off" && <StatusDot tone={status.tone} />}
             {connected ? "Live" : status.tone === "error" ? "Failed" : null}
           </span>
@@ -348,12 +348,12 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         menu={<ConnectionMenu config={config} connected={connected} />}
       />
       {failure && (
-        <div data-testid={`conn-error-${config.name}`} className="mx-2 mb-1 pr-2 pl-[38px] text-[11.5px] leading-4 text-danger/90">
+        <div data-testid={`conn-error-${config.name}`} className="mx-2 mb-1 pr-2 pl-[38px] text-ui-11.5 leading-4 text-danger/90">
           {failure}
         </div>
       )}
       {open && connected && !db && (
-        <div className="flex h-7 items-center gap-2 pl-[52px] text-[12px] text-dim">
+        <div className="flex h-7 items-center gap-2 pl-[52px] text-ui-12 text-dim">
           <Spinner /> Loading catalog
         </div>
       )}

@@ -29,7 +29,7 @@ function ColorField({ token, value, onChange }: { token: Token; value: string; o
   const opaque = value.slice(0, 7);
   return (
     <div className="flex items-center justify-between gap-3 py-1 pl-2">
-      <label htmlFor={`theme-color-${token}`} className="min-w-0 truncate text-[12.5px] text-muted">
+      <label htmlFor={`theme-color-${token}`} className="min-w-0 truncate text-ui-12.5 text-muted">
         {tokenLabel(token)}
       </label>
       <div className="flex shrink-0 items-center gap-2">
@@ -51,7 +51,7 @@ function ColorField({ token, value, onChange }: { token: Token; value: string; o
             value={text}
             onChange={(e) => commit(e.target.value)}
             onBlur={() => setText(value)}
-            className={cx(inputClass, "h-7 font-mono text-[12px]", !valid && "border-danger focus:border-danger")}
+            className={cx(inputClass, "h-7 font-mono text-ui-12", !valid && "border-danger focus:border-danger")}
           />
         </div>
       </div>
@@ -97,17 +97,17 @@ export function CreateThemePanel({ initial, onClose }: { initial: ThemeDraft; on
       className="fixed right-4 bottom-4 z-30 flex max-h-[calc(100vh-32px)] w-[380px] flex-col rounded-xl border border-control bg-raised shadow-[var(--shadow-dialog)]"
     >
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border pr-2 pl-4">
-        <h2 id={titleId} className="text-[13px] font-medium text-fg">
+        <h2 id={titleId} className="text-ui-13 font-medium text-fg">
           Create theme
         </h2>
-        <span className="flex-1 truncate text-[12px] text-dim">Two colors, the rest derived</span>
+        <span className="flex-1 truncate text-ui-12 text-dim">Two colors, the rest derived</span>
         <IconButton aria-label="Close" onClick={onClose}>
           <IconX size={15} />
         </IconButton>
       </div>
       <div className="flex min-h-0 flex-col gap-3 overflow-auto px-4 py-3">
         <div className="flex items-center justify-between gap-4">
-          <label htmlFor="theme-name" className="shrink-0 text-[13px] text-fg">
+          <label htmlFor="theme-name" className="shrink-0 text-ui-13 text-fg">
             Theme name
           </label>
           <div className="w-[210px]">
@@ -126,7 +126,7 @@ export function CreateThemePanel({ initial, onClose }: { initial: ThemeDraft; on
           </div>
         </div>
         <div className="flex items-center justify-between gap-4">
-          <span id="theme-appearance" className="text-[13px] text-fg">
+          <span id="theme-appearance" className="text-ui-13 text-fg">
             Appearance
           </span>
           <div role="radiogroup" aria-labelledby="theme-appearance" className="flex rounded-lg bg-pill p-0.5">
@@ -139,7 +139,7 @@ export function CreateThemePanel({ initial, onClose }: { initial: ThemeDraft; on
                 data-testid={`theme-appearance-${a}`}
                 onClick={() => setAppearance(a)}
                 className={cx(
-                  "h-7 rounded-md px-3 text-[12.5px] transition-colors",
+                  "h-7 rounded-md px-3 text-ui-12.5 transition-colors",
                   draft.appearance === a ? "bg-control text-fg" : "text-muted hover:text-fg",
                 )}
               >
@@ -150,10 +150,10 @@ export function CreateThemePanel({ initial, onClose }: { initial: ThemeDraft; on
         </div>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <span className="block text-[13px] text-fg">Colors</span>
-            <span className="block text-[12px] text-dim">{advanced ? "Every token, editable" : "Background and accent"}</span>
+            <span className="block text-ui-13 text-fg">Colors</span>
+            <span className="block text-ui-12 text-dim">{advanced ? "Every token, editable" : "Background and accent"}</span>
           </div>
-          <label className="flex items-center gap-2 text-[12.5px] text-muted">
+          <label className="flex items-center gap-2 text-ui-12.5 text-muted">
             Advanced
             <input
               type="checkbox"

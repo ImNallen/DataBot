@@ -54,7 +54,7 @@ export function AddThemeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     <Modal open={open} onOpenChange={(next) => (next ? onOpenChange(true) : close())} title="Add a theme" width={560} testId="add-theme-dialog">
       <div className="flex flex-col gap-4">
         <ThemeSearch onImported={close} />
-        <div className="flex items-center gap-3 text-[11px] tracking-wide text-faint uppercase">
+        <div className="flex items-center gap-3 text-ui-11 tracking-wide text-faint uppercase">
           <span className="h-px flex-1 bg-border" />
           or import a file
           <span className="h-px flex-1 bg-border" />
@@ -70,8 +70,8 @@ export function AddThemeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           className={cx("flex items-center justify-between gap-4 rounded-lg border border-dashed px-4 py-3", dragging ? "border-run bg-hover" : "border-control")}
         >
           <div>
-            <span className="block text-[13px] text-fg">Theme file</span>
-            <span className="block text-[12px] text-dim">Drop L1 or VS Code .json files</span>
+            <span className="block text-ui-13 text-fg">Theme file</span>
+            <span className="block text-ui-12 text-dim">Drop L1 or VS Code .json files</span>
           </div>
           <Button onClick={() => picker.current?.click()}>
             <IconDownload size={14} />
@@ -92,7 +92,7 @@ export function AddThemeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           />
         </div>
         <div className="flex flex-col gap-2">
-          <label htmlFor="theme-json" className="text-[13px] text-fg">
+          <label htmlFor="theme-json" className="text-ui-13 text-fg">
             Theme JSON
           </label>
           <textarea
@@ -106,11 +106,11 @@ export function AddThemeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               setJson(e.target.value);
               setErrors([]);
             }}
-            className={cx(inputClass, "h-auto resize-y py-2 font-mono text-[12px] leading-[18px]")}
+            className={cx(inputClass, "h-auto resize-y py-2 font-mono text-ui-12 leading-[18px]")}
           />
         </div>
         {errors.length > 0 && (
-          <ul data-testid="add-theme-errors" role="alert" className="flex flex-col gap-1 text-[12px] text-danger">
+          <ul data-testid="add-theme-errors" role="alert" className="flex flex-col gap-1 text-ui-12 text-danger">
             {errors.map((e) => (
               <li key={e}>{e}</li>
             ))}

@@ -60,7 +60,7 @@ function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
   return (
     <div
       data-testid="table-pager"
-      className="absolute bottom-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-control bg-raised p-1 text-[12.5px] text-muted shadow-[var(--shadow-float)]"
+      className="absolute bottom-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-control bg-raised p-1 text-ui-12.5 text-muted shadow-[var(--shadow-float)]"
     >
       <IconButton aria-label="First page" disabled={tab.page === 0} onClick={() => setTablePage(tab.id, 0)}>
         <IconChevronLeftPipe size={15} />
@@ -110,7 +110,7 @@ function SummaryText({ summary }: { summary: Summary }) {
     <span
       data-testid="result-status"
       data-tone={summary.tone}
-      className={cx("flex min-w-0 items-center gap-1.5 text-[13px]", summary.tone === "error" ? "text-danger" : "text-dim")}
+      className={cx("flex min-w-0 items-center gap-1.5 text-ui-13", summary.tone === "error" ? "text-danger" : "text-dim")}
     >
       {summary.tone === "ok" && <IconCheck size={15} className="shrink-0 text-green" />}
       {summary.tone === "error" && <IconAlertCircle size={14} className="shrink-0" />}
@@ -137,18 +137,18 @@ async function exportCsv(meta: ResultMeta) {
 
 function ErrorPanel({ error }: { error: QueryError }) {
   return (
-    <div className="selectable flex-1 overflow-auto bg-results px-5 py-4 text-[13px] leading-6">
+    <div className="selectable flex-1 overflow-auto bg-results px-5 py-4 text-ui-13 leading-6">
       <div className="text-danger">{error.message}</div>
       {error.detail && <div className="text-muted">{error.detail}</div>}
       {error.hint && <div className="text-muted">Hint: {error.hint}</div>}
       {error.context && <div className="whitespace-pre-wrap text-dim">Context: {error.context}</div>}
-      {error.sqlstate && <div className="font-mono text-[11.5px] text-faint">SQLSTATE {error.sqlstate}</div>}
+      {error.sqlstate && <div className="font-mono text-ui-11.5 text-faint">SQLSTATE {error.sqlstate}</div>}
     </div>
   );
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="grid flex-1 place-items-center bg-results text-[13px] text-dim">{children}</div>;
+  return <div className="grid flex-1 place-items-center bg-results text-ui-13 text-dim">{children}</div>;
 }
 
 function EditBar({ tabId, actions }: { tabId: TabId; actions: RefObject<GridActions | null> }) {
@@ -188,7 +188,7 @@ function EditBar({ tabId, actions }: { tabId: TabId; actions: RefObject<GridActi
         <IconArrowBackUp size={16} />
       </IconButton>
       {pending > 0 && (
-        <span data-testid="pending-count" className="ml-1.5 text-[12.5px] whitespace-nowrap text-amber">
+        <span data-testid="pending-count" className="ml-1.5 text-ui-12.5 whitespace-nowrap text-amber">
           {pending} pending
         </span>
       )}
@@ -291,7 +291,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
                 title={`Statement ${r.index + 1} · ${pluralRows(r.meta.rowCount)}`}
                 onClick={() => tabId && setActiveResult(tabId, r.index)}
                 className={cx(
-                  "h-5 min-w-6 rounded px-1.5 font-mono text-[11.5px]",
+                  "h-5 min-w-6 rounded px-1.5 font-mono text-ui-11.5",
                   shown?.index === r.index ? "bg-pill text-fg" : "text-dim hover:text-muted",
                 )}
               >
@@ -310,7 +310,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
             <Menu.Trigger
               data-testid="export-format"
               aria-label="Export format"
-              className="inline-flex h-7 items-center gap-1 rounded-md pr-1.5 pl-2 text-[12.5px] text-muted outline-none hover:bg-hover hover:text-fg data-[state=open]:bg-hover data-[state=open]:text-fg"
+              className="inline-flex h-7 items-center gap-1 rounded-md pr-1.5 pl-2 text-ui-12.5 text-muted outline-none hover:bg-hover hover:text-fg data-[state=open]:bg-hover data-[state=open]:text-fg"
             >
               CSV
               <IconChevronDown size={13} />
@@ -319,7 +319,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
               {EXPORT_FORMATS.map((f) => (
                 <MenuItem key={f.label} testId={`export-format-${f.label}`} checked={f.ready} disabled={!f.ready}>
                   {f.label}
-                  {!f.ready && <span className="ml-auto pl-4 text-[11.5px] text-dim">Soon</span>}
+                  {!f.ready && <span className="ml-auto pl-4 text-ui-11.5 text-dim">Soon</span>}
                 </MenuItem>
               ))}
             </MenuContent>

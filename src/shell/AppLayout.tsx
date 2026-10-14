@@ -44,7 +44,7 @@ function StartCommands() {
               type="button"
               data-testid={`start-${c.id}`}
               onClick={c.run}
-              className="flex h-8 w-full items-center justify-between rounded-md px-2.5 text-[13.5px] text-muted hover:bg-hover hover:text-fg"
+              className="flex h-8 w-full items-center justify-between rounded-md px-2.5 text-ui-13.5 text-muted hover:bg-hover hover:text-fg"
             >
               {c.label}
               <Kbd className="bg-border text-muted">{shortcutLabel(c)}</Kbd>

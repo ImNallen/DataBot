@@ -99,10 +99,10 @@ function HistoryBrowser({ close }: { close: () => void }) {
           value={query}
           onValueChange={setQuery}
           placeholder="Search query history"
-          className="h-full flex-1 bg-transparent text-[14px] text-fg outline-none placeholder:text-faint"
+          className="h-full flex-1 bg-transparent text-ui-14 text-fg outline-none placeholder:text-faint"
         />
         {entries.length > 0 && (
-          <button type="button" data-testid="history-clear" onClick={clearHistory} className="shrink-0 text-[12px] text-dim hover:text-fg">
+          <button type="button" data-testid="history-clear" onClick={clearHistory} className="shrink-0 text-ui-12 text-dim hover:text-fg">
             Clear history
           </button>
         )}
@@ -116,7 +116,7 @@ function HistoryBrowser({ close }: { close: () => void }) {
         className="max-h-[360px] overflow-y-auto p-1.5"
       >
         {list && entries.length === 0 && (
-          <div className="px-3 py-6 text-center text-[13px] text-dim">{list.text ? "No matches" : "No queries yet"}</div>
+          <div className="px-3 py-6 text-center text-ui-13 text-dim">{list.text ? "No matches" : "No queries yet"}</div>
         )}
         {entries.map((h) => (
           <Command.Item
@@ -129,8 +129,8 @@ function HistoryBrowser({ close }: { close: () => void }) {
             }}
             className="cursor-default rounded-md px-2.5 py-2 data-[selected=true]:bg-selected"
           >
-            <div className="line-clamp-2 font-mono text-[12px] leading-[18px] break-all whitespace-pre-wrap text-fg">{h.sql}</div>
-            <div className="mt-1 flex items-center gap-1.5 text-[11.5px] text-dim">
+            <div className="line-clamp-2 font-mono text-ui-12 leading-[18px] break-all whitespace-pre-wrap text-fg">{h.sql}</div>
+            <div className="mt-1 flex items-center gap-1.5 text-ui-11.5 text-dim">
               <span className="truncate">{h.connectionName}</span>
               <span>·</span>
               <span className={cx("truncate", h.outcome.kind === "Error" && "text-danger")}>{outcomeText(h.outcome)}</span>

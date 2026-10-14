@@ -78,11 +78,11 @@ export function SearchPalette() {
                 value={query}
                 onValueChange={setQuery}
                 placeholder="Search tables, views, functions, and table.column"
-                className="h-full flex-1 bg-transparent text-[14px] text-fg outline-none placeholder:text-faint"
+                className="h-full flex-1 bg-transparent text-ui-14 text-fg outline-none placeholder:text-faint"
               />
             </div>
             <Command.List className="max-h-[360px] overflow-y-auto p-1.5">
-              <Command.Empty className="px-3 py-6 text-center text-[13px] text-dim">
+              <Command.Empty className="px-3 py-6 text-center text-ui-13 text-dim">
                 {items.length === 0 ? "Connect to a database to search its catalog." : `Nothing matches "${query}".`}
               </Command.Empty>
               {results.map((item) => (
@@ -95,12 +95,12 @@ export function SearchPalette() {
                     setQuery("");
                     choose(item);
                   }}
-                  className="flex h-8 cursor-default items-center gap-2.5 rounded-md px-2.5 text-[13.5px] text-fg data-[selected=true]:bg-selected"
+                  className="flex h-8 cursor-default items-center gap-2.5 rounded-md px-2.5 text-ui-13.5 text-fg data-[selected=true]:bg-selected"
                 >
                   <span className="grid w-[18px] place-items-center">{ICONS[item.kind]}</span>
                   <span className="truncate">{item.label}</span>
-                  {multiSchema && item.kind !== "column" && <span className="text-[12px] text-faint">{item.schema}</span>}
-                  <span className="ml-auto truncate pl-4 font-mono text-[11.5px] text-dim">
+                  {multiSchema && item.kind !== "column" && <span className="text-ui-12 text-faint">{item.schema}</span>}
+                  <span className="ml-auto truncate pl-4 font-mono text-ui-11.5 text-dim">
                     {item.kind === "table" || item.kind === "view" ? item.kind : item.detail}
                   </span>
                 </Command.Item>

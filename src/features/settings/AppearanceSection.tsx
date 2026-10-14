@@ -116,7 +116,7 @@ function ThemeCard({ family, picks, appearance, onDuplicate }: CardProps) {
           type="button"
           title={both ? `Use ${family.name} for light and dark` : `Use ${family.name}`}
           onClick={() => void chooseThemes(familyPicks(family))}
-          className="min-w-0 flex-1 truncate rounded-md px-2 py-1 text-left text-[13px] text-fg hover:bg-hover"
+          className="min-w-0 flex-1 truncate rounded-md px-2 py-1 text-left text-ui-13 text-fg hover:bg-hover"
         >
           {family.name}
         </button>
@@ -157,8 +157,8 @@ export function AppearanceSection() {
   return (
     <div className="flex flex-col gap-8">
       <fieldset data-setting="colorScheme">
-        <legend className="text-[13px] font-medium text-fg">Color scheme</legend>
-        <p className="mt-0.5 text-[12px] text-dim">System follows the appearance of your operating system.</p>
+        <legend className="text-ui-13 font-medium text-fg">Color scheme</legend>
+        <p className="mt-0.5 text-ui-12 text-dim">System follows the appearance of your operating system.</p>
         <div className="mt-4 grid grid-cols-3 gap-3">
           {SCHEMES.map((scheme) => (
             <label key={scheme} data-testid={`scheme-${scheme}`} className="group flex flex-col gap-2">
@@ -173,7 +173,7 @@ export function AppearanceSection() {
               <span className="relative h-[88px] overflow-hidden rounded-lg border border-control transition-colors group-hover:border-handle-hover peer-checked:border-run peer-checked:ring-1 peer-checked:ring-run peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus peer-focus-visible:outline-solid">
                 <SchemePreview scheme={scheme} picks={variants} />
               </span>
-              <span className="text-[13px] text-muted peer-checked:text-fg">{scheme}</span>
+              <span className="text-ui-13 text-muted peer-checked:text-fg">{scheme}</span>
             </label>
           ))}
         </div>
@@ -181,21 +181,21 @@ export function AppearanceSection() {
       <section data-setting="themes" aria-labelledby="themes-heading">
         <div className="flex items-end justify-between gap-4">
           <div>
-            <h2 id="themes-heading" className="text-[13px] font-medium text-fg">
+            <h2 id="themes-heading" className="text-ui-13 font-medium text-fg">
               Themes
             </h2>
-            <p className="mt-0.5 text-[12px] text-dim">Pick one theme for light mode and one for dark.</p>
+            <p className="mt-0.5 text-ui-12 text-dim">Pick one theme for light mode and one for dark.</p>
           </div>
           <div className="flex gap-2">
             <Button
               data-testid="create-theme"
-              className="h-7 px-2.5 text-[12.5px]"
+              className="h-7 px-2.5 text-ui-12.5"
               onClick={() => edit(draftOf(current, ""))}
             >
               <IconColorSwatch size={14} />
               Create theme
             </Button>
-            <Button data-testid="add-theme" className="h-7 px-2.5 text-[12.5px]" onClick={() => setAdding(true)}>
+            <Button data-testid="add-theme" className="h-7 px-2.5 text-ui-12.5" onClick={() => setAdding(true)}>
               <IconPlus size={14} />
               Add theme
             </Button>

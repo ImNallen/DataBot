@@ -42,7 +42,7 @@ export function SettingsPage({ hosted, screen }: { hosted: HostedWindow | null; 
         className={cx("flex h-[52px] shrink-0 items-center gap-2", windowEdgeInset(hosted), sidebar ? "pl-4" : windowLeadingInset(hosted))}
       >
         {!sidebar && <SidebarToggle />}
-        <h1 data-testid="settings-breadcrumb" className="flex min-w-0 flex-1 items-center gap-2 text-[14px]">
+        <h1 data-testid="settings-breadcrumb" className="flex min-w-0 flex-1 items-center gap-2 text-ui-14">
           <span className="truncate px-0.5 text-dim">Settings</span>
           <span className="text-faint">/</span>
           <span className="truncate font-medium text-fg">{label}</span>
