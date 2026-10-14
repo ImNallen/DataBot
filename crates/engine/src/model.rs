@@ -275,7 +275,62 @@ pub enum StmtStatus {
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum RunRequest {
     Script { text: String, target: RunTarget },
-    TablePage { schema: String, table: String, page: u32 },
+    TablePage {
+        schema: String,
+        table: String,
+        page: u32,
+        #[serde(default)]
+        query: TableQuery,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TableQuery {
+    /// SQL after `ORDER BY`, e.g. `"created_at" DESC`; empty means primary key order.
+    pub order_by: String,
+    pub filters: Vec<ColumnFilter>,
+    /// A boolean SQL expression ANDed with `filters`; empty means none.
+    pub r#where: String,
+}
+
+// Hand-written so saved tabs missing a field still load. `#[serde(default)]` would do it too, but specta
+// would then mark every TableQuery field optional in the TS bindings.
+impl<'de> Deserialize<'de> for TableQuery {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default, rename_all = "camelCase")]
+        struct Stored {
+            order_by: String,
+            filters: Vec<ColumnFilter>,
+            r#where: String,
+        }
+        let Stored { order_by, filters, r#where } = Stored::deserialize(d)?;
+        Ok(TableQuery { order_by, filters, r#where })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnFilter {
+    pub column: String,
+    pub op: FilterOp,
+    /// Compared as a Postgres literal; ignored by `IsNull` and `NotNull`.
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum FilterOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Contains,
+    StartsWith,
+    IsNull,
+    NotNull,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Type)]
@@ -485,6 +540,8 @@ pub enum TabSnapshot {
         schema: String,
         table: String,
         page: u32,
+        #[serde(default)]
+        query: TableQuery,
     },
 }
 
@@ -648,6 +705,8 @@ pub enum RunError {
     /// `what` names the construct, e.g. `"COPY FROM STDIN"`.
     Unsupported { what: String },
     Connect { error: ConnectError },
+    /// WHERE or ORDER BY isn't a single expression, e.g. it smuggles in a second statement.
+    BadFilter,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -664,6 +723,74 @@ pub enum TxnError {
 pub enum ResultError {
     Gone,
     OutOfRange,
+}
+
+/// Staged edits to one table, applied together by `table_apply`. Rows to update or delete are found by primary key.
+#[derive(Debug, Clone, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TableChanges {
+    pub schema: String,
+    pub table: String,
+    /// Columns left out take their default.
+    pub inserts: Vec<Vec<CellWrite>>,
+    pub updates: Vec<RowUpdate>,
+    /// Each entry is the primary key of a row to delete.
+    pub deletes: Vec<Vec<CellWrite>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CellWrite {
+    pub column: String,
+    /// Postgres text input for the column's type; `None` is NULL.
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RowUpdate {
+    pub key: Vec<CellWrite>,
+    pub set: Vec<CellWrite>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum ChangeKind {
+    Insert,
+    Update,
+    Delete,
+}
+
+/// Points at one entry of `TableChanges`, by its list and index there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeRef {
+    pub kind: ChangeKind,
+    pub index: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplySummary {
+    /// False when the changes wait in the tab's open transaction (manual mode) for Commit.
+    pub committed: bool,
+}
+
+/// Nothing is applied when any of these comes back.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ApplyError {
+    Busy,
+    NotConfigured,
+    Connect { error: ConnectError },
+    /// The tab's transaction already failed; roll it back first.
+    TransactionAborted,
+    /// Updates and deletes need the table's full primary key.
+    NoPrimaryKey,
+    Failed { change: ChangeRef, error: QueryError },
+    /// An update or delete matched `rows` rows instead of one, so the row changed underneath.
+    RowMismatch { change: ChangeRef, rows: u64 },
+    /// Opening or committing the transaction failed.
+    Transaction { error: QueryError },
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -723,6 +850,14 @@ mod tests {
 
     #[test]
     fn layout_saved_before_panel_widths_existed_still_loads() {
+        let tab: TabSnapshot = serde_json::from_value(json!({
+            "kind": "Table", "id": "00000000-0000-0000-0000-000000000001", "connectionId": "00000000-0000-0000-0000-000000000002",
+            "schema": "public", "table": "orders", "page": 3, "query": { "sort": [{ "column": "total", "desc": true }], "where": "x" }
+        }))
+        .unwrap();
+        let kept = TableQuery { r#where: "x".into(), ..Default::default() };
+        assert!(matches!(tab, TabSnapshot::Table { page: 3, query, .. } if query == kept), "an old query shape keeps what still fits");
+
         let layout: Layout = serde_json::from_value(json!({
             "sidebar": false, "results": false, "rightPanel": "History", "resultsHeight": 280
         }))

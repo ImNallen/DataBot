@@ -1,17 +1,43 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { save } from "@tauri-apps/plugin-dialog";
-import { IconAlertCircle, IconCheck, IconChevronDown, IconChevronLeft, IconChevronLeftPipe, IconChevronRight, IconChevronRightPipe, IconDownload, IconUpload } from "@tabler/icons-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import {
+  IconAlertCircle,
+  IconArrowBackUp,
+  IconCheck,
+  IconChevronDown,
+  IconChevronLeft,
+  IconChevronLeftPipe,
+  IconChevronRight,
+  IconChevronRightPipe,
+  IconDownload,
+  IconMinus,
+  IconPlus,
+  IconUpload,
+} from "@tabler/icons-react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { commands, type QueryError, type ResultMeta, type RunState, type TabId } from "../../ipc/bindings";
 import { exportErrorText } from "../../ipc/errors";
 import { useLive } from "../../state/live";
 import { rowResults, runStatements, runSummary, shownResult, type Summary } from "../../state/status";
 import { useCatalog } from "../../state/catalog";
-import { useWorkspace, type TableTab } from "../../state/workspace";
+import { NO_EDITS, pendingCount, useTableEdits } from "../../state/tableEdits";
+import { isFiltered, useWorkspace, type TableTab } from "../../state/workspace";
 import { cx, IconButton, MenuContent, MenuItem, Spinner } from "../../ui/primitives";
-import { isBrowsing, lastTablePage, loadTableOnce, onEditorDocChanged, saveSettings, setTablePage } from "../editor/runActions";
+import {
+  isBrowsing,
+  lastTablePage,
+  loadTableOnce,
+  onEditorDocChanged,
+  saveSettings,
+  setTablePage,
+  submitEdits,
+  tablePrimaryKey,
+  updateTableQuery,
+} from "../editor/runActions";
+import { FilterBar } from "./FilterBar";
 import { groupDigits, pageStatus, pluralRows } from "./format";
-import { ResultGrid } from "./ResultGrid";
+import { ResultGrid, type GridActions, type GridEditing, type GridQuery } from "./ResultGrid";
+import { filterForValue, formatOrderBy, nextSort, parseOrderBy, useFilterDrafts } from "./tableQuery";
 
 const EXPORT_FORMATS = [
   { label: "CSV", ready: true },
@@ -30,7 +56,7 @@ function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
       s.views[tab.connectionId]?.catalog.schemas.find((sc) => sc.name === tab.schema)?.relations.find((r) => r.name === tab.table)
         ?.rowEstimate ?? null,
   );
-  const { label, isLast } = pageStatus(tab.page, size, rows, estimate, tab.exactRowCount);
+  const { label, isLast } = pageStatus(tab.page, size, rows, isFiltered(tab.query) ? null : estimate, tab.exactRowCount);
   return (
     <div
       data-testid="table-pager"
@@ -125,9 +151,84 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div className="grid flex-1 place-items-center bg-results text-[13px] text-dim">{children}</div>;
 }
 
-function ResultBody({ run, picked, bottomInset }: { run: RunState; picked: number | undefined; bottomInset: number }) {
+function EditBar({ tabId, actions }: { tabId: TabId; actions: RefObject<GridActions | null> }) {
+  const edits = useTableEdits((s) => s.byTab[tabId] ?? NO_EDITS);
+  const pending = pendingCount(edits);
+  const [busy, setBusy] = useState(false);
+  return (
+    <div data-testid="edit-bar" className="flex items-center gap-0.5">
+      <IconButton data-testid="add-row" aria-label="Add row" title="Add row" onClick={() => actions.current?.addRow()}>
+        <IconPlus size={16} />
+      </IconButton>
+      <IconButton
+        data-testid="delete-rows"
+        aria-label="Delete selected rows"
+        title="Delete or restore the selected rows (⌘⌫)"
+        onClick={() => actions.current?.deleteSelectedRows()}
+      >
+        <IconMinus size={16} />
+      </IconButton>
+      <IconButton
+        data-testid="submit-edits"
+        aria-label="Submit changes"
+        title="Submit changes (⌘S)"
+        disabled={pending === 0 || busy}
+        className={cx(pending > 0 && "text-green hover:text-green")}
+        onClick={async () => {
+          setBusy(true);
+          await submitEdits(tabId);
+          setBusy(false);
+        }}
+      >
+        <IconCheck size={16} />
+      </IconButton>
+      <IconButton
+        data-testid="revert-edits"
+        aria-label="Revert changes"
+        title="Revert changes"
+        disabled={pending === 0 || busy}
+        onClick={() => useTableEdits.getState().clear(tabId)}
+      >
+        <IconArrowBackUp size={16} />
+      </IconButton>
+      {pending > 0 && (
+        <span data-testid="pending-count" className="ml-1.5 text-[12.5px] whitespace-nowrap text-amber">
+          {pending} pending
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ResultBody({
+  run,
+  picked,
+  bottomInset,
+  query,
+  editing,
+  actions,
+}: {
+  run: RunState;
+  picked: number | undefined;
+  bottomInset: number;
+  query: GridQuery | null;
+  editing: GridEditing | null;
+  actions: RefObject<GridActions | null>;
+}) {
   const shown = shownResult(run, picked);
-  if (shown) return <ResultGrid key={`${shown.meta.ref.runId}:${shown.index}`} meta={shown.meta} done={shown.done} bottomInset={bottomInset} />;
+  if (shown) {
+    return (
+      <ResultGrid
+        key={`${shown.meta.ref.runId}:${shown.index}`}
+        meta={shown.meta}
+        done={shown.done}
+        bottomInset={bottomInset}
+        query={query}
+        editing={editing}
+        actionsRef={actions}
+      />
+    );
+  }
   if (run.kind === "Idle") return <Empty>Run a statement with ⌘↵ to see its result here.</Empty>;
   if (run.kind === "Running") {
     return (
@@ -145,11 +246,11 @@ function ResultBody({ run, picked, bottomInset }: { run: RunState; picked: numbe
   return <Empty>{commands.length ? commands.join(", ") : "The statement returned no rows."}</Empty>;
 }
 
-export function ResultsPane({ tabId }: { tabId: TabId }) {
-  const tab = useWorkspace((s) => s.tabs[tabId]);
-  const picked = useWorkspace((s) => s.activeResult[tabId]);
+export function ResultsPane({ tabId }: { tabId: TabId | null }) {
+  const tab = useWorkspace((s) => (tabId ? s.tabs[tabId] : undefined));
+  const picked = useWorkspace((s) => (tabId ? s.activeResult[tabId] : undefined));
   const setActiveResult = useWorkspace((s) => s.setActiveResult);
-  const run = useLive((s) => s.consoles[tabId]?.run) ?? { kind: "Idle" as const };
+  const run = useLive((s) => (tabId ? s.consoles[tabId]?.run : undefined)) ?? { kind: "Idle" as const };
   const now = useNow(run.kind === "Running");
   const results = rowResults(run);
   const shown = shownResult(run, picked);
@@ -158,14 +259,32 @@ export function ResultsPane({ tabId }: { tabId: TabId }) {
   const isTable = tab?.kind === "table";
   const browsingNow = () => tab?.kind === "table" && isBrowsing(tab);
   const browsing = useSyncExternalStore(onEditorDocChanged, browsingNow, browsingNow);
-  const pager = tab?.kind === "table" && browsing && shown ? tab : null;
+  const browsingTable = tab?.kind === "table" && browsing ? tab : null;
+  const pager = browsingTable && shown ? browsingTable : null;
+  const addDraft = useFilterDrafts((s) => s.add);
+  const gridQuery: GridQuery | null = browsingTable && {
+    sort: parseOrderBy(browsingTable.query.orderBy) ?? [],
+    filtered: new Set(browsingTable.query.filters.map((f) => f.column)),
+    onSort: (column, additive) =>
+      updateTableQuery(browsingTable.id, (q) => ({ ...q, orderBy: formatOrderBy(nextSort(parseOrderBy(q.orderBy) ?? [], column, additive)) })),
+    onFilterColumn: (column) => addDraft(browsingTable.id, column),
+    onFilterValue: (column, value, negate) =>
+      updateTableQuery(browsingTable.id, (q) => ({ ...q, filters: [...q.filters, filterForValue(column, value, negate)] })),
+  };
   useEffect(() => {
-    if (isTable) loadTableOnce(tabId);
+    if (tabId && isTable) loadTableOnce(tabId);
   }, [tabId, isTable]);
+  const catalogView = useCatalog((s) => (browsingTable ? s.views[browsingTable.connectionId] : undefined));
+  const editing = useMemo<GridEditing | null>(() => {
+    const pkColumns = browsingTable && catalogView ? tablePrimaryKey(browsingTable) : [];
+    return pkColumns.length ? { pkColumns } : null;
+  }, [browsingTable?.connectionId, browsingTable?.schema, browsingTable?.table, catalogView]);
+  const actions = useRef<GridActions | null>(null);
 
   return (
     <section className="flex h-full min-h-0 flex-col border-b border-border bg-results">
       <div className="flex h-[41px] shrink-0 items-center gap-3 border-b border-grid pr-2 pl-2.5">
+        {editing && tabId && <EditBar tabId={tabId} actions={actions} />}
         {results.length > 1 && (
           <div data-testid="result-selector" className="flex items-center gap-0.5 rounded-md border border-control p-0.5">
             {results.map((r, i) => (
@@ -174,7 +293,7 @@ export function ResultsPane({ tabId }: { tabId: TabId }) {
                 type="button"
                 data-testid={`result-pick-${r.index}`}
                 title={`Statement ${r.index + 1} · ${pluralRows(r.meta.rowCount)}`}
-                onClick={() => setActiveResult(tabId, r.index)}
+                onClick={() => tabId && setActiveResult(tabId, r.index)}
                 className={cx(
                   "h-5 min-w-6 rounded px-1.5 font-mono text-[11.5px]",
                   shown?.index === r.index ? "bg-pill text-fg" : "text-dim hover:text-muted",
@@ -213,7 +332,7 @@ export function ResultsPane({ tabId }: { tabId: TabId }) {
             data-testid="export-btn"
             aria-label="Export CSV"
             title="Export CSV"
-              disabled={!shown || run.kind === "Running"}
+            disabled={!shown || run.kind === "Running"}
             onClick={() => shown && void exportCsv(shown.meta)}
           >
             <IconDownload size={16} />
@@ -229,8 +348,10 @@ export function ResultsPane({ tabId }: { tabId: TabId }) {
         </div>
       </div>
 
+      {browsingTable && <FilterBar tab={browsingTable} />}
+
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <ResultBody run={run} picked={picked} bottomInset={pager ? PAGER_INSET : 0} />
+        <ResultBody run={run} picked={picked} bottomInset={pager ? PAGER_INSET : 0} query={gridQuery} editing={editing} actions={actions} />
         {pager && <TablePager tab={pager} rows={shown?.meta.rowCount ?? 0} />}
       </div>
     </section>

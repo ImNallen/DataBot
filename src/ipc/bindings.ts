@@ -12,12 +12,13 @@ export const commands = {
 	connectionDisconnect: (id: ConnectionId, force: boolean) => typedError<null, DisconnectError>(__TAURI_INVOKE("connection_disconnect", { id, force })),
 	catalogGet: (id: ConnectionId) => typedError<Catalog, NotConnected>(__TAURI_INVOKE("catalog_get", { id })),
 	catalogRefresh: (id: ConnectionId) => typedError<number, NotConnected>(__TAURI_INVOKE("catalog_refresh", { id })),
-	exactRowCount: (id: ConnectionId, schema: string, table: string) => typedError<number, CountError>(__TAURI_INVOKE("exact_row_count", { id, schema, table })),
+	exactRowCount: (id: ConnectionId, schema: string, table: string, query: TableQuery) => typedError<number, CountError>(__TAURI_INVOKE("exact_row_count", { id, schema, table, query })),
 	consoleConfigure: (tabId: TabId, config: ConsoleConfig) => typedError<ConsoleState, ConfigureError>(__TAURI_INVOKE("console_configure", { tabId, config })),
 	consoleRun: (tabId: TabId, request: RunRequest) => typedError<RunAccepted, RunError>(__TAURI_INVOKE("console_run", { tabId, request })),
 	consoleCancel: (tabId: TabId) => __TAURI_INVOKE<void>("console_cancel", { tabId }),
 	consoleCommit: (tabId: TabId) => typedError<null, TxnError>(__TAURI_INVOKE("console_commit", { tabId })),
 	consoleRollback: (tabId: TabId) => typedError<null, TxnError>(__TAURI_INVOKE("console_rollback", { tabId })),
+	tableApply: (tabId: TabId, changes: TableChanges) => typedError<ApplySummary, ApplyError>(__TAURI_INVOKE("table_apply", { tabId, changes })),
 	consoleClose: (tabId: TabId, force: boolean) => typedError<null, DisconnectError>(__TAURI_INVOKE("console_close", { tabId, force })),
 	resultPage: (resultRef: ResultRef, start: number, len: number) => typedError<RowPage, ResultError>(__TAURI_INVOKE("result_page", { resultRef, start, len })),
 	resultCell: (resultRef: ResultRef, row: number, col: number) => typedError<string | null, ResultError>(__TAURI_INVOKE("result_cell", { resultRef, row, col })),
@@ -39,6 +40,22 @@ export type AppEvent = {
 	kind: "HistoryAppended",
 } & HistoryEntry;
 
+/**  Nothing is applied when any of these comes back. */
+export type ApplyError = { kind: "Busy" } | { kind: "NotConfigured" } | { kind: "Connect"; error: ConnectError } | 
+/**  The tab's transaction already failed; roll it back first. */
+{ kind: "TransactionAborted" } | 
+/**  Updates and deletes need the table's full primary key. */
+{ kind: "NoPrimaryKey" } | { kind: "Failed"; change: ChangeRef; error: QueryError } | 
+/**  An update or delete matched `rows` rows instead of one, so the row changed underneath. */
+{ kind: "RowMismatch"; change: ChangeRef; rows: number } | 
+/**  Opening or committing the transaction failed. */
+{ kind: "Transaction"; error: QueryError };
+
+export type ApplySummary = {
+	/**  False when the changes wait in the tab's open transaction (manual mode) for Commit. */
+	committed: boolean,
+};
+
 export type BootSnapshot = {
 	connections: ConnectionConfig[],
 	live: ConnectionState[],
@@ -52,6 +69,27 @@ export type Catalog = {
 	version: number,
 	database: string,
 	schemas: SchemaInfo[],
+};
+
+export type CellWrite = {
+	column: string,
+	/**  Postgres text input for the column's type; `None` is NULL. */
+	value: string | null,
+};
+
+export type ChangeKind = "Insert" | "Update" | "Delete";
+
+/**  Points at one entry of `TableChanges`, by its list and index there. */
+export type ChangeRef = {
+	kind: ChangeKind,
+	index: number,
+};
+
+export type ColumnFilter = {
+	column: string,
+	op: FilterOp,
+	/**  Compared as a Postgres literal; ignored by `IsNull` and `NotNull`. */
+	value: string,
 };
 
 export type ColumnInfo = {
@@ -166,6 +204,8 @@ export type ExportSummary = {
 	bytes: number,
 	truncated: boolean,
 };
+
+export type FilterOp = "Eq" | "Ne" | "Lt" | "Le" | "Gt" | "Ge" | "Contains" | "StartsWith" | "IsNull" | "NotNull";
 
 export type FnKind = "Function" | "Procedure" | "Aggregate" | "Window";
 
@@ -287,6 +327,11 @@ export type RowPage = {
 	cut: ([number, number])[],
 };
 
+export type RowUpdate = {
+	key: CellWrite[],
+	set: CellWrite[],
+};
+
 export type RunAccepted = {
 	runId: RunId,
 	statements: DocRange[],
@@ -294,14 +339,16 @@ export type RunAccepted = {
 
 export type RunError = { kind: "Busy" } | { kind: "NoStatement" } | { kind: "NotConfigured" } | 
 /**  `what` names the construct, e.g. `"COPY FROM STDIN"`. */
-{ kind: "Unsupported"; what: string } | { kind: "Connect"; error: ConnectError };
+{ kind: "Unsupported"; what: string } | { kind: "Connect"; error: ConnectError } | 
+/**  WHERE or ORDER BY isn't a single expression, e.g. it smuggles in a second statement. */
+{ kind: "BadFilter" };
 
 /**  Engine-wide monotonic. */
 export type RunId = number;
 
 export type RunOutcome = "Ok" | "Failed" | "Cancelled";
 
-export type RunRequest = { kind: "script"; text: string; target: RunTarget } | { kind: "tablePage"; schema: string; table: string; page: number };
+export type RunRequest = { kind: "script"; text: string; target: RunTarget } | { kind: "tablePage"; schema: string; table: string; page: number; query?: TableQuery };
 
 export type RunState = { kind: "Idle" } | { kind: "Running"; runId: RunId; startedAtMs: number; statements: StatementRun[] } | { kind: "Finished"; runId: RunId; elapsedMs: number; statements: StatementRun[]; outcome: RunOutcome };
 
@@ -348,7 +395,26 @@ export type StmtStatus = { kind: "Pending" } | { kind: "Preparing" } | { kind: "
 /**  Minted by the frontend (`crypto.randomUUID()`). */
 export type TabId = string;
 
-export type TabSnapshot = { kind: "Sql"; id: TabId; title: string; text: string; console: ConsoleConfigSnapshot } | { kind: "Table"; id: TabId; connectionId: ConnectionId; schema: string; table: string; page: number };
+export type TabSnapshot = { kind: "Sql"; id: TabId; title: string; text: string; console: ConsoleConfigSnapshot } | { kind: "Table"; id: TabId; connectionId: ConnectionId; schema: string; table: string; page: number; query?: TableQuery };
+
+/**  Staged edits to one table, applied together by `table_apply`. Rows to update or delete are found by primary key. */
+export type TableChanges = {
+	schema: string,
+	table: string,
+	/**  Columns left out take their default. */
+	inserts: CellWrite[][],
+	updates: RowUpdate[],
+	/**  Each entry is the primary key of a row to delete. */
+	deletes: CellWrite[][],
+};
+
+export type TableQuery = {
+	/**  SQL after `ORDER BY`, e.g. `"created_at" DESC`; empty means primary key order. */
+	orderBy: string,
+	filters: ColumnFilter[],
+	/**  A boolean SQL expression ANDed with `filters`; empty means none. */
+	where: string,
+};
 
 export type TruncateReason = "RowLimit" | "ByteLimit";
 

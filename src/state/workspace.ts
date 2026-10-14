@@ -6,12 +6,28 @@ import type {
   Layout,
   Settings,
   TabId,
+  TableQuery,
   TabSnapshot,
   Workspace,
 } from "../ipc/bindings";
 
 export type SqlTab = { kind: "sql"; id: TabId; title: string; console: ConsoleConfigSnapshot };
-export type TableTab = { kind: "table"; id: TabId; connectionId: ConnectionId; schema: string; table: string; page: number; exactRowCount?: number };
+export type TableTab = {
+  kind: "table";
+  id: TabId;
+  connectionId: ConnectionId;
+  schema: string;
+  table: string;
+  page: number;
+  query: TableQuery;
+  exactRowCount?: number;
+};
+
+export const EMPTY_QUERY: TableQuery = { orderBy: "", filters: [], where: "" };
+
+export function isFiltered(q: TableQuery): boolean {
+  return q.filters.length > 0 || q.where.trim() !== "";
+}
 export type Tab = SqlTab | TableTab;
 
 export type RelationRef = { connectionId: ConnectionId; schema: string; relation: string };
@@ -47,7 +63,7 @@ export function tabFromSnapshot(t: TabSnapshot): Tab {
     case "Sql":
       return { kind: "sql", id: t.id, title: t.title, console: { ...t.console, schema: null } };
     case "Table":
-      return { kind: "table", id: t.id, connectionId: t.connectionId, schema: t.schema, table: t.table, page: t.page };
+      return { kind: "table", id: t.id, connectionId: t.connectionId, schema: t.schema, table: t.table, page: t.page, query: t.query ?? EMPTY_QUERY };
     default: {
       const unreachable: never = t;
       return unreachable;
@@ -61,7 +77,7 @@ export function workspaceSnapshot(s: Pick<WorkspaceData, "tabs" | "order" | "act
     if (!t) return [];
     return t.kind === "sql"
       ? [{ kind: "Sql", id: t.id, title: t.title, text: textOf(t.id), console: t.console }]
-      : [{ kind: "Table", id: t.id, connectionId: t.connectionId, schema: t.schema, table: t.table, page: t.page }];
+      : [{ kind: "Table", id: t.id, connectionId: t.connectionId, schema: t.schema, table: t.table, page: t.page, query: t.query }];
   });
   return { tabs, active: s.active, layout: s.layout };
 }
@@ -92,6 +108,7 @@ type WorkspaceActions = {
   renameTab(id: TabId, title: string): void;
   patchSqlConsole(id: TabId, patch: Partial<ConsoleConfigSnapshot>): void;
   setTablePage(id: TabId, page: number, exactRowCount?: number): void;
+  setTableQuery(id: TabId, query: TableQuery): void;
   setLayout(patch: Partial<Layout>): void;
   setActiveResult(id: TabId, index: number): void;
   upsertConfig(c: ConnectionConfig): void;
@@ -156,6 +173,11 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
     set((s) => {
       const t = s.tabs[id];
       return t?.kind === "table" ? { tabs: { ...s.tabs, [id]: { ...t, page, ...(exactRowCount !== undefined && { exactRowCount }) } } } : {};
+    }),
+  setTableQuery: (id, query) =>
+    set((s) => {
+      const t = s.tabs[id];
+      return t?.kind === "table" ? { tabs: { ...s.tabs, [id]: { ...t, query, page: 0, exactRowCount: undefined } } } : {};
     }),
   setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...patch } })),
   setActiveResult: (id, index) => set((s) => ({ activeResult: { ...s.activeResult, [id]: index } })),

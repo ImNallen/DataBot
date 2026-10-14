@@ -7,13 +7,16 @@ import {
   type RunRequest,
   type Settings,
   type TabId,
+  type TableQuery,
   type TxnMode,
 } from "../../ipc/bindings";
-import { configureErrorText, disconnectErrorText, runErrorText, txnErrorText } from "../../ipc/errors";
+import { applyErrorText, configureErrorText, disconnectErrorText, runErrorText, txnErrorText } from "../../ipc/errors";
+import { findRelation, useCatalog } from "../../state/catalog";
 import { useLive } from "../../state/live";
 import { dropRowCaches } from "../../state/rowCache";
 import { isRunning } from "../../state/status";
-import { nextUntitled, tabConnectionId, useWorkspace, type RelationRef, type Tab, type TableTab } from "../../state/workspace";
+import { pendingCount, toChanges, useTableEdits } from "../../state/tableEdits";
+import { EMPTY_QUERY, nextUntitled, tabConnectionId, useWorkspace, type RelationRef, type Tab, type TableTab } from "../../state/workspace";
 import {
   dropEditor,
   editorStateOf,
@@ -83,7 +86,7 @@ async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
   let request: RunRequest;
   let text = "";
   if (tab.kind === "table" && isBrowsing(tab)) {
-    request = { kind: "tablePage", schema: tab.schema, table: tab.table, page: target?.page ?? tab.page };
+    request = { kind: "tablePage", schema: tab.schema, table: tab.table, page: target?.page ?? tab.page, query: tab.query };
   } else {
     const state = editorStateOf(tabId);
     const sel = state.selection.main;
@@ -101,6 +104,7 @@ async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
     notify(runErrorText(res.error));
     return;
   }
+  showResults();
   if (target && request.kind === "tablePage") ws().setTablePage(tabId, target.page, target.exactRowCount);
   if (request.kind === "script") {
     sent.set(tabId, { runId: res.data.runId, text });
@@ -164,18 +168,23 @@ export function openSqlTab(opts: { connectionId?: ConnectionId | null; text?: st
   return id;
 }
 
+function showResults() {
+  if (!ws().layout.results) ws().setLayout({ results: true });
+}
+
 export function openTableTab(ref: RelationRef): void {
   const existing = Object.values(ws().tabs).find(
     (t) => t.kind === "table" && t.connectionId === ref.connectionId && t.schema === ref.schema && t.table === ref.relation,
   );
   ws().select(ref);
+  showResults();
   if (existing) {
     ws().setActive(existing.id);
     return;
   }
   const id = crypto.randomUUID();
   seedEditor(id, browseQuery(ref.schema, ref.relation));
-  ws().addTab({ kind: "table", id, connectionId: ref.connectionId, schema: ref.schema, table: ref.relation, page: 0 });
+  ws().addTab({ kind: "table", id, connectionId: ref.connectionId, schema: ref.schema, table: ref.relation, page: 0, query: EMPTY_QUERY });
 }
 
 const loadedTables = new Set<TabId>();
@@ -197,7 +206,7 @@ export async function saveSettings(next: Settings): Promise<void> {
 export async function lastTablePage(tabId: TabId): Promise<void> {
   const tab = ws().tabs[tabId];
   if (tab?.kind !== "table") return;
-  const res = await commands.exactRowCount(tab.connectionId, tab.schema, tab.table);
+  const res = await commands.exactRowCount(tab.connectionId, tab.schema, tab.table, tab.query);
   if (res.status === "error") {
     notify(res.error.kind === "NotConnected" ? "Connect to jump to the last page." : res.error.message);
     return;
@@ -209,16 +218,61 @@ export function setTablePage(tabId: TabId, page: number, exactRowCount?: number)
   void runTab(tabId, { page, exactRowCount });
 }
 
+export function updateTableQuery(tabId: TabId, update: (q: TableQuery) => TableQuery): void {
+  const tab = ws().tabs[tabId];
+  if (tab?.kind !== "table") return;
+  ws().setTableQuery(tabId, update(tab.query));
+  void runTab(tabId, { page: 0 });
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+export function tablePrimaryKey(tab: Pick<TableTab, "connectionId" | "schema" | "table">): string[] {
+  const rel = findRelation(useCatalog.getState().views[tab.connectionId], tab.schema, tab.table);
+  return rel?.kind === "Table" ? rel.columns.filter((c) => c.pk).map((c) => c.name) : [];
+}
+
+export async function submitEdits(tabId: TabId): Promise<void> {
+  const tab = ws().tabs[tabId];
+  const edits = useTableEdits.getState().byTab[tabId];
+  if (tab?.kind !== "table" || !edits || pendingCount(edits) === 0) return;
+  if (!(await ensureConsole(tab))) return;
+  const count = pendingCount(edits);
+  const { changes, rowOf } = toChanges(edits, tab.schema, tab.table, tablePrimaryKey(tab));
+  const res = await commands.tableApply(tabId, changes);
+  if (res.status === "error") {
+    const failedAt = "change" in res.error ? rowOf(res.error.change) : null;
+    useTableEdits.setState((s) => ({ byTab: { ...s.byTab, [tabId]: { ...(s.byTab[tabId] ?? edits), failedAt } } }));
+    notify(applyErrorText(res.error));
+    return;
+  }
+  useTableEdits.getState().clear(tabId);
+  notify(res.data.committed ? `Saved ${plural(count, "change")}.` : `${plural(count, "change")} wait in the open transaction. Commit to keep them.`);
+  void runTab(tabId, { page: tab.page });
+}
+
 function forgetTab(tabId: TabId) {
   sent.delete(tabId);
   queuedPages.delete(tabId);
   loadedTables.delete(tabId);
   dropRowCaches(tabId);
   dropEditor(tabId);
+  useTableEdits.getState().clear(tabId);
   ws().closeTab(tabId);
 }
 
-export async function closeTab(tabId: TabId): Promise<void> {
+export async function closeTab(tabId: TabId, discardEdits = false): Promise<void> {
+  const edits = useTableEdits.getState().byTab[tabId];
+  if (!discardEdits && edits && pendingCount(edits) > 0) {
+    ws().open({
+      kind: "confirm",
+      title: "Close tab with unsaved changes?",
+      body: `Closing discards ${plural(pendingCount(edits), "change")} that haven't been submitted.`,
+      confirmLabel: "Discard and close",
+      onConfirm: () => void closeTab(tabId, true),
+    });
+    return;
+  }
   if (!useLive.getState().consoles[tabId]) return forgetTab(tabId);
   const res = await commands.consoleClose(tabId, false);
   if (res.status === "ok") return forgetTab(tabId);

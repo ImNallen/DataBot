@@ -472,9 +472,12 @@ impl Engine {
         self.shared.refresh_catalog(id).await
     }
 
-    pub async fn exact_row_count(&self, id: ConnectionId, schema: String, table: String) -> Result<u64, CountError> {
+    pub async fn exact_row_count(&self, id: ConnectionId, schema: String, table: String, query: TableQuery) -> Result<u64, CountError> {
         let live = self.shared.live(id).ok_or(CountError::NotConnected)?;
-        let sql = format!("SELECT count(*) FROM {}.{}", text::quote_ident(&schema), text::quote_ident(&table));
+        let sql = text::count_sql(&schema, &table, &query);
+        if sql::split_statements(&sql).len() != 1 {
+            return Err(CountError::Failed { message: "The filter must be a single expression.".into() });
+        }
         let meta = live.meta.lock().await;
         let row = meta.client.query_one(&sql, &[]).await.map_err(|e| CountError::Failed { message: connection::error_text(&e) })?;
         Ok(row.get::<_, i64>(0) as u64)
@@ -532,12 +535,15 @@ impl Engine {
                 let spans = sql::pick(&sql::split_statements(&text), &text, target);
                 (text, spans)
             }
-            RunRequest::TablePage { schema, table, page } => {
+            RunRequest::TablePage { schema, table, page, query } => {
                 let catalog = self.catalog(config.connection_id).map_err(|_| RunError::NotConfigured)?;
                 let pk = catalog.relation(&schema, &table).map(|r| r.pk_columns()).unwrap_or_default();
                 let size = s.settings().table_page_size.max(1);
-                let text = text::browse_sql(&schema, &table, &pk, size, u64::from(page) * u64::from(size));
+                let text = text::browse_sql(&schema, &table, &pk, &query, size, u64::from(page) * u64::from(size));
                 let spans = sql::split_statements(&text);
+                if spans.len() != 1 {
+                    return Err(RunError::BadFilter);
+                }
                 (text, spans)
             }
         };
@@ -611,6 +617,114 @@ impl Engine {
 
     pub async fn console_rollback(&self, tab: TabId) -> Result<(), TxnError> {
         self.shared.console_txn_command(tab, false).await
+    }
+
+    /// Applies staged table edits on the tab's own session, all or nothing. With no transaction open, auto-commit
+    /// mode commits them and manual mode leaves them in a new open transaction. Inside an open transaction they
+    /// run under a savepoint, so a failure leaves that transaction as it was.
+    pub async fn table_apply(&self, tab: TabId, changes: TableChanges) -> Result<ApplySummary, ApplyError> {
+        let s = &self.shared;
+        let console = s.console(tab).ok_or(ApplyError::NotConfigured)?;
+        let config = console.inner.lock().await.config.clone();
+        let catalog = self.catalog(config.connection_id).map_err(|_| ApplyError::NotConfigured)?;
+        let pk = catalog.relation(&changes.schema, &changes.table).map(|r| r.pk_columns()).unwrap_or_default();
+        let full_key = |key: &[CellWrite]| !pk.is_empty() && key.len() == pk.len() && pk.iter().all(|p| key.iter().any(|k| &k.column == p));
+        if !changes.deletes.iter().all(|k| full_key(k)) || !changes.updates.iter().all(|u| full_key(&u.key)) {
+            return Err(ApplyError::NoPrimaryKey);
+        }
+
+        let (schema, table) = (&changes.schema, &changes.table);
+        let at = |kind, index: usize| ChangeRef { kind, index: index as u32 };
+        let mut plan: Vec<(ChangeRef, String)> = Vec::new();
+        plan.extend(changes.deletes.iter().enumerate().map(|(i, key)| (at(ChangeKind::Delete, i), text::delete_sql(schema, table, key))));
+        plan.extend(
+            changes.updates.iter().enumerate().filter(|(_, u)| !u.set.is_empty()).map(|(i, u)| (at(ChangeKind::Update, i), text::update_sql(schema, table, &u.key, &u.set))),
+        );
+        plan.extend(changes.inserts.iter().enumerate().map(|(i, cells)| (at(ChangeKind::Insert, i), text::insert_sql(schema, table, cells))));
+
+        s.connect(config.connection_id).await.map_err(|error| ApplyError::Connect { error })?;
+        let needs_session = matches!(console.inner.lock().await.session, SessionSlot::Empty | SessionSlot::Lost { .. });
+        let mut fresh = None;
+        if needs_session {
+            let (_, params) = s.connect_params(config.connection_id).map_err(|error| ApplyError::Connect { error })?;
+            fresh = Some(Session::open(&params, config.schema.as_deref(), &s.timezone).await.map_err(|error| ApplyError::Connect { error })?);
+        }
+
+        let run_id = s.next_run_id();
+        let (mut session, txn) = {
+            let mut inner = console.inner.lock().await;
+            if let Some(session) = fresh {
+                match inner.session {
+                    SessionSlot::Empty | SessionSlot::Lost { .. } => inner.session = SessionSlot::Idle(session),
+                    SessionSlot::Idle(_) => {}
+                    SessionSlot::Busy { .. } => return Err(ApplyError::Busy),
+                }
+            }
+            if inner.txn == TxnState::Aborted {
+                return Err(ApplyError::TransactionAborted);
+            }
+            let txn = inner.txn;
+            let Some((session, _stop)) = console.take_session(&mut inner, run_id) else { return Err(ApplyError::Busy) };
+            (session, txn)
+        };
+
+        let inside = txn == TxnState::Active;
+        let (open, finish, undo) = if inside {
+            ("SAVEPOINT l1_apply", Some("RELEASE SAVEPOINT l1_apply"), "ROLLBACK TO SAVEPOINT l1_apply; RELEASE SAVEPOINT l1_apply")
+        } else {
+            ("BEGIN", (config.mode == TxnMode::AutoCommit).then_some("COMMIT"), "ROLLBACK")
+        };
+        let as_query_error = |e: &tokio_postgres::Error| e.as_db_error().map_or_else(|| connection::transport_error(e), |db| connection::query_error(db, None));
+        let mut applied = Vec::new();
+        let outcome: Result<(), ApplyError> = async {
+            session.client.batch_execute(open).await.map_err(|e| ApplyError::Transaction { error: as_query_error(&e) })?;
+            for (change, sql) in &plan {
+                let started = std::time::Instant::now();
+                let rows = session.client.execute(sql.as_str(), &[]).await.map_err(|e| ApplyError::Failed { change: *change, error: as_query_error(&e) })?;
+                if change.kind != ChangeKind::Insert && rows != 1 {
+                    return Err(ApplyError::RowMismatch { change: *change, rows });
+                }
+                applied.push((change.kind, rows, started.elapsed().as_millis() as u32));
+            }
+            if let Some(finish) = finish {
+                session.client.batch_execute(finish).await.map_err(|e| ApplyError::Transaction { error: as_query_error(&e) })?;
+            }
+            Ok(())
+        }
+        .await;
+        if outcome.is_err() {
+            let _ = session.client.batch_execute(undo).await;
+        }
+        let after = match (&outcome, inside, finish) {
+            (_, true, _) => TxnState::Active,
+            (Ok(()), false, None) => TxnState::Active,
+            _ => TxnState::Idle,
+        };
+        let lost = session.closed_reason_settled(None).await;
+        for n in session.drain_notices() {
+            console.output(s, None, console::notice_body(&n));
+        }
+        let _ = console.edit(s, run_id, |inner| Console::return_session(inner, session, after, lost)).await;
+
+        match outcome {
+            Ok(()) => {
+                for (i, (kind, rows, elapsed_ms)) in applied.into_iter().enumerate() {
+                    let verb = match kind {
+                        ChangeKind::Insert => "INSERT 0",
+                        ChangeKind::Update => "UPDATE",
+                        ChangeKind::Delete => "DELETE",
+                    };
+                    console.output(s, None, OutputBody::Command { statement: i as u16, tag: format!("{verb} {rows}"), elapsed_ms });
+                }
+                Ok(ApplySummary { committed: after == TxnState::Idle })
+            }
+            Err(e) => {
+                if let ApplyError::Failed { error, .. } | ApplyError::Transaction { error } = &e {
+                    console.output(s, None, OutputBody::Error { statement: None, error: error.clone() });
+                }
+                Err(e)
+            }
+        }
     }
 
     pub async fn console_close(&self, tab: TabId, force: bool) -> Result<(), DisconnectError> {

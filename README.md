@@ -12,6 +12,8 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 ## What it does
 
 - The connection tree lists each server's schemas, tables with row counts, views, and functions. Double-click a table to browse its rows in a tab.
+- A table tab filters with a `WHERE` condition or per-column filters, and sorts with `ORDER BY`. Click a header to sort by it, and Shift-click to add a column to the sort.
+- A table tab with a primary key can add, edit, and delete rows. Changes stay pending until **Submit** (`⌘S`), which applies them all in one transaction or none of them.
 - SQL tabs complete table and column names from the live catalog. `⌘↵` runs the statement under the cursor or the selection.
 - The results grid streams large results in pages, and **Export** writes them to CSV. The **Output** tab logs notices, command results, and errors.
 - Each tab runs in auto-commit or manual-transaction mode on its own session, so `SET` and temp tables stay with the tab.

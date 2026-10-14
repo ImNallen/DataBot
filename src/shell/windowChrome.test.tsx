@@ -247,6 +247,31 @@ it("drops the results handle along with the results", () => {
   expect(html).not.toContain('aria-label="Resize results"');
 });
 
+it("toggles the results with no tabs open", () => {
+  withLayout({ results: true });
+  const shown = renderToStaticMarkup(<AppLayout />);
+  expect(shown).toContain('data-testid="no-tabs"');
+  expect(shown).toContain('data-testid="results"');
+  expect(shown).toContain("Run a statement with ⌘↵ to see its result here.");
+
+  withLayout({ results: false });
+  const hidden = renderToStaticMarkup(<AppLayout />);
+  expect(hidden).toContain('data-testid="no-tabs"');
+  expect(hidden).not.toContain('data-testid="results"');
+});
+
+it("lists the start commands with their shortcuts when no tab is open", () => {
+  const html = renderToStaticMarkup(<AppLayout />);
+  const rows = [...html.matchAll(/data-testid="start-[^"]+"[^>]*>([^<]+)<kbd[^>]*>([^<]+)<\/kbd>/g)].map((m) => [m[1], m[2]]);
+  expect(rows).toEqual([
+    ["New query tab", "⌘T"],
+    ["New connection", "⌘N"],
+    ["Search", "⌘P"],
+    ["Settings", "⌘,"],
+  ]);
+  expect(html).not.toContain("No open tabs.");
+});
+
 it("makes the open right panel a resizable panel after the main area, behind its own pill handle", () => {
   withLayout({ rightPanel: "Assistant" });
   const html = renderToStaticMarkup(<AppLayout />);

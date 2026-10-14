@@ -82,7 +82,15 @@ describe("shownResult", () => {
 describe("workspace snapshot", () => {
   const tabs: Tab[] = [
     { kind: "sql", id: "a", title: "Untitled-2.sql", console: { connectionId: "c", schema: null, mode: "Manual" } },
-    { kind: "table", id: "b", connectionId: "c", schema: "public", table: "orders", page: 3 },
+    {
+      kind: "table",
+      id: "b",
+      connectionId: "c",
+      schema: "public",
+      table: "orders",
+      page: 3,
+      query: { orderBy: "total DESC", filters: [{ column: "status", op: "Eq", value: "paid" }], where: "total > 10" },
+    },
   ];
   const state = {
     tabs: Object.fromEntries(tabs.map((t) => [t.id, t])),
@@ -97,6 +105,12 @@ describe("workspace snapshot", () => {
     expect(snap.tabs[1]).toMatchObject({ kind: "Sql", text: "-- text of a", console: { mode: "Manual" } });
     expect(snap.tabs.map(tabFromSnapshot)).toEqual([tabs[1], tabs[0]]);
     expect(snap.layout).toEqual(state.layout);
+  });
+
+  it("restores a table tab saved before tabs had a query with no sort or filter", () => {
+    expect(tabFromSnapshot({ kind: "Table", id: "b", connectionId: "c", schema: "public", table: "orders", page: 0 })).toMatchObject({
+      query: { orderBy: "", filters: [], where: "" },
+    });
   });
 
   it("drops the per-tab schema saved by older versions, since consoles span the whole database", () => {
