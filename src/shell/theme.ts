@@ -22,31 +22,38 @@ export function resolveTheme(pref: Theme, systemPrefersDark: boolean): Appearanc
 
 const NATIVE_THEME: Record<Theme, Appearance | null> = { System: null, Light: "light", Dark: "dark" };
 
-function syncWindow(pref: Theme) {
-  const win = getCurrentWindow();
-  const background = getComputedStyle(document.documentElement).getPropertyValue("--color-bg").trim();
-  const log = (e: unknown) => console.error("window theme sync failed", e);
-  win.setTheme(NATIVE_THEME[pref]).catch(log);
-  win.setBackgroundColor(background).catch(log);
-}
-
 export function startTheme(): () => void {
   const media = window.matchMedia("(prefers-color-scheme: dark)");
-  const apply = () => {
-    const pref = useWorkspace.getState().settings.theme;
+  const log = (e: unknown) => console.error("window theme sync failed", e);
+  const paint = (pref: Theme) => {
     const appearance = resolveTheme(pref, media.matches);
     const root = document.documentElement;
     root.dataset.theme = appearance;
     root.style.colorScheme = appearance;
-    if (isTauri()) syncWindow(pref);
   };
+  let latest = 0;
+  // In the app window the webview reports the window's forced theme, so paint only once the window has the new one.
+  const apply = async () => {
+    const pref = useWorkspace.getState().settings.theme;
+    if (!isTauri()) return paint(pref);
+    const request = ++latest;
+    const win = getCurrentWindow();
+    await win.setTheme(NATIVE_THEME[pref]).catch(log);
+    if (request !== latest) return;
+    paint(pref);
+    const background = getComputedStyle(document.documentElement).getPropertyValue("--color-bg").trim();
+    await win.setBackgroundColor(background).catch(log);
+  };
+  const onChange = () => void apply();
   const unsubscribe = useWorkspace.subscribe((s, prev) => {
-    if (s.settings.theme !== prev.settings.theme) apply();
+    if (s.settings.theme !== prev.settings.theme) onChange();
   });
-  media.addEventListener("change", apply);
-  apply();
+  media.addEventListener("change", onChange);
+  // main.rs opened the window with the saved theme, so the first paint can trust the webview right away.
+  paint(useWorkspace.getState().settings.theme);
+  onChange();
   return () => {
     unsubscribe();
-    media.removeEventListener("change", apply);
+    media.removeEventListener("change", onChange);
   };
 }
