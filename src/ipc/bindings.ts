@@ -206,6 +206,8 @@ export type CustomThemeVariant = {
 	colors: { [key in string]: string },
 };
 
+export type Density = "Compact" | "Standard" | "Spacious";
+
 export type DisconnectError = { kind: "OpenTransactions"; tabs: OpenTxn[] } | { kind: "Store"; message: string };
 
 /**  UTF-16 code-unit offset into the editor document as sent in `RunRequest::Script.text`. */
@@ -227,6 +229,12 @@ export type ExportSummary = {
 export type FilterOp = "Eq" | "Ne" | "Lt" | "Le" | "Gt" | "Ge" | "Contains" | "StartsWith" | "IsNull" | "NotNull";
 
 export type FnKind = "Function" | "Procedure" | "Aggregate" | "Window";
+
+/**  `family` is a name the frontend's font registry resolves to a CSS stack; unknown names pass through. */
+export type FontSetting = {
+	family: string,
+	size: number,
+};
 
 export type FunctionInfo = {
 	oid: number,
@@ -401,6 +409,12 @@ export type Settings = {
 	/**  Theme id painted while the scheme resolves to dark. */
 	darkTheme: string,
 	customThemes: CustomTheme[],
+	interfaceFont: FontSetting,
+	/**  Used by the SQL editor and the result grid. */
+	codeFont: FontSetting,
+	density: Density,
+	/**  0 turns panel animation off. */
+	panelMotionMs: number,
 };
 
 export type SslMode = "Disable" | "Prefer" | "Require" | "VerifyCa" | "VerifyFull";
