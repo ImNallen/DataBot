@@ -187,3 +187,39 @@ textarea,
     transform: rotate(360deg);
   }
 }
+
+/* Radix keeps closing content mounted until its animation ends, so the exit plays too. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+@keyframes pop-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+.motion-pop[data-state="open"] {
+  animation: pop-in var(--panel-duration) cubic-bezier(0.2, 0, 0, 1);
+}
+.motion-pop[data-state="closed"] {
+  animation: pop-out calc(var(--panel-duration) * 0.7) ease-in forwards;
+}
+.motion-fade[data-state="open"] {
+  animation: fade-in var(--panel-duration) ease-out;
+}
+.motion-fade[data-state="closed"] {
+  animation: fade-out calc(var(--panel-duration) * 0.7) ease-in forwards;
+}

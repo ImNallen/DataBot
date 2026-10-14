@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { useWorkspace } from "../state/workspace";
 import { handleLook } from "./ResizeHandle";
 
@@ -11,16 +11,35 @@ export type Column = keyof typeof COLUMNS;
 
 const STEP = 8;
 
+/**
+ * `entering` draws the column at zero width for one layout pass so the step to its full width transitions.
+ * `opening` and `closing` carry the width transition; `open` has none, so resize drags follow the pointer.
+ */
+type Phase = "closed" | "entering" | "opening" | "open" | "closing";
+
+function nextPhase(phase: Phase, open: boolean, animate: boolean): Phase {
+  if (!animate) return open ? "open" : "closed";
+  if (open) return phase === "closed" ? "entering" : phase === "closing" ? "opening" : phase;
+  return phase === "entering" ? "closed" : phase === "closed" ? phase : "closing";
+}
+
 export const clampWidth = (column: Column, px: number) => Math.round(Math.min(COLUMNS[column].max, Math.max(COLUMNS[column].min, px)));
 
 // The side columns sit outside a panel Group because react-resizable-panels kept them as shares of the window,
 // so their widths drifted whenever the window resized. Here the app owns each width in pixels. A column shrinks
 // toward its minimum only when the window is too narrow to fit both columns beside the main area. The right panel
 // gives way first, so squeezing never re-splits the space between the columns and a drag follows the pointer.
-export function PixelColumn({ column, children }: { column: Column; children: ReactNode }) {
+export function PixelColumn({ column, open, children }: { column: Column; open: boolean; children: ReactNode }) {
   const { key, min, max, shrink, edge, handle, label, line } = COLUMNS[column];
   const stored = useWorkspace((s) => s.layout[key]);
   const setLayout = useWorkspace((s) => s.setLayout);
+  const motionMs = useWorkspace((s) => s.settings.panelMotionMs);
+  const [phase, setPhase] = useState<Phase>(open ? "open" : "closed");
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    setPhase(nextPhase(phase, open, motionMs > 0));
+  }
   const [dragged, setDragged] = useState<number | null>(null);
   const drag = useRef<{ x: number; from: number; px: number } | null>(null);
   const body = useRef<HTMLDivElement>(null);
@@ -58,6 +77,22 @@ export function PixelColumn({ column, children }: { column: Column; children: Re
     save(clampWidth(column, drawn() + toward * step));
   };
 
+  useLayoutEffect(() => {
+    if (phase !== "entering") return;
+    body.current?.getBoundingClientRect();
+    setPhase("opening");
+  }, [phase]);
+  const settle = () => setPhase((p) => (p === "opening" ? "open" : p === "closing" ? "closed" : p));
+  // transitionend is skipped when nothing paints, as in a hidden window, so a timer settles the phase too.
+  useEffect(() => {
+    if (phase !== "opening" && phase !== "closing") return;
+    const timer = setTimeout(settle, motionMs + 50);
+    return () => clearTimeout(timer);
+  }, [phase, motionMs]);
+
+  if (phase === "closed") return null;
+  const sliding = phase !== "open";
+
   const look = handleLook("vertical", line);
   const separator = (
     <div
@@ -82,8 +117,24 @@ export function PixelColumn({ column, children }: { column: Column; children: Re
     </div>
   );
   const content = (
-    <div ref={body} data-testid={column} className="h-full overflow-hidden" style={{ width, minWidth: min, flexShrink: shrink }}>
-      {children}
+    <div
+      ref={body}
+      data-testid={column}
+      data-phase={sliding ? phase : undefined}
+      className="h-full overflow-hidden"
+      style={{
+        width: phase === "entering" || phase === "closing" ? 0 : width,
+        minWidth: sliding ? 0 : min,
+        flexShrink: shrink,
+        transition: phase === "opening" || phase === "closing" ? "width var(--panel-duration) cubic-bezier(0.2, 0, 0, 1)" : undefined,
+      }}
+      onTransitionEnd={(e) => {
+        if (e.target === e.currentTarget && e.propertyName === "width") settle();
+      }}
+    >
+      <div className="h-full" style={sliding ? { width } : undefined}>
+        {children}
+      </div>
     </div>
   );
   return edge === "right" ? (

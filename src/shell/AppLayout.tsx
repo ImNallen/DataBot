@@ -135,19 +135,15 @@ export function AppLayout() {
   return (
     <div className="relative flex h-full">
       {hosted?.chrome === "custom" && <ResizeEdges hosted={hosted} />}
-      {sidebar && (
-        <PixelColumn column="sidebar">
-          <Sidebar hosted={hosted} />
-        </PixelColumn>
-      )}
+      <PixelColumn column="sidebar" open={sidebar}>
+        <Sidebar hosted={hosted} />
+      </PixelColumn>
       <div data-testid="main" className="flex min-w-80 flex-1 flex-col bg-bg">
         {panels.main}
       </div>
-      {panels.right && rightPanel && (
-        <PixelColumn column="right">
-          <RightPanel hosted={hosted} />
-        </PixelColumn>
-      )}
+      <PixelColumn column="right" open={panels.right && rightPanel !== null}>
+        <RightPanel hosted={hosted} />
+      </PixelColumn>
       <SearchPalette />
       <SettingsSearchPalette />
       <HistoryPalette />

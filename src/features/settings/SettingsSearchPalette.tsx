@@ -25,7 +25,7 @@ export function SettingsSearchPalette() {
         <DialogBackdrop />
         <Dialog.Content
           aria-describedby={undefined}
-          className="fixed top-[14%] left-1/2 z-50 w-[560px] -translate-x-1/2 overflow-hidden rounded-xl border border-control bg-raised shadow-[var(--shadow-dialog)] outline-none"
+          className="motion-pop fixed top-[14%] left-1/2 z-50 w-[560px] -translate-x-1/2 overflow-hidden rounded-xl border border-control bg-raised shadow-[var(--shadow-dialog)] outline-none"
         >
           <Dialog.Title className="sr-only">Search settings</Dialog.Title>
           <Command shouldFilter={false} loop label="Search settings">
