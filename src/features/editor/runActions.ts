@@ -15,7 +15,7 @@ import { findRelation, useCatalog } from "../../state/catalog";
 import { useLive } from "../../state/live";
 import { dropRowCaches } from "../../state/rowCache";
 import { isRunning } from "../../state/status";
-import { pendingCount, toChanges, useTableEdits } from "../../state/tableEdits";
+import { pendingCount, toChanges, useTableEdits, type TableEdits } from "../../state/tableEdits";
 import { EMPTY_QUERY, nextUntitled, tabConnectionId, useWorkspace, type RelationRef, type Tab, type TableTab } from "../../state/workspace";
 import {
   dropEditor,
@@ -236,13 +236,24 @@ export async function submitEdits(tabId: TabId): Promise<void> {
   const tab = ws().tabs[tabId];
   const edits = useTableEdits.getState().byTab[tabId];
   if (tab?.kind !== "table" || !edits || pendingCount(edits) === 0) return;
+  const store = useTableEdits.getState();
+  if (!store.beginSubmit(tabId)) return;
+  try {
+    await applyEdits(tab, edits);
+  } finally {
+    store.endSubmit(tabId);
+  }
+}
+
+async function applyEdits(tab: TableTab, edits: TableEdits): Promise<void> {
+  const tabId = tab.id;
   if (!(await ensureConsole(tab))) return;
   const count = pendingCount(edits);
   const { changes, rowOf } = toChanges(edits, tab.schema, tab.table, tablePrimaryKey(tab));
   const res = await commands.tableApply(tabId, changes);
   if (res.status === "error") {
     const failedAt = "change" in res.error ? rowOf(res.error.change) : null;
-    useTableEdits.setState((s) => ({ byTab: { ...s.byTab, [tabId]: { ...(s.byTab[tabId] ?? edits), failedAt } } }));
+    useTableEdits.setState((s) => ({ byTab: { ...s.byTab, [tabId]: { ...edits, failedAt } } }));
     notify(applyErrorText(res.error));
     return;
   }

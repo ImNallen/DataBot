@@ -92,17 +92,37 @@ let nextRowId = 1;
 
 export const useTableEdits = create<{
   byTab: Record<TabId, TableEdits>;
+  /** Tabs whose submit is in flight; their edits can't change until it settles. */
+  submitting: Record<TabId, true>;
   edit(tab: TabId, f: (e: TableEdits) => TableEdits): void;
-  addRow(tab: TabId): number;
+  addRow(tab: TabId): number | null;
   clear(tab: TabId): void;
-}>((set) => ({
+  /** False when a submit for the tab is already in flight. */
+  beginSubmit(tab: TabId): boolean;
+  endSubmit(tab: TabId): void;
+}>((set, get) => ({
   byTab: {},
-  edit: (tab, f) => set((s) => ({ byTab: { ...s.byTab, [tab]: { ...f(s.byTab[tab] ?? NO_EDITS), failedAt: null } } })),
+  submitting: {},
+  edit: (tab, f) => {
+    if (get().submitting[tab]) return;
+    set((s) => ({ byTab: { ...s.byTab, [tab]: { ...f(s.byTab[tab] ?? NO_EDITS), failedAt: null } } }));
+  },
   addRow: (tab) => {
+    if (get().submitting[tab]) return null;
     const id = nextRowId++;
     set((s) => ({ byTab: { ...s.byTab, [tab]: addRow(s.byTab[tab] ?? NO_EDITS, id) } }));
     return id;
   },
+  beginSubmit: (tab) => {
+    if (get().submitting[tab]) return false;
+    set((s) => ({ submitting: { ...s.submitting, [tab]: true } }));
+    return true;
+  },
+  endSubmit: (tab) =>
+    set((s) => {
+      const { [tab]: _, ...rest } = s.submitting;
+      return { submitting: rest };
+    }),
   clear: (tab) =>
     set((s) => {
       const { [tab]: _, ...rest } = s.byTab;

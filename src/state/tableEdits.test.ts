@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { addRow, NO_EDITS, pendingCount, removeNewRows, resetNewCell, rowKey, setCell, setNewCell, toChanges, toggleDeletes, type RowId } from "./tableEdits";
+import { addRow, NO_EDITS, pendingCount, removeNewRows, resetNewCell, rowKey, setCell, setNewCell, toChanges, toggleDeletes, useTableEdits, type RowId } from "./tableEdits";
 
 const row = (...values: (string | null)[]): RowId => ({ key: rowKey(values), values });
 
@@ -59,4 +59,19 @@ it("keys composite primary keys in column order and removes new rows by id", () 
       { column: "sku", value: "A-1" },
     ],
   ]);
+});
+
+it("holds a tab's edits still while its submit is in flight", () => {
+  const store = useTableEdits.getState();
+  store.edit("t", (e) => setNewCell(addRow(e, 1), 1, "name", "a"));
+  expect(store.beginSubmit("t")).toBe(true);
+  expect(store.beginSubmit("t")).toBe(false);
+
+  store.edit("t", (e) => toggleDeletes(e, [row("9")]));
+  expect(store.addRow("t")).toBeNull();
+  expect(useTableEdits.getState().byTab["t"]).toEqual({ ...addRow(NO_EDITS, 1), inserts: [{ id: 1, values: { name: "a" } }], failedAt: null });
+
+  store.endSubmit("t");
+  store.edit("t", (e) => toggleDeletes(e, [row("9")]));
+  expect(pendingCount(useTableEdits.getState().byTab["t"]!)).toBe(2);
 });

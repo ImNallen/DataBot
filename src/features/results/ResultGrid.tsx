@@ -177,22 +177,34 @@ function inSelection(sel: Selection, row: number, col: number): boolean {
   return row >= r0 && row <= r1 && col >= c0 && col <= c1;
 }
 
-async function copySelection(cache: RowCache, sel: NonNullable<Selection>, rowCount: number) {
+/** `pending(row, col)` is the value a pending edit or new row shows there, or undefined for the stored value. */
+async function copySelection(
+  cache: RowCache,
+  sel: NonNullable<Selection>,
+  rowCount: number,
+  total: number,
+  pending: (row: number, col: number) => CellValue | undefined,
+) {
   const notify = useWorkspace.getState().notify;
   const r0 = Math.min(sel.anchor.row, sel.focus.row);
-  const r1 = Math.min(Math.max(sel.anchor.row, sel.focus.row), rowCount - 1);
+  const r1 = Math.min(Math.max(sel.anchor.row, sel.focus.row), total - 1);
   const c0 = Math.min(sel.anchor.col, sel.focus.col);
   const c1 = Math.max(sel.anchor.col, sel.focus.col);
   if (r1 - r0 + 1 > COPY_ROW_LIMIT) {
     notify(`Copy is limited to ${groupDigits(String(COPY_ROW_LIMIT))} rows. Use Export for the full result.`);
     return;
   }
-  await cache.ensure({ start: r0, end: r1 + 1 }, rowCount);
+  if (r0 < rowCount) await cache.ensure({ start: r0, end: Math.min(r1, rowCount - 1) + 1 }, rowCount);
   const rows: (string | null)[][] = [];
   for (let r = r0; r <= r1; r++) {
     const row = cache.get(r);
     const out: (string | null)[] = [];
-    for (let c = c0; c <= c1; c++) out.push(cache.isCut(r, c) ? ((await cache.loadFull(r, c)) ?? null) : (row?.[c] ?? null));
+    for (let c = c0; c <= c1; c++) {
+      const shown = pending(r, c);
+      if (shown !== undefined) out.push(shown);
+      else if (r >= rowCount) out.push(null);
+      else out.push(cache.isCut(r, c) ? ((await cache.loadFull(r, c)) ?? null) : (row?.[c] ?? null));
+    }
     rows.push(out);
   }
   await navigator.clipboard.writeText(toTsv(rows));
@@ -319,22 +331,29 @@ export function ResultGrid({
   };
 
   const [editingCell, setEditingCell] = useState<(Cell & { draft: string; initial: string }) | null>(null);
-  const startEdit = (row: number, col: number, typed?: string) => {
+  // The page cache cuts long values, so edits and comparisons use the full stored text.
+  const storedValue = async (row: number, col: number): Promise<CellValue> =>
+    cache.isCut(row, col) ? ((await cache.loadFull(row, col)) ?? null) : (cache.get(row)?.[col] ?? null);
+  const startEdit = async (row: number, col: number, typed?: string) => {
     const id = rowIdOf(row);
-    if (!editable || (!newRowAt(row) && (!id || id.key in edits.deletes))) return;
-    const shown = cellValue(row, col);
+    if (!editable || useTableEdits.getState().submitting[tabId] || (!newRowAt(row) && (!id || id.key in edits.deletes))) return;
+    const name = columns[col]!.name;
+    const pending = newRowAt(row) || (id && name in (edits.updates[id.key]?.values ?? {}));
+    const shown = pending ? cellValue(row, col) : await storedValue(row, col);
     const initial = typeof shown === "string" ? shown : "";
     setEditingCell({ row, col, initial, draft: typed ?? initial });
   };
-  const writeCell = (row: number, col: number, value: CellValue | typeof DEFAULT) => {
+  const writeCell = async (row: number, col: number, value: CellValue | typeof DEFAULT) => {
     const name = columns[col]!.name;
     const added = newRowAt(row);
     if (added) return edit((e) => (value === DEFAULT ? resetNewCell(e, added.id, name) : setNewCell(e, added.id, name, value)));
     const id = rowIdOf(row);
-    if (id && value !== DEFAULT) edit((e) => setCell(e, id, name, value, cache.get(row)?.[col] ?? null));
+    if (!id || value === DEFAULT) return;
+    const stored = await storedValue(row, col);
+    edit((e) => setCell(e, id, name, value, stored));
   };
   const finishEdit = (save: boolean) => {
-    if (editingCell && save && editingCell.draft !== editingCell.initial) writeCell(editingCell.row, editingCell.col, editingCell.draft);
+    if (editingCell && save && editingCell.draft !== editingCell.initial) void writeCell(editingCell.row, editingCell.col, editingCell.draft);
     setEditingCell(null);
     scroller.current?.focus();
   };
@@ -344,8 +363,10 @@ export function ResultGrid({
     const r1 = Math.max(selection.anchor.row, selection.focus.row);
     return Array.from({ length: r1 - r0 + 1 }, (_, i) => r0 + i);
   };
-  const deleteSelectedRows = () => {
+  const deleteSelectedRows = async () => {
     const picked = selectedRows();
+    const stored0 = picked.find((r) => r < rowCount);
+    if (stored0 !== undefined) await cache.ensure({ start: stored0, end: Math.min(picked.at(-1)!, rowCount - 1) + 1 }, rowCount);
     const added = picked.flatMap((r) => newRowAt(r)?.id ?? []);
     const stored = picked.flatMap((r) => rowIdOf(r) ?? []);
     edit((e) => toggleDeletes(removeNewRows(e, added), stored));
@@ -361,7 +382,7 @@ export function ResultGrid({
     }
     insertsSeen.current = edits.inserts.length;
   }, [edits.inserts.length, rowCount, columns, pkIdx, rows]);
-  useImperativeHandle(actionsRef, () => ({ addRow: () => useTableEdits.getState().addRow(tabId), deleteSelectedRows }));
+  useImperativeHandle(actionsRef, () => ({ addRow: () => void useTableEdits.getState().addRow(tabId), deleteSelectedRows: () => void deleteSelectedRows() }));
 
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -371,16 +392,20 @@ export function ResultGrid({
       void submitEdits(tabId);
     } else if (editable && mod && e.key === "Backspace" && selection) {
       e.preventDefault();
-      deleteSelectedRows();
+      void deleteSelectedRows();
     } else if (editable && selection && (e.key === "Enter" || e.key === "F2")) {
       e.preventDefault();
-      startEdit(selection.focus.row, selection.focus.col);
+      void startEdit(selection.focus.row, selection.focus.col);
     } else if (editable && selection && e.key.length === 1 && !mod && !e.altKey) {
       e.preventDefault();
-      startEdit(selection.focus.row, selection.focus.col, e.key);
+      void startEdit(selection.focus.row, selection.focus.col, e.key);
     } else if (mod && e.key.toLowerCase() === "c" && selection) {
       e.preventDefault();
-      void copySelection(cache, selection, rowCount);
+      void copySelection(cache, selection, rowCount, total, (r, c) => {
+        const shown = cellValue(r, c);
+        if (shown === DEFAULT) return null;
+        return newRowAt(r) || (editable && edits.updates[rowIdOf(r)?.key ?? ""]?.values[columns[c]!.name] !== undefined) ? shown : undefined;
+      });
     } else if (mod && e.key.toLowerCase() === "a") {
       e.preventDefault();
       setSelection({ anchor: { row: 0, col: 0 }, focus: { row: total - 1, col: columns.length - 1 } });
@@ -576,7 +601,7 @@ export function ResultGrid({
                           if (e.key === "Tab") {
                             e.preventDefault();
                             finishEdit(true);
-                            const next = { row: vr.index, col: Math.min(columns.length - 1, vc.index + (e.shiftKey ? -1 : 1)) };
+                            const next = { row: vr.index, col: Math.max(0, Math.min(columns.length - 1, vc.index + (e.shiftKey ? -1 : 1))) };
                             setSelection({ anchor: next, focus: next });
                             cols.scrollToIndex(next.col);
                           }

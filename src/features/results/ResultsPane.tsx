@@ -154,7 +154,7 @@ function Empty({ children }: { children: React.ReactNode }) {
 function EditBar({ tabId, actions }: { tabId: TabId; actions: RefObject<GridActions | null> }) {
   const edits = useTableEdits((s) => s.byTab[tabId] ?? NO_EDITS);
   const pending = pendingCount(edits);
-  const [busy, setBusy] = useState(false);
+  const busy = useTableEdits((s) => s.submitting[tabId] === true);
   return (
     <div data-testid="edit-bar" className="flex items-center gap-0.5">
       <IconButton data-testid="add-row" aria-label="Add row" title="Add row" onClick={() => actions.current?.addRow()}>
@@ -174,11 +174,7 @@ function EditBar({ tabId, actions }: { tabId: TabId; actions: RefObject<GridActi
         title="Submit changes (⌘S)"
         disabled={pending === 0 || busy}
         className={cx(pending > 0 && "text-green hover:text-green")}
-        onClick={async () => {
-          setBusy(true);
-          await submitEdits(tabId);
-          setBusy(false);
-        }}
+        onClick={() => void submitEdits(tabId)}
       >
         <IconCheck size={16} />
       </IconButton>

@@ -716,3 +716,21 @@ async fn table_pages_sort_and_filter_in_the_engine() {
         assert!(matches!(refused, Err(RunError::BadFilter)), "{refused:?}");
     }
 }
+
+#[tokio::test]
+async fn sql_comments_in_where_and_order_by_keep_the_page_limit() {
+    let mut h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let tab = h.sql_tab(TxnMode::AutoCommit).await;
+    let query = TableQuery { order_by: "id DESC -- newest first".into(), filters: vec![], r#where: "region = 'APAC' -- only asia".into() };
+    let page = h
+        .engine
+        .console_run(tab, RunRequest::TablePage { schema: "public".into(), table: "customers".into(), page: 0, query: query.clone() })
+        .await
+        .unwrap();
+    let state = h.wait_finished(tab, page.run_id).await;
+    let meta = Harness::result(&state, 0);
+    assert_eq!(meta.row_count, 500, "the comment must not swallow LIMIT");
+    let apac = h.scalar(tab, "select count(*) from customers where region = 'APAC'").await.parse::<u64>().unwrap();
+    assert_eq!(h.engine.exact_row_count(h.conn, "public".into(), "customers".into(), query).await.unwrap(), apac);
+}

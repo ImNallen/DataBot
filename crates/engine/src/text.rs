@@ -152,7 +152,7 @@ fn filter_sql(f: &ColumnFilter) -> String {
 fn where_sql(q: &TableQuery) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !q.r#where.trim().is_empty() {
-        parts.push(format!("({})", q.r#where.trim()));
+        parts.push(format!("({}\n)", q.r#where.trim()));
     }
     parts.extend(q.filters.iter().map(filter_sql));
     if parts.is_empty() { String::new() } else { format!(" WHERE {}", parts.join(" AND ")) }
@@ -166,7 +166,7 @@ pub fn browse_sql(schema: &str, table: &str, pk: &[String], q: &TableQuery, limi
     let mut sql = format!("SELECT * {}", from_sql(schema, table, q));
     let mut order: Vec<String> = Vec::new();
     if !q.order_by.trim().is_empty() {
-        order.push(q.order_by.trim().to_owned());
+        order.push(format!("{}\n", q.order_by.trim()));
     }
     let tiebreak_so_pages_never_overlap = pk.iter().map(|c| quote_ident(c));
     order.extend(tiebreak_so_pages_never_overlap);
@@ -314,7 +314,7 @@ mod tests {
         let q = TableQuery { order_by: " lower(name) DESC NULLS LAST ".into(), ..Default::default() };
         assert_eq!(
             browse_sql("public", "customers", &["id".into(), "tenant".into()], &q, 50, 0),
-            r#"SELECT * FROM "public"."customers" ORDER BY lower(name) DESC NULLS LAST, "id", "tenant" LIMIT 50 OFFSET 0"#
+            "SELECT * FROM \"public\".\"customers\" ORDER BY lower(name) DESC NULLS LAST\n, \"id\", \"tenant\" LIMIT 50 OFFSET 0"
         );
     }
 
@@ -327,11 +327,11 @@ mod tests {
         };
         assert_eq!(
             browse_sql("public", "customers", &[], &q, 10, 0),
-            r#"SELECT * FROM "public"."customers" WHERE (created_at > now() - interval '7 days') AND "region" = 'O''Hare' AND "email" IS NOT NULL LIMIT 10 OFFSET 0"#
+            "SELECT * FROM \"public\".\"customers\" WHERE (created_at > now() - interval '7 days'\n) AND \"region\" = 'O''Hare' AND \"email\" IS NOT NULL LIMIT 10 OFFSET 0"
         );
         assert_eq!(
             count_sql("public", "customers", &q),
-            r#"SELECT count(*) FROM "public"."customers" WHERE (created_at > now() - interval '7 days') AND "region" = 'O''Hare' AND "email" IS NOT NULL"#
+            "SELECT count(*) FROM \"public\".\"customers\" WHERE (created_at > now() - interval '7 days'\n) AND \"region\" = 'O''Hare' AND \"email\" IS NOT NULL"
         );
     }
 
