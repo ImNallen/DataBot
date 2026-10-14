@@ -376,6 +376,7 @@ export type Settings = {
 	maxResultBytes: number,
 	tablePageSize: number,
 	stopOnError: boolean,
+	theme: Theme,
 };
 
 export type SslMode = "Disable" | "Prefer" | "Require" | "VerifyCa" | "VerifyFull";
@@ -415,6 +416,8 @@ export type TableQuery = {
 	/**  A boolean SQL expression ANDed with `filters`; empty means none. */
 	where: string,
 };
+
+export type Theme = "System" | "Light" | "Dark";
 
 export type TruncateReason = "RowLimit" | "ByteLimit";
 

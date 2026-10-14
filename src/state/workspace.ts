@@ -56,7 +56,7 @@ export type WorkspaceData = {
 };
 
 const DEFAULT_LAYOUT: Layout = { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341 };
-const DEFAULT_SETTINGS: Settings = { maxRows: 200_000, maxResultBytes: 512 * 1024 * 1024, tablePageSize: 500, stopOnError: true };
+const DEFAULT_SETTINGS: Settings = { maxRows: 200_000, maxResultBytes: 512 * 1024 * 1024, tablePageSize: 500, stopOnError: true, theme: "System" };
 
 export function tabFromSnapshot(t: TabSnapshot): Tab {
   switch (t.kind) {

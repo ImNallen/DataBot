@@ -6,7 +6,7 @@ use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
 
-use engine::model::AppEvent;
+use engine::model::{AppEvent, Theme};
 use engine::{Engine, EngineConfig, KeyStore, KeyringKeyStore, MemoryKeyStore};
 use specta_typescript::Typescript;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
@@ -126,6 +126,16 @@ fn macos_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
 #[cfg(target_os = "macos")]
 const CLOSE_WINDOW: &str = "close-window";
 
+const LIGHT_BACKGROUND: tauri::window::Color = tauri::window::Color(255, 255, 255, 255);
+
+fn window_theme(theme: Theme) -> Option<tauri::Theme> {
+    match theme {
+        Theme::System => None,
+        Theme::Light => Some(tauri::Theme::Light),
+        Theme::Dark => Some(tauri::Theme::Dark),
+    }
+}
+
 fn forward_events(app: AppHandle, mut events: broadcast::Receiver<AppEvent>) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -233,7 +243,8 @@ fn main() {
                 return Ok(());
             }
             forward_events(app.handle().clone(), engine.subscribe());
-            let window = WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?;
+            let window = WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?
+                .theme(window_theme(engine.settings().theme));
             // macOS keeps the native traffic lights over the webview; Windows and Linux draw their own chrome.
             #[cfg(target_os = "macos")]
             let window = window
@@ -241,7 +252,13 @@ fn main() {
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true)
                 .traffic_light_position(tauri::LogicalPosition::new(18.0, 28.0));
-            window.build()?;
+            let window = window.build()?;
+            // The configured background is the dark one; System only resolves once the window exists.
+            if matches!(window.theme(), Ok(tauri::Theme::Light))
+                && let Err(e) = window.set_background_color(Some(LIGHT_BACKGROUND))
+            {
+                eprintln!("window background failed: {e}");
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

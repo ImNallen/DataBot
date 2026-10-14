@@ -611,13 +611,41 @@ pub enum RightPanel {
     History,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub max_rows: u32,
     pub max_result_bytes: u64,
     pub table_page_size: u32,
     pub stop_on_error: bool,
+    pub theme: Theme,
+}
+
+// Hand-written for the same reason as `TableQuery`: settings saved before `theme` existed still load,
+// and the TS binding keeps `theme` required.
+impl<'de> Deserialize<'de> for Settings {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Stored {
+            max_rows: u32,
+            max_result_bytes: u64,
+            table_page_size: u32,
+            stop_on_error: bool,
+            #[serde(default)]
+            theme: Theme,
+        }
+        let Stored { max_rows, max_result_bytes, table_page_size, stop_on_error, theme } = Stored::deserialize(d)?;
+        Ok(Settings { max_rows, max_result_bytes, table_page_size, stop_on_error, theme })
+    }
 }
 
 impl Default for Settings {
@@ -627,6 +655,7 @@ impl Default for Settings {
             max_result_bytes: 512 * 1024 * 1024,
             table_page_size: 500,
             stop_on_error: true,
+            theme: Theme::System,
         }
     }
 }
@@ -822,6 +851,17 @@ mod tests {
             serde_json::to_value(ev).unwrap(),
             json!({ "kind": "CatalogChanged", "connectionId": Uuid::nil(), "version": 3 })
         );
+    }
+
+    #[test]
+    fn settings_saved_before_theme_existed_load_as_system() {
+        let s: Settings = serde_json::from_value(json!({
+            "maxRows": 10, "maxResultBytes": 20, "tablePageSize": 30, "stopOnError": false
+        }))
+        .unwrap();
+        assert_eq!((s.max_rows, s.table_page_size, s.stop_on_error, s.theme), (10, 30, false, Theme::System));
+        let round: Settings = serde_json::from_value(serde_json::to_value(Settings { theme: Theme::Light, ..s }).unwrap()).unwrap();
+        assert_eq!(round.theme, Theme::Light);
     }
 
     #[test]
