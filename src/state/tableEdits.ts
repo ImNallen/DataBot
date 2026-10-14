@@ -53,14 +53,17 @@ export function setCell(e: TableEdits, row: RowId, column: string, value: CellVa
   return { ...e, updates: Object.keys(values).length ? { ...others, [row.key]: { key: row.values, values } } : others };
 }
 
-export function toggleDeletes(e: TableEdits, rows: RowId[]): TableEdits {
+export function markDeleted(e: TableEdits, rows: RowId[], on: boolean): TableEdits {
   const deletes = { ...e.deletes };
-  const allMarked = rows.every((r) => r.key in deletes);
   for (const r of rows) {
-    if (allMarked) delete deletes[r.key];
-    else deletes[r.key] = r.values;
+    if (on) deletes[r.key] = r.values;
+    else delete deletes[r.key];
   }
   return { ...e, deletes };
+}
+
+export function toggleDeletes(e: TableEdits, rows: RowId[]): TableEdits {
+  return markDeleted(e, rows, !rows.every((r) => r.key in e.deletes));
 }
 
 const writes = (columns: string[], values: CellValue[]): CellWrite[] => columns.map((column, i) => ({ column, value: values[i] ?? null }));
@@ -94,7 +97,8 @@ export const useTableEdits = create<{
   byTab: Record<TabId, TableEdits>;
   /** Tabs whose submit is in flight; their edits can't change until it settles. */
   submitting: Record<TabId, true>;
-  edit(tab: TabId, f: (e: TableEdits) => TableEdits): void;
+  /** False when a submit for the tab is in flight and the edit was dropped. */
+  edit(tab: TabId, f: (e: TableEdits) => TableEdits): boolean;
   addRow(tab: TabId): number | null;
   clear(tab: TabId): void;
   /** False when a submit for the tab is already in flight. */
@@ -104,8 +108,9 @@ export const useTableEdits = create<{
   byTab: {},
   submitting: {},
   edit: (tab, f) => {
-    if (get().submitting[tab]) return;
+    if (get().submitting[tab]) return false;
     set((s) => ({ byTab: { ...s.byTab, [tab]: { ...f(s.byTab[tab] ?? NO_EDITS), failedAt: null } } }));
+    return true;
   },
   addRow: (tab) => {
     if (get().submitting[tab]) return null;

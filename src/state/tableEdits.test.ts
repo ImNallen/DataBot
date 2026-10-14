@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { addRow, NO_EDITS, pendingCount, removeNewRows, resetNewCell, rowKey, setCell, setNewCell, toChanges, toggleDeletes, useTableEdits, type RowId } from "./tableEdits";
+import { addRow, markDeleted, NO_EDITS, pendingCount, removeNewRows, resetNewCell, rowKey, setCell, setNewCell, toChanges, toggleDeletes, useTableEdits, type RowId } from "./tableEdits";
 
 const row = (...values: (string | null)[]): RowId => ({ key: rowKey(values), values });
 
@@ -74,4 +74,18 @@ it("holds a tab's edits still while its submit is in flight", () => {
   store.endSubmit("t");
   store.edit("t", (e) => toggleDeletes(e, [row("9")]));
   expect(pendingCount(useTableEdits.getState().byTab["t"]!)).toBe(2);
+});
+
+it("marks or unmarks rows for deletion the same way however often it runs", () => {
+  const twice = markDeleted(markDeleted(NO_EDITS, [row("1"), row("2")], true), [row("1"), row("2")], true);
+  expect(Object.keys(twice.deletes).sort()).toEqual([rowKey(["1"]), rowKey(["2"])]);
+  expect(markDeleted(twice, [row("1")], false).deletes).toEqual({ [rowKey(["2"])]: ["2"] });
+});
+
+it("tells the caller when an edit was refused during a submit", () => {
+  const store = useTableEdits.getState();
+  expect(store.beginSubmit("u")).toBe(true);
+  expect(store.edit("u", (e) => markDeleted(e, [row("1")], true))).toBe(false);
+  store.endSubmit("u");
+  expect(store.edit("u", (e) => markDeleted(e, [row("1")], true))).toBe(true);
 });

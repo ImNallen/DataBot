@@ -23,7 +23,7 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSt
 import type { ColumnMeta, ResultMeta, TypeCategory } from "../../ipc/bindings";
 import { rowCacheFor, type RowCache } from "../../state/rowCache";
 import { isPrimaryKey, useCatalog } from "../../state/catalog";
-import { NO_EDITS, removeNewRows, resetNewCell, rowKey, setCell, setNewCell, toggleDeletes, useTableEdits, type CellValue, type RowId, type TableEdits } from "../../state/tableEdits";
+import { NO_EDITS, markDeleted, removeNewRows, resetNewCell, rowKey, setCell, setNewCell, useTableEdits, type CellValue, type RowId, type TableEdits } from "../../state/tableEdits";
 import { tabConnectionId, useWorkspace } from "../../state/workspace";
 import { ContextMenuArea, ContextMenuItem, cx } from "../../ui/primitives";
 import { submitEdits } from "../editor/runActions";
@@ -330,30 +330,42 @@ export function ResultGrid({
     useWorkspace.getState().open({ kind: "cell", title: `${columns[col]?.name ?? ""} · row ${row + 1}`, value });
   };
 
-  const [editingCell, setEditingCell] = useState<(Cell & { draft: string; initial: string }) | null>(null);
-  // The page cache cuts long values, so edits and comparisons use the full stored text.
-  const storedValue = async (row: number, col: number): Promise<CellValue> =>
-    cache.isCut(row, col) ? ((await cache.loadFull(row, col)) ?? null) : (cache.get(row)?.[col] ?? null);
-  const startEdit = async (row: number, col: number, typed?: string) => {
+  const [editingCell, setEditingCell] = useState<(Cell & { draft: string; initial: string; stored: CellValue }) | null>(null);
+  const opening = useRef(0);
+  const refused = () => useWorkspace.getState().notify("A submit is running. Try again when it finishes.");
+  const startEdit = (row: number, col: number, typed?: string) => {
     const id = rowIdOf(row);
     if (!editable || useTableEdits.getState().submitting[tabId] || (!newRowAt(row) && (!id || id.key in edits.deletes))) return;
     const name = columns[col]!.name;
     const pending = newRowAt(row) || (id && name in (edits.updates[id.key]?.values ?? {}));
-    const shown = pending ? cellValue(row, col) : await storedValue(row, col);
-    const initial = typeof shown === "string" ? shown : "";
-    setEditingCell({ row, col, initial, draft: typed ?? initial });
+    const open = (initial: string, stored: CellValue) =>
+      setEditingCell((cur) =>
+        typed !== undefined && cur?.row === row && cur.col === col
+          ? { ...cur, draft: cur.draft + typed }
+          : { row, col, initial, stored, draft: typed ?? initial },
+      );
+    const seq = ++opening.current;
+    // The page cache cuts long values. Typing replaces the value, so only opening a cut cell as-is waits for its full text.
+    if (pending || typed !== undefined || !cache.isCut(row, col)) {
+      const shown = cellValue(row, col);
+      return open(typeof shown === "string" ? shown : "", row < rowCount ? (cache.get(row)?.[col] ?? null) : null);
+    }
+    void cache.loadFull(row, col).then((full) => {
+      if (opening.current === seq) open(full ?? "", full ?? null);
+    });
   };
-  const writeCell = async (row: number, col: number, value: CellValue | typeof DEFAULT) => {
+  const writeCell = (row: number, col: number, value: CellValue | typeof DEFAULT, stored = cache.get(row)?.[col] ?? null) => {
     const name = columns[col]!.name;
     const added = newRowAt(row);
-    if (added) return edit((e) => (value === DEFAULT ? resetNewCell(e, added.id, name) : setNewCell(e, added.id, name, value)));
+    if (added) {
+      if (!edit((e) => (value === DEFAULT ? resetNewCell(e, added.id, name) : setNewCell(e, added.id, name, value)))) refused();
+      return;
+    }
     const id = rowIdOf(row);
-    if (!id || value === DEFAULT) return;
-    const stored = await storedValue(row, col);
-    edit((e) => setCell(e, id, name, value, stored));
+    if (id && value !== DEFAULT && !edit((e) => setCell(e, id, name, value, stored))) refused();
   };
   const finishEdit = (save: boolean) => {
-    if (editingCell && save && editingCell.draft !== editingCell.initial) void writeCell(editingCell.row, editingCell.col, editingCell.draft);
+    if (editingCell && save && editingCell.draft !== editingCell.initial) writeCell(editingCell.row, editingCell.col, editingCell.draft, editingCell.stored);
     setEditingCell(null);
     scroller.current?.focus();
   };
@@ -363,13 +375,23 @@ export function ResultGrid({
     const r1 = Math.max(selection.anchor.row, selection.focus.row);
     return Array.from({ length: r1 - r0 + 1 }, (_, i) => r0 + i);
   };
+  const deleting = useRef(false);
   const deleteSelectedRows = async () => {
+    if (deleting.current) return;
     const picked = selectedRows();
-    const stored0 = picked.find((r) => r < rowCount);
-    if (stored0 !== undefined) await cache.ensure({ start: stored0, end: Math.min(picked.at(-1)!, rowCount - 1) + 1 }, rowCount);
+    const storedRows = picked.filter((r) => r < rowCount);
+    const loaded = storedRows.flatMap((r) => rowIdOf(r) ?? []);
+    const marked = useTableEdits.getState().byTab[tabId]?.deletes ?? {};
+    const restore = storedRows.length > 0 && loaded.length === storedRows.length && loaded.every((r) => r.key in marked);
+    deleting.current = true;
+    try {
+      if (storedRows.length) await cache.ensure({ start: storedRows[0]!, end: storedRows.at(-1)! + 1 }, rowCount);
+    } finally {
+      deleting.current = false;
+    }
     const added = picked.flatMap((r) => newRowAt(r)?.id ?? []);
-    const stored = picked.flatMap((r) => rowIdOf(r) ?? []);
-    edit((e) => toggleDeletes(removeNewRows(e, added), stored));
+    const stored = storedRows.flatMap((r) => rowIdOf(r) ?? []);
+    if (!edit((e) => markDeleted(removeNewRows(e, added), stored, !restore))) refused();
   };
   const insertsSeen = useRef(edits.inserts.length);
   useEffect(() => {
@@ -392,13 +414,13 @@ export function ResultGrid({
       void submitEdits(tabId);
     } else if (editable && mod && e.key === "Backspace" && selection) {
       e.preventDefault();
-      void deleteSelectedRows();
+      if (!e.repeat) void deleteSelectedRows();
     } else if (editable && selection && (e.key === "Enter" || e.key === "F2")) {
       e.preventDefault();
-      void startEdit(selection.focus.row, selection.focus.col);
+      startEdit(selection.focus.row, selection.focus.col);
     } else if (editable && selection && e.key.length === 1 && !mod && !e.altKey) {
       e.preventDefault();
-      void startEdit(selection.focus.row, selection.focus.col, e.key);
+      startEdit(selection.focus.row, selection.focus.col, e.key);
     } else if (mod && e.key.toLowerCase() === "c" && selection) {
       e.preventDefault();
       void copySelection(cache, selection, rowCount, total, (r, c) => {
