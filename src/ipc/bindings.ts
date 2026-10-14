@@ -191,8 +191,15 @@ export type ConsoleState = {
 
 export type CountError = { kind: "NotConnected" } | { kind: "Failed"; message: string };
 
-/**  A user theme. `colors` maps the frontend's token names to CSS colours; the engine only stores it. */
+/**  A user theme: one card in the picker, holding every variant it was created or imported with. */
 export type CustomTheme = {
+	id: string,
+	name: string,
+	variants: CustomThemeVariant[],
+};
+
+/**  `colors` maps the frontend's token names to CSS colours; the engine only stores it. */
+export type CustomThemeVariant = {
 	id: string,
 	name: string,
 	appearance: Appearance,

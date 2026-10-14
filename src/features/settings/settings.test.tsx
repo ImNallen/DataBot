@@ -1,13 +1,13 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
-import type { Settings } from "../../ipc/bindings";
+import type { CustomTheme, Settings } from "../../ipc/bindings";
 import { AppLayout } from "../../shell/AppLayout";
 import { clampWidth } from "../../shell/PixelColumn";
 import { startTheme } from "../../shell/theme";
 import { useWorkspace, type WorkspaceData } from "../../state/workspace";
 import { fakeRoot } from "../../testing/fakeRoot";
-import { BUILT_IN_FAMILIES } from "../../themes/catalog";
+import { BUILT_IN_FAMILIES, customFamily, familyPicks } from "../../themes/catalog";
 import { addCustomThemes, chooseColorScheme, chooseThemes, deleteCustomTheme } from "./themeActions";
 import { searchSettings } from "./sections";
 
@@ -106,10 +106,8 @@ it("lists every setting in registry order for an empty query, and nothing for a 
   expect(searchSettings("zzqx")).toEqual([]);
 });
 
-const radios = (html: string, name: string) =>
-  (html.match(/<input type="radio"[^>]*>/g) ?? [])
-    .filter((tag) => tag.includes(`name="${name}"`))
-    .map((tag) => [/value="([\w-]+)"/.exec(tag)?.[1], tag.includes('checked=""')]);
+const radioTags = (html: string, name: string) => (html.match(/<input type="radio"[^>]*>/g) ?? []).filter((tag) => tag.includes(`name="${name}"`));
+const radios = (html: string, name: string) => radioTags(html, name).map((tag) => [/value="([\w-]+)"/.exec(tag)?.[1], tag.includes('checked=""')]);
 
 it("offers the three color schemes as one native radio group with the saved one checked", () => {
   const html = render({ ...settingsOpen(), settings: { ...initial.settings, colorScheme: "Dark" } });
@@ -120,13 +118,47 @@ it("offers the three color schemes as one native radio group with the saved one 
   ]);
 });
 
+const catppuccin: CustomTheme = {
+  id: "custom-cat",
+  name: "Catppuccin for VSCode",
+  variants: [
+    { id: "custom-cat-0", name: "Catppuccin Latte", appearance: "light", colors: { background: "#eff1f5", accent: "#8839ef" } },
+    { id: "custom-cat-1", name: "Catppuccin Frappé", appearance: "dark", colors: { background: "#303446", accent: "#ca9ee6" } },
+    { id: "custom-cat-2", name: "Catppuccin Macchiato", appearance: "dark", colors: { background: "#24273a", accent: "#c6a0f6" } },
+    { id: "custom-cat-3", name: "Catppuccin Mocha", appearance: "dark", colors: { background: "#1e1e2e", accent: "#cba6f7" } },
+  ],
+};
+
 it("offers every theme variant in a light radio group and a dark one, with the saved picks checked", () => {
-  const custom = { id: "custom-dusk", name: "Dusk", appearance: "dark", colors: { background: "#1b1824", accent: "#e0a040" } } as const;
+  const custom: CustomTheme = {
+    id: "custom-dusk-family",
+    name: "Dusk",
+    variants: [{ id: "custom-dusk", name: "Dusk", appearance: "dark", colors: { background: "#1b1824", accent: "#e0a040" } }],
+  };
   const html = render({ ...settingsOpen(), settings: { ...initial.settings, lightTheme: "ocean-light", darkTheme: "custom-dusk", customThemes: [custom] } });
   const checked = (name: string) => radios(html, name).filter(([, on]) => on).map(([id]) => id);
   expect(radios(html, "lightTheme").map(([id]) => id)).toEqual(["l1-light", "grove-light", "ocean-light", "ember-light", "iris-light", "rose-light"]);
   expect(radios(html, "darkTheme").map(([id]) => id)).toEqual(["l1-dark", "grove-dark", "ocean-dark", "ember-dark", "iris-dark", "rose-dark", "custom-dusk"]);
   expect([checked("lightTheme"), checked("darkTheme")]).toEqual([["ocean-light"], ["custom-dusk"]]);
+});
+
+it("puts every variant of an imported extension on one card, each orb a radio named after its variant", () => {
+  const html = render({ ...settingsOpen(), settings: { ...initial.settings, darkTheme: "custom-cat-2", customThemes: [catppuccin] } });
+  const card = /data-testid="theme-family-custom-cat".*?<\/button>/.exec(html)?.[0] ?? "";
+  const orbs = (card.match(/<input type="radio"[^>]*>/g) ?? []).map((tag) => [
+    /name="(\w+)"/.exec(tag)?.[1],
+    /value="([\w-]+)"/.exec(tag)?.[1],
+    /aria-label="([^"]+)"/.exec(tag)?.[1],
+    tag.includes('checked=""'),
+  ]);
+  expect(orbs).toEqual([
+    ["lightTheme", "custom-cat-0", "Catppuccin Latte", false],
+    ["darkTheme", "custom-cat-1", "Catppuccin Frappé", false],
+    ["darkTheme", "custom-cat-2", "Catppuccin Macchiato", true],
+    ["darkTheme", "custom-cat-3", "Catppuccin Mocha", false],
+  ]);
+  expect(card).toContain(">Catppuccin for VSCode</button>");
+  expect(html.match(/data-testid="theme-family-custom-cat/g)).toHaveLength(1);
 });
 
 it("shows the query settings with their saved values", () => {
@@ -149,7 +181,7 @@ function paintAndRecordSaves() {
 }
 
 const variant = (family: string, appearance: "light" | "dark") => {
-  const v = BUILT_IN_FAMILIES.find((f) => f.id === family)?.variants[appearance];
+  const v = BUILT_IN_FAMILIES.find((f) => f.id === family)?.variants.find((x) => x.appearance === appearance);
   if (!v) throw new Error(`no ${family} ${appearance}`);
   return v;
 };
@@ -185,21 +217,68 @@ it("sets both picks from a two-variant family without touching the scheme", asyn
   expect(saved.at(-1)).toEqual({ ...initial.settings, colorScheme: "Dark", lightTheme: "rose-light", darkTheme: "rose-dark" });
 });
 
-it("saves created themes, picks the first of each appearance, and drops a deleted pick back to L1", async () => {
+it("saves each added family as one theme, picks from the first family only, and drops a deleted pick back to L1", async () => {
   let n = 0;
   vi.stubGlobal("crypto", { randomUUID: () => `id${++n}` });
   const { root, saved, stop } = paintAndRecordSaves();
   await chooseColorScheme("Light");
   await addCustomThemes([
-    { name: "Dusk", appearance: "dark", colors: { background: "#1b1824", accent: "#e0a040" } },
-    { name: "Night", appearance: "dark", colors: { background: "#000000", accent: "#ffffff" } },
+    { name: "Dusk", variants: [{ name: "Dusk", appearance: "dark", colors: { background: "#1b1824", accent: "#e0a040" } }] },
+    { name: "Day", variants: [{ name: "Day", appearance: "light", colors: { background: "#fafafa", accent: "#1477b0" } }] },
   ]);
   expect([root.dataset.theme, root.style.vars.get("--color-bg")]).toEqual(["dark", "#1b1824"]);
-  expect(saved.at(-1)).toMatchObject({ colorScheme: "Dark", lightTheme: "l1-light", darkTheme: "custom-id1" });
-  expect(saved.at(-1)?.customThemes.map((t) => [t.id, t.name])).toEqual([["custom-id1", "Dusk"], ["custom-id2", "Night"]]);
+  expect(saved.at(-1)).toMatchObject({ colorScheme: "Dark", lightTheme: "l1-light", darkTheme: "custom-id1-0" });
+  expect(saved.at(-1)?.customThemes.map((t) => [t.id, t.name, t.variants.map((v) => v.id)])).toEqual([
+    ["custom-id1", "Dusk", ["custom-id1-0"]],
+    ["custom-id2", "Day", ["custom-id2-0"]],
+  ]);
 
   await deleteCustomTheme("custom-id1");
   stop();
-  expect(saved.at(-1)).toMatchObject({ darkTheme: "l1-dark", customThemes: [{ id: "custom-id2", name: "Night" }] });
+  expect(saved.at(-1)).toMatchObject({ darkTheme: "l1-dark", customThemes: [{ id: "custom-id2", name: "Day" }] });
   expect(root.style.vars.size).toBe(0);
+});
+
+it("adds an extension as one theme and picks its first light and first dark", async () => {
+  vi.stubGlobal("crypto", { randomUUID: () => "ext" });
+  const { saved, stop } = paintAndRecordSaves();
+  await addCustomThemes([
+    {
+      name: "Night Owl",
+      variants: [
+        { name: "Night Owl", appearance: "dark", colors: { background: "#011627", accent: "#7e57c2" } },
+        { name: "Light Owl", appearance: "light", colors: { background: "#fbfbfb", accent: "#2aa298" } },
+        { name: "Night Owl (No Italics)", appearance: "dark", colors: { background: "#011627", accent: "#7e57c2" } },
+      ],
+    },
+  ]);
+  stop();
+  expect(saved.at(-1)?.customThemes.map((t) => [t.id, t.name, t.variants.map((v) => [v.id, v.name])])).toEqual([
+    [
+      "custom-ext",
+      "Night Owl",
+      [
+        ["custom-ext-0", "Night Owl"],
+        ["custom-ext-1", "Light Owl"],
+        ["custom-ext-2", "Night Owl (No Italics)"],
+      ],
+    ],
+  ]);
+  expect(saved.at(-1)).toMatchObject({ colorScheme: "System", lightTheme: "custom-ext-1", darkTheme: "custom-ext-0" });
+});
+
+it("picks one light and one dark when a family's name is clicked, however many variants it has", async () => {
+  const { saved, stop } = paintAndRecordSaves();
+  const family = customFamily(catppuccin);
+  await chooseThemes(family ? familyPicks(family) : []);
+  stop();
+  expect(saved.at(-1)).toEqual({ ...initial.settings, lightTheme: "custom-cat-0", darkTheme: "custom-cat-1" });
+});
+
+it("deletes a whole family and resets a slot that held any of its variants", async () => {
+  const { saved, stop } = paintAndRecordSaves();
+  useWorkspace.setState({ settings: { ...initial.settings, lightTheme: "custom-cat-0", darkTheme: "custom-cat-2", customThemes: [catppuccin] } });
+  await deleteCustomTheme("custom-cat");
+  stop();
+  expect(saved.at(-1)).toEqual({ ...initial.settings, lightTheme: "l1-light", darkTheme: "l1-dark", customThemes: [] });
 });

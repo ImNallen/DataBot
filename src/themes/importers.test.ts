@@ -38,44 +38,47 @@ it("maps a VS Code theme onto L1 tokens, flattening translucent surfaces onto th
   const result = parseThemeFile(DRACULA, "dracula.json");
   expect(result).toEqual({
     ok: true,
-    themes: [
-      {
-        name: "Dracula",
-        appearance: "dark",
-        colors: {
-          background: "#282a36",
-          foreground: "#f8f8f2",
-          code: "#f8f8f2",
-          sidebar: "#21222c",
-          results: "#282a36",
-          raised: "#21222c",
-          hover: "#353747",
-          selected: "#44475a",
-          accent: "#ff79c6",
-          focus: "#6272a4",
-          danger: "#ff5555",
-          live: "#50fa7b",
-          keyword: "#ff79c6",
-          green: "#f1fa8c",
-          amber: "#f1fa8c",
-          dim: "#6272a4",
-          codeSelection: "#44475a",
-          codeSelectionMatch: "#424450",
-          codeSearchMatch: "#ffffff40",
-          codeSearchCurrent: "#ffb86c80",
+    family: {
+      name: "Dracula",
+      variants: [
+        {
+          name: "Dracula",
+          appearance: "dark",
+          colors: {
+            background: "#282a36",
+            foreground: "#f8f8f2",
+            code: "#f8f8f2",
+            sidebar: "#21222c",
+            results: "#282a36",
+            raised: "#21222c",
+            hover: "#353747",
+            selected: "#44475a",
+            accent: "#ff79c6",
+            focus: "#6272a4",
+            danger: "#ff5555",
+            live: "#50fa7b",
+            keyword: "#ff79c6",
+            green: "#f1fa8c",
+            amber: "#f1fa8c",
+            dim: "#6272a4",
+            codeSelection: "#44475a",
+            codeSelectionMatch: "#424450",
+            codeSearchMatch: "#ffffff40",
+            codeSearchCurrent: "#ffb86c80",
+          },
         },
-      },
-    ],
+      ],
+    },
   });
 });
 
 it("takes the appearance from the manifest's uiTheme, then the theme's type, then the background", () => {
   const theme = asVsCodeTheme({ colors: { "editor.background": "#1e1e1e" } });
   expect(theme && [vsCodeThemeToDraft(theme, "x", "vs").appearance, vsCodeThemeToDraft(theme, "x").appearance]).toEqual(["light", "dark"]);
-  expect(parseThemeFile('{ "type": "light", "colors": { "editor.background": "#000000" } }')).toMatchObject({ ok: true, themes: [{ appearance: "light" }] });
+  expect(parseThemeFile('{ "type": "light", "colors": { "editor.background": "#000000" } }')).toMatchObject({ ok: true, family: { variants: [{ appearance: "light" }] } });
   expect(parseThemeFile('{ "colors": { "editor.background": "#fdf6e3" } }', "solarized-light.json")).toMatchObject({
     ok: true,
-    themes: [{ name: "solarized-light", appearance: "light", colors: { background: "#fdf6e3", accent: "#346bf1" } }],
+    family: { name: "solarized-light", variants: [{ name: "solarized-light", appearance: "light", colors: { background: "#fdf6e3", accent: "#346bf1" } }] },
   });
 });
 
@@ -95,7 +98,10 @@ it("reads an L1 theme, dropping unknown keys and flattening alpha on opaque toke
   });
   expect(parseThemeFile(text)).toEqual({
     ok: true,
-    themes: [{ name: "Aurora", appearance: "light", colors: { background: "#ffffff", accent: "#7c3aed", sidebar: "#7f7f7f", codeSearchMatch: "#ffcc0040" } }],
+    family: {
+      name: "Aurora",
+      variants: [{ name: "Aurora", appearance: "light", colors: { background: "#ffffff", accent: "#7c3aed", sidebar: "#7f7f7f", codeSearchMatch: "#ffcc0040" } }],
+    },
   });
 });
 

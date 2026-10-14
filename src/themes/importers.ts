@@ -1,10 +1,12 @@
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import type { Appearance } from "../ipc/bindings";
-import { L1_VARIANTS, type ThemeDraft } from "./catalog";
+import { L1_VARIANTS, type ThemeDraft, type ThemeFamilyDraft } from "./catalog";
 import { chroma, formatHex, isDark, over, parseHex } from "./color";
 import { isToken, type Palette, type Token } from "./palette";
 
-export type ImportResult = { ok: true; themes: ThemeDraft[] } | { ok: false; error: string };
+export type ImportResult = { ok: true; family: ThemeFamilyDraft } | { ok: false; error: string };
+
+const single = (draft: ThemeDraft): ImportResult => ({ ok: true, family: { name: draft.name, variants: [draft] } });
 
 type Json = { [key: string]: unknown };
 
@@ -47,7 +49,7 @@ function l1Theme(raw: Json): ImportResult {
     const color = isToken(key) ? tokenColor(key, value, background) : null;
     if (isToken(key) && color) palette[key] = color;
   }
-  return { ok: true, themes: [{ name: name.trim(), appearance, colors: { ...palette, background, accent } }] };
+  return single({ name: name.trim(), appearance, colors: { ...palette, background, accent } });
 }
 
 export type VsCodeTheme = { name?: string; type?: string; include?: string; colors: Record<string, string>; tokenColors: TokenRule[] };
@@ -181,5 +183,5 @@ export function parseThemeFile(text: string, fileName?: string): ImportResult {
   if (isObject(json.value) && "version" in json.value) return l1Theme(json.value);
   const theme = asVsCodeTheme(json.value);
   if (!theme) return { ok: false, error: "Not a theme: expected an L1 theme or a VS Code color theme." };
-  return { ok: true, themes: [vsCodeThemeToDraft(theme, baseName(fileName))] };
+  return single(vsCodeThemeToDraft(theme, baseName(fileName)));
 }

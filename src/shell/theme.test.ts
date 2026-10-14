@@ -92,9 +92,15 @@ it("paints the light pick or the dark pick as the scheme resolves", () => {
 
 it("paints a saved custom theme with its stored colours over the derived ones, ignoring unknown or invalid entries", () => {
   setSettings({
-    darkTheme: "custom-1",
+    darkTheme: "custom-1-0",
     customThemes: [
-      { id: "custom-1", name: "Dusk", appearance: "dark", colors: { background: "#202020", accent: "#ff0000", keyword: "#123456", bogus: "#ffffff", muted: "red" } },
+      {
+        id: "custom-1",
+        name: "Dusk",
+        variants: [
+          { id: "custom-1-0", name: "Dusk", appearance: "dark", colors: { background: "#202020", accent: "#ff0000", keyword: "#123456", bogus: "#ffffff", muted: "red" } },
+        ],
+      },
     ],
   });
   const stop = startTheme();
@@ -107,7 +113,7 @@ it("paints a saved custom theme with its stored colours over the derived ones, i
 
 it("paints a previewed theme over the saved one and restores the saved one when the preview ends", () => {
   const stop = startTheme();
-  const emberLight = BUILT_IN_FAMILIES.find((f) => f.id === "ember")?.variants.light ?? null;
+  const emberLight = BUILT_IN_FAMILIES.flatMap((f) => f.variants).find((v) => v.id === "ember-light") ?? null;
   previewTheme(emberLight);
   expect([root.dataset.theme, bg()]).toEqual(["light", "#fdf9f6"]);
 

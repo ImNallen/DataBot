@@ -628,9 +628,17 @@ pub enum Appearance {
     Dark,
 }
 
-/// A user theme. `colors` maps the frontend's token names to CSS colours; the engine only stores it.
+/// A user theme: one card in the picker, holding every variant it was created or imported with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct CustomTheme {
+    pub id: String,
+    pub name: String,
+    pub variants: Vec<CustomThemeVariant>,
+}
+
+/// `colors` maps the frontend's token names to CSS colours; the engine only stores it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct CustomThemeVariant {
     pub id: String,
     pub name: String,
     pub appearance: Appearance,
@@ -916,18 +924,26 @@ mod tests {
 
     #[test]
     fn settings_round_trip_custom_themes() {
+        let variant = |id: &str, name: &str, appearance, background: &str| CustomThemeVariant {
+            id: id.into(),
+            name: name.into(),
+            appearance,
+            colors: BTreeMap::from([("background".into(), background.into()), ("accent".into(), "#e0a040".into())]),
+        };
         let custom = CustomTheme {
             id: "custom-1".into(),
             name: "Dusk".into(),
-            appearance: Appearance::Dark,
-            colors: BTreeMap::from([("background".into(), "#101018".into()), ("accent".into(), "#e0a040".into())]),
+            variants: vec![variant("custom-1-0", "Dusk Day", Appearance::Light, "#fafafa"), variant("custom-1-1", "Dusk Night", Appearance::Dark, "#101018")],
         };
-        let s = Settings { color_scheme: ColorScheme::Light, dark_theme: "custom-1".into(), custom_themes: vec![custom.clone()], ..Settings::default() };
+        let s = Settings { color_scheme: ColorScheme::Light, dark_theme: "custom-1-1".into(), custom_themes: vec![custom.clone()], ..Settings::default() };
         let value = serde_json::to_value(&s).unwrap();
-        assert_eq!(value["customThemes"][0]["appearance"], json!("dark"));
+        assert_eq!(value["customThemes"][0]["name"], json!("Dusk"));
+        assert_eq!(value["customThemes"][0]["variants"][1], json!({
+            "id": "custom-1-1", "name": "Dusk Night", "appearance": "dark", "colors": { "accent": "#e0a040", "background": "#101018" }
+        }));
         assert_eq!(value["colorScheme"], json!("Light"));
         let round: Settings = serde_json::from_value(value).unwrap();
-        assert_eq!((round.color_scheme, round.dark_theme.as_str(), round.custom_themes), (ColorScheme::Light, "custom-1", vec![custom]));
+        assert_eq!((round.color_scheme, round.dark_theme.as_str(), round.custom_themes), (ColorScheme::Light, "custom-1-1", vec![custom]));
     }
 
     #[test]

@@ -1,10 +1,10 @@
 import { IconColorSwatch, IconCopy, IconMoon, IconPlus, IconSun, IconTrash } from "@tabler/icons-react";
-import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { useState, useSyncExternalStore } from "react";
 import type { Appearance, ColorScheme } from "../../ipc/bindings";
 import { useWorkspace } from "../../state/workspace";
 import {
-  APPEARANCES,
   draftOf,
+  familyPicks,
   FIXED_APPEARANCE,
   pickedVariant,
   resolveTheme,
@@ -15,7 +15,7 @@ import {
   type ThemeVariant,
 } from "../../themes/catalog";
 import { completePalette } from "../../themes/palette";
-import { Button, IconButton } from "../../ui/primitives";
+import { Button, cx, IconButton } from "../../ui/primitives";
 import { AddThemeDialog } from "./AddThemeDialog";
 import { CreateThemePanel } from "./CreateThemePanel";
 import { chooseColorScheme, chooseThemes, confirmDeleteTheme } from "./themeActions";
@@ -55,12 +55,24 @@ function SchemePreview({ scheme, picks }: { scheme: ColorScheme; picks: Record<A
   );
 }
 
-const ORB_ICON: Record<Appearance, ReactNode> = { light: <IconSun size={11} />, dark: <IconMoon size={11} /> };
+type OrbSize = { label: string; orb: string; badge: string; icon: number; gap: string };
 
-function Orb({ variant, checked }: { variant: ThemeVariant; checked: boolean }) {
+// Sized so a row of orbs fits a card at the three-column grid's width; past four they wrap.
+const ORB_SIZES = {
+  large: { label: "size-[60px]", orb: "size-12", badge: "right-0 bottom-0 size-[18px]", icon: 11, gap: "gap-3" },
+  medium: { label: "size-12", orb: "size-[38px]", badge: "-right-px -bottom-px size-4", icon: 10, gap: "gap-2" },
+  small: { label: "size-9", orb: "size-[30px]", badge: "-right-0.5 -bottom-0.5 size-[15px]", icon: 9, gap: "gap-1.5" },
+} as const satisfies Record<string, OrbSize>;
+
+const orbSize = (count: number): OrbSize => (count <= 2 ? ORB_SIZES.large : count === 3 ? ORB_SIZES.medium : ORB_SIZES.small);
+
+const ORB_ICON: Record<Appearance, typeof IconSun> = { light: IconSun, dark: IconMoon };
+
+function Orb({ variant, checked, size }: { variant: ThemeVariant; checked: boolean; size: OrbSize }) {
   const { background, accent } = variant.swatch;
+  const Icon = ORB_ICON[variant.appearance];
   return (
-    <label title={variant.name} data-testid={`theme-orb-${variant.id}`} className="relative grid size-[60px] cursor-pointer place-items-center rounded-full">
+    <label title={variant.name} data-testid={`theme-orb-${variant.id}`} className={cx("relative grid cursor-pointer place-items-center rounded-full", size.label)}>
       <input
         type="radio"
         name={THEME_SLOT[variant.appearance]}
@@ -72,13 +84,13 @@ function Orb({ variant, checked }: { variant: ThemeVariant; checked: boolean }) 
         className="peer sr-only"
       />
       <span
-        className="size-12 rounded-full shadow-[inset_0_0_0_1px_rgb(127_127_127/0.25)] transition-transform hover:scale-105"
+        className={cx("rounded-full shadow-[inset_0_0_0_1px_rgb(127_127_127/0.25)] transition-transform hover:scale-105", size.orb)}
         style={{ background: `radial-gradient(circle at 32% 28%, ${background} 18%, ${accent} 100%)` }}
       />
       <span className="pointer-events-none absolute inset-0 rounded-full ring-run peer-checked:ring-2 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus peer-focus-visible:outline-solid" />
       {checked && (
-        <span className="absolute right-0 bottom-0 grid size-[18px] place-items-center rounded-full border border-control bg-bg text-fg">
-          {ORB_ICON[variant.appearance]}
+        <span className={cx("absolute grid place-items-center rounded-full border border-control bg-bg text-fg", size.badge)}>
+          <Icon size={size.icon} />
         </span>
       )}
     </label>
@@ -88,20 +100,22 @@ function Orb({ variant, checked }: { variant: ThemeVariant; checked: boolean }) 
 type CardProps = { family: ThemeFamily; picks: Record<Appearance, string>; appearance: Appearance; onDuplicate: (draft: ThemeDraft) => void };
 
 function ThemeCard({ family, picks, appearance, onDuplicate }: CardProps) {
-  const variants = APPEARANCES.flatMap((a) => family.variants[a] ?? []);
-  const shown = family.variants[appearance] ?? variants[0];
+  const { variants } = family;
+  const size = orbSize(variants.length);
+  const shown = variants.find((v) => v.id === picks[appearance]) ?? variants.find((v) => v.appearance === appearance) ?? variants[0];
+  const both = new Set(variants.map((v) => v.appearance)).size > 1;
   return (
     <div data-testid={`theme-family-${family.id}`} className="group relative flex flex-col rounded-lg border border-control">
-      <div className="flex justify-center gap-3 px-3 pt-4 pb-3">
+      <div className={cx("flex min-h-[88px] flex-1 flex-wrap content-center justify-center px-2 pt-4 pb-3", size.gap)}>
         {variants.map((v) => (
-          <Orb key={v.id} variant={v} checked={picks[v.appearance] === v.id} />
+          <Orb key={v.id} variant={v} checked={picks[v.appearance] === v.id} size={size} />
         ))}
       </div>
       <div className="flex h-9 items-center px-1">
         <button
           type="button"
-          title={variants.length > 1 ? `Use ${family.name} for light and dark` : `Use ${family.name}`}
-          onClick={() => void chooseThemes(variants)}
+          title={both ? `Use ${family.name} for light and dark` : `Use ${family.name}`}
+          onClick={() => void chooseThemes(familyPicks(family))}
           className="min-w-0 flex-1 truncate rounded-md px-2 py-1 text-left text-[13px] text-fg hover:bg-hover"
         >
           {family.name}
@@ -109,7 +123,7 @@ function ThemeCard({ family, picks, appearance, onDuplicate }: CardProps) {
       </div>
       <div className="absolute top-1.5 right-1.5 flex opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
         {shown && (
-          <IconButton aria-label={`Duplicate ${family.name}`} title="Duplicate into a new theme" onClick={() => onDuplicate(draftOf(shown, `${family.name} copy`))}>
+          <IconButton aria-label={`Duplicate ${shown.name}`} title="Duplicate into a new theme" onClick={() => onDuplicate(draftOf(shown, `${shown.name} copy`))}>
             <IconCopy size={14} />
           </IconButton>
         )}

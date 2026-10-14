@@ -1,9 +1,10 @@
 import { expect, it } from "vitest";
-import type { CustomTheme } from "../ipc/bindings";
-import { BUILT_IN_FAMILIES, customVariant, draftOf, resolveTheme, type ThemeSettings } from "./catalog";
+import type { CustomTheme, CustomThemeVariant } from "../ipc/bindings";
+import { BUILT_IN_FAMILIES, customVariant, draftOf, familyPicks, resolveTheme, themeFamilies, type ThemeSettings } from "./catalog";
 
 const defaults: ThemeSettings = { colorScheme: "System", lightTheme: "l1-light", darkTheme: "l1-dark", customThemes: [] };
-const dusk: CustomTheme = { id: "custom-dusk", name: "Dusk", appearance: "dark", colors: { background: "#1b1824", accent: "#e0a040" } };
+const duskVariant: CustomThemeVariant = { id: "custom-dusk", name: "Dusk", appearance: "dark", colors: { background: "#1b1824", accent: "#e0a040" } };
+const dusk: CustomTheme = { id: "custom-dusk-family", name: "Dusk", variants: [duskVariant] };
 
 it.each([
   ["System", true, "l1-dark"],
@@ -26,7 +27,8 @@ it("falls back to L1 of the slot's appearance when the id is unknown or names th
 });
 
 it("resolves a custom theme to its stored colours over a palette derived from its background and accent", () => {
-  const variant = resolveTheme({ ...defaults, darkTheme: "custom-dusk", customThemes: [{ ...dusk, colors: { ...dusk.colors, sidebar: "#000000", nope: "#fff" } }] }, true);
+  const tuned = { ...duskVariant, colors: { ...duskVariant.colors, sidebar: "#000000", nope: "#fff" } };
+  const variant = resolveTheme({ ...defaults, darkTheme: "custom-dusk", customThemes: [{ ...dusk, variants: [tuned] }] }, true);
   expect([variant.id, variant.name, variant.appearance]).toEqual(["custom-dusk", "Dusk", "dark"]);
   expect(variant.swatch).toEqual({ background: "#1b1824", accent: "#e0a040" });
   expect([variant.palette.background, variant.palette.accent, variant.palette.sidebar]).toEqual(["#1b1824", "#e0a040", "#000000"]);
@@ -40,8 +42,38 @@ it("paints L1 from the stylesheet with no inline palette", () => {
 });
 
 it("duplicates a variant as its seeds plus only the colours they don't derive", () => {
-  const groveDark = BUILT_IN_FAMILIES.find((f) => f.id === "grove")?.variants.dark;
+  const groveDark = BUILT_IN_FAMILIES.flatMap((f) => f.variants).find((v) => v.id === "grove-dark");
   expect(groveDark && draftOf(groveDark, "Grove copy")).toEqual({ name: "Grove copy", appearance: "dark", colors: { background: "#0c1310", accent: "#2f9e6e" } });
-  const tuned = customVariant({ ...dusk, colors: { ...dusk.colors, keyword: "#ff00ff" } });
+  const tuned = customVariant({ ...duskVariant, colors: { ...duskVariant.colors, keyword: "#ff00ff" } });
   expect(draftOf(tuned, "Dusk copy").colors).toEqual({ background: "#1b1824", accent: "#e0a040", keyword: "#ff00ff" });
+});
+
+const variant = (id: string, name: string, appearance: "light" | "dark", background: string): CustomThemeVariant => ({
+  id,
+  name,
+  appearance,
+  colors: { background, accent: "#cba6f7" },
+});
+
+const catppuccin: CustomTheme = {
+  id: "custom-cat",
+  name: "Catppuccin",
+  variants: [
+    variant("custom-cat-0", "Mocha", "dark", "#1e1e2e"),
+    variant("custom-cat-1", "Latte", "light", "#eff1f5"),
+    variant("custom-cat-2", "Frappe", "dark", "#303446"),
+  ],
+};
+
+it("shows each stored theme as one family, light variants first, and skips a theme with no variants", () => {
+  const customs = themeFamilies([catppuccin, { id: "custom-empty", name: "Empty", variants: [] }]).filter((f) => f.custom);
+  expect(customs.map((f) => [f.id, f.name, f.variants.map((v) => v.id)])).toEqual([
+    ["custom-cat", "Catppuccin", ["custom-cat-1", "custom-cat-0", "custom-cat-2"]],
+  ]);
+  expect(customs[0] && familyPicks(customs[0]).map((v) => v.id)).toEqual(["custom-cat-1", "custom-cat-0"]);
+});
+
+it("resolves any variant of a family for its own appearance only", () => {
+  const settings = { ...defaults, lightTheme: "custom-cat-2", darkTheme: "custom-cat-2", customThemes: [catppuccin] };
+  expect([resolveTheme(settings, false).id, resolveTheme(settings, true).id]).toEqual(["l1-light", "custom-cat-2"]);
 });

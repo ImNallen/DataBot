@@ -58,7 +58,7 @@ export function ThemeSearch({ onImported }: { onImported: () => void }) {
     try {
       const result = await fetchExtensionThemes(ext, abort.signal);
       if (!result.ok) return setError(result.error);
-      await addThemes(result.themes);
+      await addThemes([result.family]);
       onImported();
     } catch (e) {
       if (!abort.signal.aborted) setError(`Couldn't import ${ext.displayName}: ${e instanceof Error ? e.message : String(e)}`);

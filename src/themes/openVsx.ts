@@ -65,7 +65,7 @@ export async function fetchExtensionThemes(ext: VsxExtension, signal?: AbortSign
   const contributes = manifest.ok && isObject(manifest.value) && isObject(manifest.value.contributes) ? manifest.value.contributes.themes : undefined;
   const entries = Array.isArray(contributes) ? contributes.filter(isObject) : [];
   const errors: string[] = [];
-  const themes = entries.flatMap((entry) => {
+  const variants = entries.flatMap((entry) => {
     const loaded = load(resolve("extension", text(entry.path)));
     if (!loaded.ok) {
       errors.push(loaded.error);
@@ -75,6 +75,6 @@ export async function fetchExtensionThemes(ext: VsxExtension, signal?: AbortSign
     const label = text(entry.label) || theme.name || ext.displayName;
     return [vsCodeThemeToDraft({ ...theme, name: label }, ext.displayName, text(entry.uiTheme) || undefined)];
   });
-  if (themes.length > 0) return { ok: true, themes };
+  if (variants.length > 0) return { ok: true, family: { name: ext.displayName, variants } };
   return { ok: false, error: errors[0] ?? `${ext.displayName} contributes no color themes.` };
 }

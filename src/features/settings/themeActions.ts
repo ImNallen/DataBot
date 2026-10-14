@@ -2,12 +2,13 @@ import type { ColorScheme, CustomTheme, Settings } from "../../ipc/bindings";
 import { useWorkspace } from "../../state/workspace";
 import {
   APPEARANCES,
-  customVariant,
+  customFamily,
+  familyPicks,
   FIXED_APPEARANCE,
   L1_VARIANTS,
   SCHEME_FOR,
   THEME_SLOT,
-  type ThemeDraft,
+  type ThemeFamilyDraft,
   type ThemeVariant,
 } from "../../themes/catalog";
 import { saveSettings } from "../editor/runActions";
@@ -32,21 +33,30 @@ export function chooseThemes(variants: readonly ThemeVariant[]): Promise<void> {
   return saveSettings(picksPatch(variants));
 }
 
-export function addCustomThemes(drafts: readonly ThemeDraft[]): Promise<void> {
-  const added = drafts.map((d): CustomTheme => ({ id: `custom-${crypto.randomUUID()}`, name: d.name, appearance: d.appearance, colors: { ...d.colors } }));
-  const firsts = APPEARANCES.flatMap((a) => added.find((t) => t.appearance === a) ?? []).map(customVariant);
-  return saveSettings({ customThemes: [...settings().customThemes, ...added], ...picksPatch(firsts) });
+function stored(draft: ThemeFamilyDraft): CustomTheme {
+  const id = `custom-${crypto.randomUUID()}`;
+  const variants = draft.variants.map((v, i) => ({ id: `${id}-${i}`, name: v.name, appearance: v.appearance, colors: { ...v.colors } }));
+  return { id, name: draft.name, variants };
 }
 
-export async function addThemes(drafts: readonly ThemeDraft[]): Promise<void> {
+/** Saves each family as one theme and picks the first light and first dark of the first one. */
+export function addCustomThemes(drafts: readonly ThemeFamilyDraft[]): Promise<void> {
+  const added = drafts.map(stored);
+  const first = added[0] && customFamily(added[0]);
+  return saveSettings({ customThemes: [...settings().customThemes, ...added], ...picksPatch(first ? familyPicks(first) : []) });
+}
+
+export async function addThemes(drafts: readonly ThemeFamilyDraft[]): Promise<void> {
   await addCustomThemes(drafts);
   const names = drafts.map((d) => d.name);
   useWorkspace.getState().notify(names.length === 1 ? `Added ${names[0]}.` : `Added ${names.length} themes.`);
 }
 
-export function deleteCustomTheme(id: string): Promise<void> {
-  const patch: Partial<Settings> = { customThemes: settings().customThemes.filter((t) => t.id !== id) };
-  for (const a of APPEARANCES) if (settings()[THEME_SLOT[a]] === id) patch[THEME_SLOT[a]] = L1_VARIANTS[a].id;
+export function deleteCustomTheme(familyId: string): Promise<void> {
+  const themes = settings().customThemes;
+  const gone = new Set(themes.find((t) => t.id === familyId)?.variants.map((v) => v.id));
+  const patch: Partial<Settings> = { customThemes: themes.filter((t) => t.id !== familyId) };
+  for (const a of APPEARANCES) if (gone.has(settings()[THEME_SLOT[a]])) patch[THEME_SLOT[a]] = L1_VARIANTS[a].id;
   return saveSettings(patch);
 }
 

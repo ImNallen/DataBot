@@ -49,10 +49,41 @@ it("imports every theme an extension contributes, following includes inside the 
   serve({ [ext.download]: () => new Response(vsix) });
   expect(await fetchExtensionThemes(ext)).toEqual({
     ok: true,
-    themes: [
-      { name: "Night Dark", appearance: "dark", colors: { background: "#101018", sidebar: "#08080c", accent: "#e0457b" } },
-      { name: "Night Light", appearance: "light", colors: { background: "#fafafa", accent: "#1477b0", focus: "#1477b0" } },
-    ],
+    family: {
+      name: "Night",
+      variants: [
+        { name: "Night Dark", appearance: "dark", colors: { background: "#101018", sidebar: "#08080c", accent: "#e0457b" } },
+        { name: "Night Light", appearance: "light", colors: { background: "#fafafa", accent: "#1477b0", focus: "#1477b0" } },
+      ],
+    },
+  });
+});
+
+it("names the family after the extension and keeps two dark themes as two variants", async () => {
+  const manifest = {
+    contributes: {
+      themes: [
+        { label: "Dracula Theme", uiTheme: "vs-dark", path: "./theme/dracula.json" },
+        { label: "Dracula Theme Soft", uiTheme: "vs-dark", path: "./theme/dracula-soft.json" },
+      ],
+    },
+  };
+  const vsix = zipSync({
+    "extension/package.json": strToU8(JSON.stringify(manifest)),
+    "extension/theme/dracula.json": strToU8('{ "colors": { "editor.background": "#282a36", "button.background": "#ff79c6" } }'),
+    "extension/theme/dracula-soft.json": strToU8('{ "colors": { "editor.background": "#2d2b3a", "button.background": "#ff79c6" } }'),
+  });
+  const dracula: VsxExtension = { ...ext, displayName: "Dracula Theme Official", download: "https://cdn.test/dracula.vsix" };
+  serve({ [dracula.download]: () => new Response(vsix) });
+  expect(await fetchExtensionThemes(dracula)).toEqual({
+    ok: true,
+    family: {
+      name: "Dracula Theme Official",
+      variants: [
+        { name: "Dracula Theme", appearance: "dark", colors: { background: "#282a36", accent: "#ff79c6" } },
+        { name: "Dracula Theme Soft", appearance: "dark", colors: { background: "#2d2b3a", accent: "#ff79c6" } },
+      ],
+    },
   });
 });
 

@@ -1,6 +1,6 @@
 import { IconDownload, IconPlus } from "@tabler/icons-react";
 import { useRef, useState, type DragEvent } from "react";
-import type { ThemeDraft } from "../../themes/catalog";
+import type { ThemeFamilyDraft } from "../../themes/catalog";
 import { parseThemeFile } from "../../themes/importers";
 import { Button, cx, inputClass, Modal } from "../../ui/primitives";
 import { ThemeSearch } from "./ThemeSearch";
@@ -13,10 +13,10 @@ const EXAMPLE = `{
   "colors": { "background": "#fbfaff", "accent": "#7c3aed" }
 }`;
 
-async function readFiles(files: readonly File[]): Promise<{ drafts: ThemeDraft[]; errors: string[] }> {
+async function readFiles(files: readonly File[]): Promise<{ drafts: ThemeFamilyDraft[]; errors: string[] }> {
   const results = await Promise.all(files.map(async (f) => ({ name: f.name, result: parseThemeFile(await f.text(), f.name) })));
   return {
-    drafts: results.flatMap(({ result }) => (result.ok ? result.themes : [])),
+    drafts: results.flatMap(({ result }) => (result.ok ? [result.family] : [])),
     errors: results.flatMap(({ name, result }) => (result.ok ? [] : [`${name}: ${result.error}`])),
   };
 }
@@ -41,7 +41,7 @@ export function AddThemeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const importJson = async () => {
     const result = parseThemeFile(json);
     if (!result.ok) return setErrors([result.error]);
-    await addThemes(result.themes);
+    await addThemes([result.family]);
     close();
   };
   const onDrop = (e: DragEvent) => {

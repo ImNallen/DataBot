@@ -80,7 +80,7 @@ export function CreateThemePanel({ initial, onClose }: { initial: ThemeDraft; on
     });
   const create = async () => {
     if (!name) return;
-    await addCustomThemes([{ ...draft, name }]);
+    await addCustomThemes([{ name, variants: [{ ...draft, name }] }]);
     onClose();
   };
 

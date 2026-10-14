@@ -1,4 +1,4 @@
-import type { Appearance, ColorScheme, CustomTheme, Settings } from "../ipc/bindings";
+import type { Appearance, ColorScheme, CustomTheme, CustomThemeVariant, Settings } from "../ipc/bindings";
 import { isHex } from "./color";
 import { completePalette, derivePalette, isToken, TOKEN_NAMES, type Palette, type ThemeColors } from "./palette";
 
@@ -15,11 +15,14 @@ export type ThemeVariant = {
 export type ThemeFamily = {
   id: string;
   name: string;
-  variants: { light?: ThemeVariant; dark?: ThemeVariant };
+  /** Light variants first, then dark, each in source order. */
+  variants: readonly ThemeVariant[];
   custom: boolean;
 };
 
 export type ThemeDraft = { name: string; appearance: Appearance; colors: ThemeColors };
+
+export type ThemeFamilyDraft = { name: string; variants: readonly ThemeDraft[] };
 
 export const APPEARANCES = ["light", "dark"] as const satisfies readonly Appearance[];
 
@@ -31,7 +34,7 @@ export const L1_VARIANTS: Record<Appearance, ThemeVariant> = {
   dark: { id: "l1-dark", name: "L1 Dark", appearance: "dark", swatch: { background: "#0a0a0a", accent: "#346bf1" }, palette: {} },
 };
 
-const L1: ThemeFamily = { id: "l1", name: "L1", custom: false, variants: L1_VARIANTS };
+const L1: ThemeFamily = { id: "l1", name: "L1", custom: false, variants: [L1_VARIANTS.light, L1_VARIANTS.dark] };
 
 type Seed = { background: string; accent: string };
 
@@ -43,7 +46,7 @@ function derivedFamily(id: string, name: string, seeds: Record<Appearance, Seed>
     swatch: seeds[appearance],
     palette: derivePalette(appearance, seeds[appearance].background, seeds[appearance].accent),
   });
-  return { id, name, custom: false, variants: { light: variant("light"), dark: variant("dark") } };
+  return { id, name, custom: false, variants: [variant("light"), variant("dark")] };
 }
 
 export const BUILT_IN_FAMILIES: readonly ThemeFamily[] = [
@@ -56,7 +59,7 @@ export const BUILT_IN_FAMILIES: readonly ThemeFamily[] = [
 ];
 
 /** Settings come from disk, so colours are checked here: unknown tokens and non-hex values are dropped. */
-export function customVariant(theme: CustomTheme): ThemeVariant {
+export function customVariant(theme: CustomThemeVariant): ThemeVariant {
   const colors: Palette = {};
   for (const [key, value] of Object.entries(theme.colors)) if (isToken(key) && isHex(value)) colors[key] = value.trim();
   const fallback = L1_VARIANTS[theme.appearance].swatch;
@@ -84,12 +87,20 @@ export function draftOf(variant: ThemeVariant, name: string): ThemeDraft {
   return { name, appearance, colors };
 }
 
+/** The card a stored theme shows as, or null when it has no variants to show. */
+export function customFamily(theme: CustomTheme): ThemeFamily | null {
+  const parsed = theme.variants.map(customVariant);
+  const variants = APPEARANCES.flatMap((a) => parsed.filter((v) => v.appearance === a));
+  return variants.length > 0 ? { id: theme.id, name: theme.name, custom: true, variants } : null;
+}
+
 export function themeFamilies(customThemes: readonly CustomTheme[]): ThemeFamily[] {
-  const customs = customThemes.map((theme): ThemeFamily => {
-    const variant = customVariant(theme);
-    return { id: theme.id, name: theme.name, custom: true, variants: { [theme.appearance]: variant } };
-  });
-  return [...BUILT_IN_FAMILIES, ...customs];
+  return [...BUILT_IN_FAMILIES, ...customThemes.flatMap((theme) => customFamily(theme) ?? [])];
+}
+
+/** The family's first light and first dark variant: what picking the family as a whole sets. */
+export function familyPicks(family: ThemeFamily): ThemeVariant[] {
+  return APPEARANCES.flatMap((a) => family.variants.find((v) => v.appearance === a) ?? []);
 }
 
 /** The appearance a scheme pins, or null while it follows the system. */
@@ -107,8 +118,8 @@ export const THEME_SLOT = { light: "lightTheme", dark: "darkTheme" } as const sa
 /** The variant saved for `appearance`, or L1's when the saved id is gone or belongs to the other appearance. */
 export function pickedVariant(settings: ThemeSettings, appearance: Appearance): ThemeVariant {
   const id = settings[THEME_SLOT[appearance]];
-  const variants = themeFamilies(settings.customThemes).map((f) => f.variants[appearance]);
-  return variants.find((v) => v?.id === id) ?? L1_VARIANTS[appearance];
+  const variants = themeFamilies(settings.customThemes).flatMap((f) => f.variants);
+  return variants.find((v) => v.id === id && v.appearance === appearance) ?? L1_VARIANTS[appearance];
 }
 
 export function resolveTheme(settings: ThemeSettings, systemPrefersDark: boolean): ThemeVariant {

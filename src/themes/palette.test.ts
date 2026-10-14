@@ -1,9 +1,9 @@
 import { expect, it } from "vitest";
-import { APPEARANCES, BUILT_IN_FAMILIES } from "./catalog";
+import { BUILT_IN_FAMILIES } from "./catalog";
 import { contrast, parseHex } from "./color";
 import { derivePalette, TOKENS } from "./palette";
 
-const derived = BUILT_IN_FAMILIES.flatMap((f) => APPEARANCES.flatMap((a) => f.variants[a] ?? [])).filter((v) => Object.keys(v.palette).length > 0);
+const derived = BUILT_IN_FAMILIES.flatMap((f) => f.variants).filter((v) => Object.keys(v.palette).length > 0);
 
 const ratio = (x = "", y = "") => {
   const [p, q] = [parseHex(x), parseHex(y)];
