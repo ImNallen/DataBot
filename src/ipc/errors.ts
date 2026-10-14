@@ -1,4 +1,4 @@
-import type { ConfigureError, ConnectError, DisconnectError, ExportError, RunError, TxnError } from "./bindings";
+import type { ApplyError, ConfigureError, ConnectError, DisconnectError, ExportError, RunError, TxnError } from "./bindings";
 
 export function connectErrorText(e: ConnectError): string {
   switch (e.kind) {
@@ -29,6 +29,36 @@ export function runErrorText(e: RunError): string {
       return `${e.what} is not supported.`;
     case "Connect":
       return connectErrorText(e.error);
+    case "BadFilter":
+      return "WHERE and ORDER BY each take one expression, without a semicolon.";
+    default: {
+      const unreachable: never = e;
+      return unreachable;
+    }
+  }
+}
+
+export function applyErrorText(e: ApplyError): string {
+  switch (e.kind) {
+    case "Busy":
+      return "This tab is still running. Cancel it first.";
+    case "NotConfigured":
+      return "Choose a connection for this tab.";
+    case "Connect":
+      return connectErrorText(e.error);
+    case "TransactionAborted":
+      return "This tab's transaction failed. Roll it back, then submit again.";
+    case "NoPrimaryKey":
+      return "Editing rows needs the table's primary key.";
+    case "Failed":
+    case "Transaction":
+      return `Nothing was saved. ${e.error.message}`;
+    case "RowMismatch": {
+      const verb = e.change.kind === "Delete" ? "delete" : "update";
+      return e.rows === 0
+        ? `Nothing was saved. A row to ${verb} no longer exists. Reload and try again.`
+        : `Nothing was saved. A row to ${verb} matched ${e.rows} rows.`;
+    }
     default: {
       const unreachable: never = e;
       return unreachable;

@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { Group, Panel, type PanelSize } from "react-resizable-panels";
 import { ConnectionDialog } from "../features/connections/ConnectionDialog";
 import { SqlEditor } from "../features/editor/SqlEditor";
-import { closeTab, openSqlTab } from "../features/editor/runActions";
 import { HistoryPalette } from "../features/history/HistoryPalette";
 import { ResultsPane } from "../features/results/ResultsPane";
 import { SearchPalette } from "../features/sidebar/SearchPalette";
 import { Sidebar } from "../features/sidebar/Sidebar";
 import { useWorkspace } from "../state/workspace";
-import { Button } from "../ui/primitives";
+import { Kbd } from "../ui/primitives";
+import { START_COMMANDS, commandForKey, shortcutLabel } from "./commands";
 import { Overlays } from "./Overlays";
 import { ResizeHandle } from "./ResizeHandle";
 import { RightPanel } from "./RightPanel";
@@ -21,19 +21,36 @@ import { TopBar } from "./TopBar";
 function useGlobalKeys() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "p") {
-        e.preventDefault();
-        useWorkspace.getState().open({ kind: "palette" });
-      }
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "w") {
-        e.preventDefault();
-        const active = useWorkspace.getState().active;
-        if (active) void closeTab(active);
-      }
+      const command = commandForKey(e);
+      if (!command) return;
+      e.preventDefault();
+      command.run();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+}
+
+function StartCommands() {
+  return (
+    <div data-testid="no-tabs" className="grid h-full place-items-center bg-bg">
+      <ul className="flex w-[260px] flex-col gap-0.5">
+        {START_COMMANDS.map((c) => (
+          <li key={c.id}>
+            <button
+              type="button"
+              data-testid={`start-${c.id}`}
+              onClick={c.run}
+              className="flex h-8 w-full items-center justify-between rounded-md px-2.5 text-[13.5px] text-muted hover:bg-hover hover:text-fg"
+            >
+              {c.label}
+              <Kbd className="bg-border text-muted">{shortcutLabel(c)}</Kbd>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 // Saved on release only: a store update mid-drag re-renders the Group and the library drops the drag.
@@ -56,20 +73,14 @@ function MainArea() {
   const resultsHeight = useWorkspace((s) => s.layout.resultsHeight);
   const resultsSize = usePersistedPixels("resultsHeight");
 
-  if (!active) {
-    return (
-      <div className="grid flex-1 place-items-center bg-bg">
-        <div className="flex flex-col items-center gap-3 text-dim">
-          <span>No open tabs.</span>
-          <Button onClick={() => openSqlTab()}>New SQL tab</Button>
-        </div>
-      </div>
-    );
-  }
   return (
     <Group orientation="vertical" className="min-h-0 flex-1" onLayoutChanged={resultsSize.onLayoutChanged}>
       <Panel id="editor" minSize={80}>
-        <SqlEditor tabId={active.id} />
+        {active ? (
+          <SqlEditor tabId={active.id} />
+        ) : (
+          <StartCommands />
+        )}
       </Panel>
       {showResults && (
         <>
@@ -81,7 +92,7 @@ function MainArea() {
             groupResizeBehavior="preserve-pixel-size"
             onResize={resultsSize.onResize}
           >
-            <ResultsPane tabId={active.id} />
+            <ResultsPane tabId={active?.id ?? null} />
           </Panel>
         </>
       )}

@@ -1,6 +1,6 @@
 use tokio_postgres::types::{Kind, Type};
 
-use crate::model::{DocOffset, DocRange, PgTypeRef, TypeCategory};
+use crate::model::{CellWrite, ColumnFilter, DocOffset, DocRange, FilterOp, PgTypeRef, TableQuery, TypeCategory};
 use crate::sql::{DmlVerb, StmtKind, StmtSpan};
 
 pub struct OffsetMap<'a> {
@@ -123,14 +123,98 @@ pub fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-pub fn browse_sql(schema: &str, table: &str, pk: &[String], limit: u32, offset: u64) -> String {
-    let mut sql = format!("SELECT * FROM {}.{}", quote_ident(schema), quote_ident(table));
-    if !pk.is_empty() {
-        let cols: Vec<String> = pk.iter().map(|c| quote_ident(c)).collect();
-        sql.push_str(&format!(" ORDER BY {}", cols.join(", ")));
+pub fn quote_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn like_pattern(value: &str, prefix_only: bool) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    quote_literal(&if prefix_only { format!("{escaped}%") } else { format!("%{escaped}%") })
+}
+
+fn filter_sql(f: &ColumnFilter) -> String {
+    let col = quote_ident(&f.column);
+    let lit = || quote_literal(&f.value);
+    match f.op {
+        FilterOp::Eq => format!("{col} = {}", lit()),
+        FilterOp::Ne => format!("{col} <> {}", lit()),
+        FilterOp::Lt => format!("{col} < {}", lit()),
+        FilterOp::Le => format!("{col} <= {}", lit()),
+        FilterOp::Gt => format!("{col} > {}", lit()),
+        FilterOp::Ge => format!("{col} >= {}", lit()),
+        FilterOp::Contains => format!("{col}::text ILIKE {}", like_pattern(&f.value, false)),
+        FilterOp::StartsWith => format!("{col}::text ILIKE {}", like_pattern(&f.value, true)),
+        FilterOp::IsNull => format!("{col} IS NULL"),
+        FilterOp::NotNull => format!("{col} IS NOT NULL"),
+    }
+}
+
+fn where_sql(q: &TableQuery) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !q.r#where.trim().is_empty() {
+        parts.push(format!("({}\n)", q.r#where.trim()));
+    }
+    parts.extend(q.filters.iter().map(filter_sql));
+    if parts.is_empty() { String::new() } else { format!(" WHERE {}", parts.join(" AND ")) }
+}
+
+fn from_sql(schema: &str, table: &str, q: &TableQuery) -> String {
+    format!("FROM {}.{}{}", quote_ident(schema), quote_ident(table), where_sql(q))
+}
+
+pub fn browse_sql(schema: &str, table: &str, pk: &[String], q: &TableQuery, limit: u32, offset: u64) -> String {
+    let mut sql = format!("SELECT * {}", from_sql(schema, table, q));
+    let mut order: Vec<String> = Vec::new();
+    if !q.order_by.trim().is_empty() {
+        order.push(format!("{}\n", q.order_by.trim()));
+    }
+    let tiebreak_so_pages_never_overlap = pk.iter().map(|c| quote_ident(c));
+    order.extend(tiebreak_so_pages_never_overlap);
+    if !order.is_empty() {
+        sql.push_str(&format!(" ORDER BY {}", order.join(", ")));
     }
     sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
     sql
+}
+
+pub fn count_sql(schema: &str, table: &str, q: &TableQuery) -> String {
+    format!("SELECT count(*) {}", from_sql(schema, table, q))
+}
+
+fn value_sql(value: &Option<String>) -> String {
+    value.as_deref().map_or_else(|| "NULL".into(), quote_literal)
+}
+
+fn key_sql(key: &[CellWrite]) -> String {
+    key.iter()
+        .map(|k| match &k.value {
+            Some(v) => format!("{} = {}", quote_ident(&k.column), quote_literal(v)),
+            None => format!("{} IS NULL", quote_ident(&k.column)),
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+fn target(schema: &str, table: &str) -> String {
+    format!("{}.{}", quote_ident(schema), quote_ident(table))
+}
+
+pub fn insert_sql(schema: &str, table: &str, cells: &[CellWrite]) -> String {
+    if cells.is_empty() {
+        return format!("INSERT INTO {} DEFAULT VALUES", target(schema, table));
+    }
+    let cols: Vec<String> = cells.iter().map(|c| quote_ident(&c.column)).collect();
+    let vals: Vec<String> = cells.iter().map(|c| value_sql(&c.value)).collect();
+    format!("INSERT INTO {} ({}) VALUES ({})", target(schema, table), cols.join(", "), vals.join(", "))
+}
+
+pub fn update_sql(schema: &str, table: &str, key: &[CellWrite], set: &[CellWrite]) -> String {
+    let assigns: Vec<String> = set.iter().map(|c| format!("{} = {}", quote_ident(&c.column), value_sql(&c.value))).collect();
+    format!("UPDATE {} SET {} WHERE {}", target(schema, table), assigns.join(", "), key_sql(key))
+}
+
+pub fn delete_sql(schema: &str, table: &str, key: &[CellWrite]) -> String {
+    format!("DELETE FROM {} WHERE {}", target(schema, table), key_sql(key))
 }
 
 #[cfg(test)]
@@ -209,14 +293,83 @@ mod tests {
 
     #[test]
     fn browse_sql_quotes_identifiers_and_orders_by_pk() {
+        let none = TableQuery::default();
         assert_eq!(
-            browse_sql("public", "orders", &["id".into()], 500, 1000),
+            browse_sql("public", "orders", &["id".into()], &none, 500, 1000),
             r#"SELECT * FROM "public"."orders" ORDER BY "id" LIMIT 500 OFFSET 1000"#
         );
         assert_eq!(
-            browse_sql("we\"ird", "T;x", &["a\"b".into(), "c".into()], 10, 0),
+            browse_sql("we\"ird", "T;x", &["a\"b".into(), "c".into()], &none, 10, 0),
             r#"SELECT * FROM "we""ird"."T;x" ORDER BY "a""b", "c" LIMIT 10 OFFSET 0"#
         );
-        assert_eq!(browse_sql("s", "t", &[], 5, 0), r#"SELECT * FROM "s"."t" LIMIT 5 OFFSET 0"#);
+        assert_eq!(browse_sql("s", "t", &[], &none, 5, 0), r#"SELECT * FROM "s"."t" LIMIT 5 OFFSET 0"#);
+    }
+
+    fn filter(column: &str, op: FilterOp, value: &str) -> ColumnFilter {
+        ColumnFilter { column: column.into(), op, value: value.into() }
+    }
+
+    #[test]
+    fn browse_sql_puts_the_order_by_text_before_the_pk_tiebreak() {
+        let q = TableQuery { order_by: " lower(name) DESC NULLS LAST ".into(), ..Default::default() };
+        assert_eq!(
+            browse_sql("public", "customers", &["id".into(), "tenant".into()], &q, 50, 0),
+            "SELECT * FROM \"public\".\"customers\" ORDER BY lower(name) DESC NULLS LAST\n, \"id\", \"tenant\" LIMIT 50 OFFSET 0"
+        );
+    }
+
+    #[test]
+    fn browse_sql_ands_the_where_text_with_column_filters() {
+        let q = TableQuery {
+            r#where: " created_at > now() - interval '7 days' ".into(),
+            filters: vec![filter("region", FilterOp::Eq, "O'Hare"), filter("email", FilterOp::NotNull, "")],
+            ..Default::default()
+        };
+        assert_eq!(
+            browse_sql("public", "customers", &[], &q, 10, 0),
+            "SELECT * FROM \"public\".\"customers\" WHERE (created_at > now() - interval '7 days'\n) AND \"region\" = 'O''Hare' AND \"email\" IS NOT NULL LIMIT 10 OFFSET 0"
+        );
+        assert_eq!(
+            count_sql("public", "customers", &q),
+            "SELECT count(*) FROM \"public\".\"customers\" WHERE (created_at > now() - interval '7 days'\n) AND \"region\" = 'O''Hare' AND \"email\" IS NOT NULL"
+        );
+    }
+
+    #[test]
+    fn every_filter_op_compiles_and_like_patterns_escape_wildcards() {
+        let ops = [
+            (FilterOp::Eq, r#""n" = '5'"#),
+            (FilterOp::Ne, r#""n" <> '5'"#),
+            (FilterOp::Lt, r#""n" < '5'"#),
+            (FilterOp::Le, r#""n" <= '5'"#),
+            (FilterOp::Gt, r#""n" > '5'"#),
+            (FilterOp::Ge, r#""n" >= '5'"#),
+            (FilterOp::Contains, r#""n"::text ILIKE '%5%'"#),
+            (FilterOp::StartsWith, r#""n"::text ILIKE '5%'"#),
+            (FilterOp::IsNull, r#""n" IS NULL"#),
+            (FilterOp::NotNull, r#""n" IS NOT NULL"#),
+        ];
+        for (op, sql) in ops {
+            assert_eq!(filter_sql(&filter("n", op, "5")), sql, "{op:?}");
+        }
+        assert_eq!(filter_sql(&filter("n", FilterOp::Contains, r"50%_a\b")), r#""n"::text ILIKE '%50\%\_a\\b%'"#);
+    }
+
+    fn cell(column: &str, value: Option<&str>) -> CellWrite {
+        CellWrite { column: column.into(), value: value.map(Into::into) }
+    }
+
+    #[test]
+    fn edit_sql_quotes_names_and_values_and_writes_null() {
+        assert_eq!(
+            insert_sql("public", "customers", &[cell("name", Some("O'Neil")), cell("region", None)]),
+            r#"INSERT INTO "public"."customers" ("name", "region") VALUES ('O''Neil', NULL)"#
+        );
+        assert_eq!(insert_sql("public", "customers", &[]), r#"INSERT INTO "public"."customers" DEFAULT VALUES"#);
+        assert_eq!(
+            update_sql("public", "line items", &[cell("order_id", Some("7")), cell("sku", Some("A-1"))], &[cell("qty", Some("3")), cell("note", None)]),
+            r#"UPDATE "public"."line items" SET "qty" = '3', "note" = NULL WHERE "order_id" = '7' AND "sku" = 'A-1'"#
+        );
+        assert_eq!(delete_sql("public", "customers", &[cell("id", Some("42"))]), r#"DELETE FROM "public"."customers" WHERE "id" = '42'"#);
     }
 }

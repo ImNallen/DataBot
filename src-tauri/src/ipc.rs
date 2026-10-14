@@ -55,8 +55,8 @@ pub async fn catalog_refresh(engine: State<'_, Arc<Engine>>, id: ConnectionId) -
 
 #[tauri::command]
 #[specta::specta]
-pub async fn exact_row_count(engine: State<'_, Arc<Engine>>, id: ConnectionId, schema: String, table: String) -> Result<u64, CountError> {
-    engine.exact_row_count(id, schema, table).await
+pub async fn exact_row_count(engine: State<'_, Arc<Engine>>, id: ConnectionId, schema: String, table: String, query: TableQuery) -> Result<u64, CountError> {
+    engine.exact_row_count(id, schema, table, query).await
 }
 
 #[tauri::command]
@@ -88,6 +88,12 @@ pub async fn console_commit(engine: State<'_, Arc<Engine>>, tab_id: TabId) -> Re
 #[specta::specta]
 pub async fn console_rollback(engine: State<'_, Arc<Engine>>, tab_id: TabId) -> Result<(), TxnError> {
     engine.console_rollback(tab_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn table_apply(engine: State<'_, Arc<Engine>>, tab_id: TabId, changes: TableChanges) -> Result<ApplySummary, ApplyError> {
+    engine.table_apply(tab_id, changes).await
 }
 
 #[tauri::command]

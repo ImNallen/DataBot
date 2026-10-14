@@ -183,11 +183,11 @@ async fn connect_reports_server_and_catalog_has_the_mockup_tables() {
 #[tokio::test]
 async fn exact_row_count_is_exact_and_reports_missing_tables() {
     let h = Harness::start().await;
-    assert!(matches!(h.engine.exact_row_count(h.conn, "public".into(), "coupons".into()).await, Err(CountError::NotConnected)));
+    assert!(matches!(h.engine.exact_row_count(h.conn, "public".into(), "coupons".into(), TableQuery::default()).await, Err(CountError::NotConnected)));
     h.engine.connect(h.conn).await.unwrap();
-    assert_eq!(h.engine.exact_row_count(h.conn, "public".into(), "coupons".into()).await.unwrap(), 3);
-    assert_eq!(h.engine.exact_row_count(h.conn, "lab".into(), "type_zoo".into()).await.unwrap(), 2);
-    let missing = h.engine.exact_row_count(h.conn, "public".into(), "nope".into()).await;
+    assert_eq!(h.engine.exact_row_count(h.conn, "public".into(), "coupons".into(), TableQuery::default()).await.unwrap(), 3);
+    assert_eq!(h.engine.exact_row_count(h.conn, "lab".into(), "type_zoo".into(), TableQuery::default()).await.unwrap(), 2);
+    let missing = h.engine.exact_row_count(h.conn, "public".into(), "nope".into(), TableQuery::default()).await;
     assert!(matches!(&missing, Err(CountError::Failed { message }) if message.contains("does not exist")), "{missing:?}");
 }
 
@@ -509,7 +509,7 @@ async fn ddl_refreshes_the_catalog() {
     assert_eq!(rel.pk_columns(), ["id"]);
     assert!(matches!(h.engine.boot().live[0].status, ConnStatus::Connected { catalog_version, .. } if catalog_version == version));
 
-    let page = h.engine.console_run(tab, RunRequest::TablePage { schema: "public".into(), table: "orders".into(), page: 2 }).await.unwrap();
+    let page = h.engine.console_run(tab, RunRequest::TablePage { schema: "public".into(), table: "orders".into(), page: 2, query: TableQuery::default() }).await.unwrap();
     let state = h.wait_finished(tab, page.run_id).await;
     let meta = Harness::result(&state, 0);
     assert_eq!(meta.row_count, 500);
@@ -595,4 +595,142 @@ async fn bad_credentials_fail_with_auth_and_test_connection_works() {
     assert!(matches!(h.engine.test_connection(draft.clone()).await, Err(ConnectError::Auth { .. })));
     draft.port = 1;
     assert!(matches!(h.engine.test_connection(draft).await, Err(ConnectError::Network { .. })));
+}
+
+fn cell(column: &str, value: Option<&str>) -> CellWrite {
+    CellWrite { column: column.into(), value: value.map(Into::into) }
+}
+
+fn changes(table: &str) -> TableChanges {
+    TableChanges { schema: "public".into(), table: table.into(), inserts: vec![], updates: vec![], deletes: vec![] }
+}
+
+async fn edit_table(h: &mut Harness, tab: TabId) -> String {
+    let table = unique("t_edit");
+    h.run_ok(tab, &format!("create table public.{table} (id serial primary key, name text not null, note text); insert into public.{table} (name) values ('a'), ('b'), ('c')")).await;
+    h.engine.refresh_catalog(h.conn).await.unwrap();
+    table
+}
+
+async fn rows_of(h: &mut Harness, tab: TabId, table: &str) -> String {
+    h.scalar(tab, &format!("select coalesce(string_agg(id || ':' || name || ':' || coalesce(note, 'NULL'), ' ' order by id), '') from public.{table}")).await
+}
+
+#[tokio::test]
+async fn table_apply_commits_every_change_or_none() {
+    let mut h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let tab = h.sql_tab(TxnMode::AutoCommit).await;
+    let table = edit_table(&mut h, tab).await;
+
+    let mut ok = changes(&table);
+    ok.deletes.push(vec![cell("id", Some("1"))]);
+    ok.updates.push(RowUpdate { key: vec![cell("id", Some("2"))], set: vec![cell("name", Some("b'2")), cell("note", Some("x"))] });
+    ok.inserts.push(vec![cell("name", Some("d"))]);
+    let summary = h.engine.table_apply(tab, ok).await.unwrap();
+    assert!(summary.committed);
+    assert_eq!(rows_of(&mut h, tab, &table).await, "2:b'2:x 3:c:NULL 4:d:NULL");
+    assert_eq!(h.console(tab).txn, TxnState::Idle);
+
+    let mut missing = changes(&table);
+    missing.inserts.push(vec![cell("name", Some("e"))]);
+    missing.updates.push(RowUpdate { key: vec![cell("id", Some("999"))], set: vec![cell("name", Some("ghost"))] });
+    let err = h.engine.table_apply(tab, missing).await.unwrap_err();
+    assert!(matches!(err, ApplyError::RowMismatch { change: ChangeRef { kind: ChangeKind::Update, index: 0 }, rows: 0 }), "{err:?}");
+
+    let mut violating = changes(&table);
+    violating.deletes.push(vec![cell("id", Some("3"))]);
+    violating.inserts.push(vec![cell("note", Some("no name"))]);
+    let err = h.engine.table_apply(tab, violating).await.unwrap_err();
+    assert!(matches!(&err, ApplyError::Failed { change: ChangeRef { kind: ChangeKind::Insert, index: 0 }, error } if error.sqlstate.as_deref() == Some("23502")), "{err:?}");
+
+    assert_eq!(rows_of(&mut h, tab, &table).await, "2:b'2:x 3:c:NULL 4:d:NULL", "failed applies left nothing behind");
+    assert_eq!(h.console(tab).txn, TxnState::Idle);
+
+    let mut keyless = changes(&table);
+    keyless.deletes.push(vec![cell("name", Some("c"))]);
+    assert!(matches!(h.engine.table_apply(tab, keyless).await, Err(ApplyError::NoPrimaryKey)));
+    h.run_ok(tab, &format!("drop table public.{table}")).await;
+}
+
+#[tokio::test]
+async fn table_apply_in_manual_mode_waits_for_commit_and_a_failure_keeps_the_open_transaction() {
+    let mut h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let auto = h.sql_tab(TxnMode::AutoCommit).await;
+    let table = edit_table(&mut h, auto).await;
+    let manual = h.sql_tab(TxnMode::Manual).await;
+
+    let mut insert = changes(&table);
+    insert.inserts.push(vec![cell("name", Some("d"))]);
+    let summary = h.engine.table_apply(manual, insert).await.unwrap();
+    assert!(!summary.committed);
+    assert_eq!(h.console(manual).txn, TxnState::Active);
+    assert_eq!(rows_of(&mut h, auto, &table).await, "1:a:NULL 2:b:NULL 3:c:NULL", "other sessions don't see it before Commit");
+
+    let mut failing = changes(&table);
+    failing.updates.push(RowUpdate { key: vec![cell("id", Some("1"))], set: vec![cell("name", None)] });
+    assert!(matches!(h.engine.table_apply(manual, failing).await, Err(ApplyError::Failed { .. })));
+    assert_eq!(h.console(manual).txn, TxnState::Active, "the savepoint kept the transaction usable");
+    assert_eq!(rows_of(&mut h, manual, &table).await, "1:a:NULL 2:b:NULL 3:c:NULL 4:d:NULL", "earlier work in the transaction survives");
+
+    h.engine.console_commit(manual).await.unwrap();
+    assert_eq!(rows_of(&mut h, auto, &table).await, "1:a:NULL 2:b:NULL 3:c:NULL 4:d:NULL");
+    h.run_ok(auto, &format!("drop table public.{table}")).await;
+}
+
+#[tokio::test]
+async fn table_pages_sort_and_filter_in_the_engine() {
+    let mut h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let tab = h.sql_tab(TxnMode::AutoCommit).await;
+    let query = TableQuery {
+        order_by: r#""created_at" DESC"#.into(),
+        filters: vec![ColumnFilter { column: "email".into(), op: FilterOp::StartsWith, value: "user1".into() }],
+        r#where: "region = 'APAC'".into(),
+    };
+    let page = h
+        .engine
+        .console_run(tab, RunRequest::TablePage { schema: "public".into(), table: "customers".into(), page: 0, query: query.clone() })
+        .await
+        .unwrap();
+    let state = h.wait_finished(tab, page.run_id).await;
+    let meta = Harness::result(&state, 0);
+    let rows = h.page(&meta, 0, meta.row_count);
+    let expected = h
+        .scalar(tab, "select count(*) from customers where region = 'APAC' and email ilike 'user1%'")
+        .await
+        .parse::<u32>()
+        .unwrap();
+    assert_eq!(meta.row_count, expected.min(500));
+    assert!(rows.iter().all(|r| r[3].as_deref() == Some("APAC") && r[1].as_deref().unwrap().starts_with("user1")));
+    let created: Vec<&str> = rows.iter().map(|r| r[4].as_deref().unwrap()).collect();
+    assert!(created.windows(2).all(|w| w[0] >= w[1]), "newest first");
+    assert_eq!(h.engine.exact_row_count(h.conn, "public".into(), "customers".into(), query).await.unwrap(), u64::from(expected));
+
+    for smuggled in [
+        TableQuery { r#where: "true; drop table customers".into(), ..Default::default() },
+        TableQuery { order_by: "id; drop table customers".into(), ..Default::default() },
+    ] {
+        let refused = h.engine.console_run(tab, RunRequest::TablePage { schema: "public".into(), table: "customers".into(), page: 0, query: smuggled }).await;
+        assert!(matches!(refused, Err(RunError::BadFilter)), "{refused:?}");
+    }
+}
+
+#[tokio::test]
+async fn sql_comments_in_where_and_order_by_keep_the_page_limit() {
+    let mut h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let tab = h.sql_tab(TxnMode::AutoCommit).await;
+    let query = TableQuery { order_by: "id DESC -- newest first".into(), filters: vec![], r#where: "region = 'APAC' -- only asia".into() };
+    let page = h
+        .engine
+        .console_run(tab, RunRequest::TablePage { schema: "public".into(), table: "customers".into(), page: 0, query: query.clone() })
+        .await
+        .unwrap();
+    let state = h.wait_finished(tab, page.run_id).await;
+    let meta = Harness::result(&state, 0);
+    assert_eq!(meta.row_count, 500, "the comment must not swallow LIMIT");
+    let apac = h.scalar(tab, "select count(*) from customers where region = 'APAC'").await.parse::<u64>().unwrap();
+    assert_eq!(h.engine.exact_row_count(h.conn, "public".into(), "customers".into(), query).await.unwrap(), apac);
 }

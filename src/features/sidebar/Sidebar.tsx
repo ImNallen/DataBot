@@ -42,25 +42,23 @@ export function Sidebar({ hosted }: { hosted: HostedWindow | null }) {
 
       <ConnectionTree />
 
-      <div className="shrink-0 border-t border-hover py-2">
-        <button
-          type="button"
-          data-testid="open-history"
-          onClick={() => open({ kind: "history" })}
-          className="mx-2 flex h-[29px] w-[calc(100%-16px)] items-center gap-2.5 rounded-md px-2.5 text-[14px] text-muted hover:bg-hover hover:text-fg"
-        >
-          <IconClock size={15} />
-          Query history
-        </button>
-        <button
-          type="button"
+      <div className="mx-2 flex shrink-0 items-center gap-1 py-2">
+        <IconButton
           data-testid="open-settings"
+          aria-label="Settings"
+          title="Settings"
           onClick={() => open({ kind: "settings" })}
-          className="mx-2 flex h-[29px] w-[calc(100%-16px)] items-center gap-2.5 rounded-md px-2.5 text-[14px] text-muted hover:bg-hover hover:text-fg"
         >
-          <IconAdjustmentsHorizontal size={15} />
-          Settings
-        </button>
+          <IconAdjustmentsHorizontal size={16} />
+        </IconButton>
+        <IconButton
+          data-testid="open-history"
+          aria-label="Query history"
+          title="Query history"
+          onClick={() => open({ kind: "history" })}
+        >
+          <IconClock size={16} />
+        </IconButton>
       </div>
     </aside>
   );
