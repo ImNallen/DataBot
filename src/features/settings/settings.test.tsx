@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Settings } from "../../ipc/bindings";
 import { AppLayout } from "../../shell/AppLayout";
+import { clampSidebarWidth } from "../../shell/SidebarColumn";
 import { startTheme } from "../../shell/theme";
 import { useWorkspace, type WorkspaceData } from "../../state/workspace";
 import { chooseTheme } from "./AppearanceSection";
@@ -24,7 +25,7 @@ function render(patch: Partial<WorkspaceData>) {
 
 const settingsOpen = (section: "appearance" | "queries" = "appearance") => ({ screen: { kind: "settings", section } }) as const;
 
-it("puts the settings nav in the sidebar panel and the section in the main panel, with no workspace chrome", () => {
+it("puts the settings nav in the sidebar and the section in the main panel, with no workspace chrome", () => {
   const html = render({ ...settingsOpen(), layout: { ...initial.layout, rightPanel: "Assistant" } });
   expect(html).toMatch(/data-testid="sidebar"[^>]*>.*data-testid="settings-nav"/);
   expect(html).toContain('data-testid="settings-back"');
@@ -44,6 +45,27 @@ it("keeps the sidebar header, toggle and app title, identical in settings and th
   expect(settings).toContain('data-testid="toggle-sidebar"');
   expect(settings).toContain('data-testid="app-title"');
   expect(settings).toBe(workspace);
+});
+
+const sidebars = (html: string) => html.match(/<div data-testid="sidebar"[^>]*>/g) ?? [];
+
+it("draws one sidebar at the stored pixel width in both the workspace and settings", () => {
+  const layout = { ...initial.layout, sidebarWidth: 300 };
+  const workspace = render({ screen: { kind: "workspace" }, layout });
+  const settings = render({ ...settingsOpen(), layout });
+  expect(sidebars(workspace)).toEqual([expect.stringContaining('style="width:300px"')]);
+  expect(sidebars(settings)).toEqual(sidebars(workspace));
+  expect(sidebarHeader(settings)).toBe(sidebarHeader(workspace));
+});
+
+it("drops the sidebar on both screens while it is hidden", () => {
+  const layout = { ...initial.layout, sidebar: false };
+  expect(sidebars(render({ screen: { kind: "workspace" }, layout }))).toEqual([]);
+  expect(sidebars(render({ ...settingsOpen(), layout }))).toEqual([]);
+});
+
+it("keeps the sidebar width between 200 and 480 pixels", () => {
+  expect([150, 200, 340.4, 480, 900].map(clampSidebarWidth)).toEqual([200, 200, 340, 480, 480]);
 });
 
 it("hides the settings nav with the sidebar and moves the toggle into the page header", () => {

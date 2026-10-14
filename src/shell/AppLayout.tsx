@@ -4,7 +4,7 @@ import { ConnectionDialog } from "../features/connections/ConnectionDialog";
 import { SqlEditor } from "../features/editor/SqlEditor";
 import { HistoryPalette } from "../features/history/HistoryPalette";
 import { ResultsPane } from "../features/results/ResultsPane";
-import { SettingsNav, SettingsPage } from "../features/settings/SettingsScreen";
+import { SettingsPage } from "../features/settings/SettingsScreen";
 import { SettingsSearchPalette } from "../features/settings/SettingsSearchPalette";
 import { SearchPalette } from "../features/sidebar/SearchPalette";
 import { Sidebar } from "../features/sidebar/Sidebar";
@@ -14,6 +14,7 @@ import { START_COMMANDS, commandForKey, shortcutLabel } from "./commands";
 import { Overlays } from "./Overlays";
 import { ResizeHandle } from "./ResizeHandle";
 import { RightPanel } from "./RightPanel";
+import { SidebarColumn } from "./SidebarColumn";
 import { StatusBar } from "./StatusBar";
 import { TabBar } from "./TabBar";
 import { ResizeEdges } from "./WindowChrome";
@@ -56,7 +57,7 @@ function StartCommands() {
 }
 
 // Saved on release only: a store update mid-drag re-renders the Group and the library drops the drag.
-function usePersistedPixels(key: "sidebarWidth" | "rightPanelWidth" | "resultsHeight") {
+function usePersistedPixels(key: "rightPanelWidth" | "resultsHeight") {
   const px = useRef<number | null>(null);
   return {
     onResize: (size: PanelSize) => {
@@ -102,13 +103,12 @@ function MainArea() {
   );
 }
 
-type ScreenPanels = { side: ReactNode; main: ReactNode; right: boolean };
+type ScreenPanels = { main: ReactNode; right: boolean };
 
-function screenPanels(screen: Screen, hosted: HostedWindow | null, sidebar: boolean): ScreenPanels {
+function screenPanels(screen: Screen, hosted: HostedWindow | null): ScreenPanels {
   switch (screen.kind) {
     case "workspace":
       return {
-        side: sidebar ? <Sidebar hosted={hosted} /> : null,
         main: (
           <>
             <TopBar hosted={hosted} />
@@ -121,7 +121,6 @@ function screenPanels(screen: Screen, hosted: HostedWindow | null, sidebar: bool
       };
     case "settings":
       return {
-        side: sidebar ? <SettingsNav hosted={hosted} section={screen.section} /> : null,
         main: <SettingsPage hosted={hosted} screen={screen} />,
         right: false,
       };
@@ -137,36 +136,20 @@ export function AppLayout() {
   const [hosted] = useState(() => hostedWindow());
   const screen = useWorkspace((s) => s.screen);
   const sidebar = useWorkspace((s) => s.layout.sidebar);
-  const sidebarWidth = useWorkspace((s) => s.layout.sidebarWidth);
-  const sidebarSize = usePersistedPixels("sidebarWidth");
   const rightPanel = useWorkspace((s) => s.layout.rightPanel);
   const rightPanelWidth = useWorkspace((s) => s.layout.rightPanelWidth);
   const rightPanelSize = usePersistedPixels("rightPanelWidth");
-  const persistWidths = () => {
-    sidebarSize.onLayoutChanged();
-    rightPanelSize.onLayoutChanged();
-  };
-  const panels = screenPanels(screen, hosted, sidebar);
+  const panels = screenPanels(screen, hosted);
 
   return (
     <div className="relative flex h-full">
       {hosted?.chrome === "custom" && <ResizeEdges hosted={hosted} />}
-      <Group orientation="horizontal" className="min-w-0 flex-1" onLayoutChanged={persistWidths}>
-        {panels.side && (
-          <>
-            <Panel
-              id="sidebar"
-              defaultSize={sidebarWidth}
-              minSize={200}
-              maxSize={480}
-              groupResizeBehavior="preserve-pixel-size"
-              onResize={sidebarSize.onResize}
-            >
-              {panels.side}
-            </Panel>
-            <ResizeHandle id="sidebar-resize" label="Resize sidebar" line="vertical" lineColor="bg-hover" />
-          </>
-        )}
+      {sidebar && (
+        <SidebarColumn>
+          <Sidebar hosted={hosted} />
+        </SidebarColumn>
+      )}
+      <Group orientation="horizontal" className="min-w-0 flex-1" onLayoutChanged={rightPanelSize.onLayoutChanged}>
         <Panel id="main" className="flex min-w-0 flex-col bg-bg">
           {panels.main}
         </Panel>

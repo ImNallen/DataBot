@@ -1,54 +1,10 @@
-import { IconArrowLeft } from "@tabler/icons-react";
 import { useEffect, useRef } from "react";
 import type { HostedWindow } from "../../shell/hostedWindow";
 import { WindowControls } from "../../shell/WindowChrome";
 import { SidebarToggle, windowLeadingInset } from "../../shell/WindowEdgeActions";
 import { useWorkspace, type Screen } from "../../state/workspace";
 import { cx } from "../../ui/primitives";
-import { SidebarHeader, SidebarSearch } from "../sidebar/Sidebar";
-import { SETTINGS_SECTIONS, settingsSection, type SettingsSectionId } from "./sections";
-
-export function SettingsNav({ hosted, section }: { hosted: HostedWindow | null; section: SettingsSectionId }) {
-  const openSettings = useWorkspace((s) => s.openSettings);
-  const closeSettings = useWorkspace((s) => s.closeSettings);
-  const open = useWorkspace((s) => s.open);
-  return (
-    <nav data-testid="settings-nav" aria-label="Settings" className="flex h-full flex-col bg-sidebar">
-      <SidebarHeader hosted={hosted} />
-      <SidebarSearch testId="settings-search-open" label="Search settings" onOpen={() => open({ kind: "settings-search" })} />
-      <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-auto pt-1">
-        {SETTINGS_SECTIONS.map(({ id, label, icon: Icon }) => (
-          <li key={id}>
-            <button
-              type="button"
-              data-testid={`settings-section-${id}`}
-              aria-current={id === section ? "page" : undefined}
-              onClick={() => openSettings(id)}
-              className={cx(
-                "mx-2 flex h-7 w-[calc(100%-16px)] items-center gap-2 rounded-md px-2 text-left text-[14px] text-tree",
-                id === section ? "bg-selected" : "hover:bg-hover",
-              )}
-            >
-              <Icon size={15} className="shrink-0 text-muted" />
-              <span className="min-w-0 flex-1 truncate">{label}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
-      <div className="mx-2 shrink-0 py-2">
-        <button
-          type="button"
-          data-testid="settings-back"
-          onClick={closeSettings}
-          className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13.5px] text-muted hover:bg-hover hover:text-fg"
-        >
-          <IconArrowLeft size={16} />
-          Back
-        </button>
-      </div>
-    </nav>
-  );
-}
+import { settingsSection } from "./sections";
 
 function useEscapeToLeave() {
   useEffect(() => {
