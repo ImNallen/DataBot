@@ -66,3 +66,4 @@ The environment variables that change the data directory, the credential store, 
 - Title commits and PRs in Conventional Commits form, `type(scope): subject`, with an imperative subject. Types in use are `feat`, `docs`, and `chore`. Scopes in use are `app`, `engine`, `ui`, `window`, `icons`, `scaffold`, `readme`, and `architecture`.
 - Open one PR per change against `main`. PRs merge as one squash commit.
 - Write the PR body as a short briefing in these sections: `## Why`, `## Scope`, `## Tradeoffs`, `## Blast Radius`, and `## Verification`. Drop a section that has nothing to say. Under `## Verification`, name each check you ran and its result, say what you did not test, and attach a screenshot for UI changes.
+- After you open a PR, watch it if your harness has a PR watcher, such as `watch_pull_request` in T3 Code. Fix failing checks and answer review comments without waiting to be asked. If your harness has no watcher, skip this step.
