@@ -137,10 +137,17 @@ impl Shared {
         wanted
     }
 
-    /// Converges the instance's slots to `wanted` and starts a load for each slot not loaded yet.
+    /// Converges the current instance's slots to `wanted` and starts a load for each slot not
+    /// loaded yet.
     fn reconcile(self: &Arc<Self>, id: ConnectionId) {
-        let Some(instance) = self.instance(id) else { return };
-        let wanted = self.wanted(&instance);
+        if let Some(instance) = self.instance(id) {
+            self.reconcile_instance(&instance);
+        }
+    }
+
+    fn reconcile_instance(self: &Arc<Self>, instance: &Arc<Instance>) {
+        let id = instance.config.id;
+        let wanted = self.wanted(instance);
         let opened = instance.converge(id, &wanted);
         self.republish_connection(id);
         for slot in opened {
@@ -152,6 +159,9 @@ impl Shared {
         }
     }
 
+    /// The slot of a wanted database, created on first use. The instance it converges is the one
+    /// fetched here, so a reconnect in between cannot leave it without the slot; the slot is
+    /// missing afterwards only when the instance closed or the database left `pg_database`.
     fn slot(self: &Arc<Self>, db: &DatabaseRef) -> Result<(Arc<Instance>, Arc<DbSlot>), CatalogError> {
         let instance = self.instance(db.connection_id).ok_or(CatalogError::NotConnected)?;
         if !instance.knows(&db.database) {
@@ -161,9 +171,11 @@ impl Shared {
             if !self.wanted(&instance).contains(&db.database) {
                 return Err(CatalogError::NotShown { database: db.database.clone() });
             }
-            self.reconcile(db.connection_id);
+            self.reconcile_instance(&instance);
         }
-        let slot = instance.slot(&db.database).expect("a wanted known database gets a slot");
+        let slot = instance.slot(&db.database).ok_or_else(|| {
+            if instance.knows(&db.database) { CatalogError::NotConnected } else { CatalogError::UnknownDatabase { database: db.database.clone() } }
+        })?;
         Ok((instance, slot))
     }
 
