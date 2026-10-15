@@ -107,6 +107,7 @@ it.each([
   ["error", ["stopOnError"]],
   ["compact", ["density"]],
   ["animation", ["panelMotion"]],
+  ["tint", ["tintConnections"]],
   ["SF Pro", ["interfaceFont"]],
   ["jetbrains", ["codeFont"]],
   ["zzqx", []],
@@ -115,7 +116,7 @@ it.each([
 });
 
 it("lists every setting in registry order for an empty query", () => {
-  expect(matching(" ")).toEqual(["colorScheme", "themes", "density", "panelMotion", "interfaceFont", "codeFont", "maxRows", "tablePageSize", "stopOnError"]);
+  expect(matching(" ")).toEqual(["colorScheme", "themes", "density", "panelMotion", "tintConnections", "interfaceFont", "codeFont", "maxRows", "tablePageSize", "stopOnError"]);
 });
 
 const text = (html: string | undefined) => html?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -234,7 +235,7 @@ const layout = (html: string) =>
   [...html.matchAll(/data-setting="(\w+)"|<h2 id="[^"]*" class="mb-2[^"]*">([^<]+)</g)].map(([, setting, card]) => setting ?? `# ${card}`);
 
 it("draws each section's settings in registry order, a run of one group in one card", () => {
-  expect(layout(render(settingsOpen()))).toEqual(["colorScheme", "themes", "# Layout", "density", "# Motion", "panelMotion", "# Typography", "interfaceFont", "codeFont"]);
+  expect(layout(render(settingsOpen()))).toEqual(["colorScheme", "themes", "# Layout", "density", "# Motion", "panelMotion", "# Sidebar", "tintConnections", "# Typography", "interfaceFont", "codeFont"]);
   expect(layout(render(settingsOpen("queries")))).toEqual(["# Results", "maxRows", "tablePageSize", "# Scripts", "stopOnError"]);
 });
 
@@ -354,13 +355,14 @@ it("deletes a whole family and resets a slot that held any of its variants", asy
 
 const selectValue = (html: string, testId: string) => new RegExp(`data-testid="${testId}"[^>]*>(.*?)</select>`).exec(html)?.[1]?.match(/<option[^>]*selected=""[^>]*>([^<]*)</)?.[1];
 
-it("shows the saved density, fonts, and panel speed in the appearance cards", () => {
+it("shows the saved density, fonts, panel speed, and connection tint in the appearance cards", () => {
   const settings: Settings = {
     ...initial.settings,
     density: "Spacious",
     interfaceFont: { family: "System", size: 15 },
     codeFont: { family: "Berkeley Mono", size: 11 },
     panelMotionMs: 0,
+    tintConnections: true,
   };
   const html = render({ ...settingsOpen(), settings });
   expect(radios(html, "density")).toEqual([
@@ -372,7 +374,10 @@ it("shows the saved density, fonts, and panel speed in the appearance cards", ()
   expect([selectValue(html, "setting-codeFont-family"), selectValue(html, "setting-codeFont-size")]).toEqual(["Berkeley Mono", "11 px"]);
   expect(html).toMatch(/data-testid="setting-panelMotion"[^>]*value="0"/);
   expect(html).toContain('data-testid="setting-panelMotion-reset"');
-  expect(render({ ...settingsOpen(), settings: initial.settings })).not.toContain('data-testid="setting-panelMotion-reset"');
+  expect(html).toMatch(/data-testid="setting-tintConnections"[^>]*checked/);
+  const defaults = render({ ...settingsOpen(), settings: initial.settings });
+  expect(defaults).not.toContain('data-testid="setting-panelMotion-reset"');
+  expect(defaults).toMatch(/data-testid="setting-tintConnections"(?![^>]*checked)[^>]*>/);
 });
 
 it("saves the clicked density and repaints the spacing scale", async () => {

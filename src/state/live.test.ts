@@ -49,7 +49,7 @@ describe("live.apply", () => {
       live: [{ id: CONN, rev: 4, status: { kind: "Connecting" } }],
       consoles: [consoleAt(1)],
       workspace: { tabs: [], active: null, layout: { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341 } },
-      settings: { maxRows: 1, maxResultBytes: 1, tablePageSize: 1, stopOnError: true, colorScheme: "System", lightTheme: "l1-light", darkTheme: "l1-dark", customThemes: [], interfaceFont: { family: "Inter", size: 13 }, codeFont: { family: "JetBrains Mono", size: 13 }, density: "Standard", panelMotionMs: 150 },
+      settings: { maxRows: 1, maxResultBytes: 1, tablePageSize: 1, stopOnError: true, colorScheme: "System", lightTheme: "l1-light", darkTheme: "l1-dark", customThemes: [], interfaceFont: { family: "Inter", size: 13 }, codeFont: { family: "JetBrains Mono", size: 13 }, density: "Standard", panelMotionMs: 150, tintConnections: false },
     };
     const s = hydrateLive(early, boot);
     expect(s.connections[CONN]?.status.kind).toBe("Connected");

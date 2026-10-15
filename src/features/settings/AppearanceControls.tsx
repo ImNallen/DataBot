@@ -5,6 +5,7 @@ import { gridRowHeight } from "../../shell/appearance";
 import { DEFAULT_SETTINGS, useWorkspace } from "../../state/workspace";
 import { canvasFontProbe, FONT_SIZES, fontChoices, fontStack, type FontKind } from "../../themes/fonts";
 import { cx, IconButton, PgBadge } from "../../ui/primitives";
+import { saveSettings } from "../editor/runActions";
 import { chooseDensity, chooseFont, previewPanelMotion, savePanelMotion } from "./appearanceActions";
 import { Row } from "./SettingLayout";
 import { settingLabel, type SettingId } from "./settingsIndex";
@@ -228,6 +229,27 @@ export function PanelMotionSetting() {
       }
       hint="How fast panels, dialogs, and menus open and close."
       control={<PanelMotionControl ms={panelMotionMs} />}
+    />
+  );
+}
+
+export function TintConnectionsSetting() {
+  const tintConnections = useWorkspace((s) => s.settings.tintConnections);
+  return (
+    <Row
+      setting="tintConnections"
+      labelFor="setting-tint-connections"
+      hint="Shade each connection in the sidebar with its color instead of a dot."
+      control={
+        <input
+          id="setting-tint-connections"
+          data-testid="setting-tintConnections"
+          type="checkbox"
+          className="size-4 shrink-0 accent-run"
+          checked={tintConnections}
+          onChange={(e) => void saveSettings({ tintConnections: e.target.checked })}
+        />
+      }
     />
   );
 }

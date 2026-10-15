@@ -23,6 +23,12 @@ export const SETTINGS_INDEX = [
       },
       { id: "density", label: "Density", group: "Layout", keywords: "compact standard spacious spacing padding row height comfortable dense layout" },
       { id: "panelMotion", label: "Panel animations", group: "Motion", keywords: "motion animation speed duration reduce transitions sidebar panels open close" },
+      {
+        id: "tintConnections",
+        label: "Tint connections by color",
+        group: "Sidebar",
+        keywords: "connection colour color tint background sidebar tree dot highlight production",
+      },
       { id: "interfaceFont", label: "Interface font", group: "Typography", keywords: "typography font family size text ui system sf pro inter zoom" },
       {
         id: "codeFont",
