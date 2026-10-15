@@ -1,53 +1,53 @@
 import { describe, expect, it } from "vitest";
-import type { HistoryEntry } from "../../ipc/bindings";
-import { appendOlder, firstPageQuery, olderPageQuery, withTail, type HistoryList } from "./historyList";
+import type { HistoryBrowsePage, HistoryGroupSummary } from "../../ipc/bindings";
+import { appendOlder, appendRuns, firstPageQuery, historyKey, keepSelection, olderPageQuery, type HistoryDetail, type HistoryList } from "./historyList";
 
-const entry = (id: number, sql = `select ${id}`): HistoryEntry => ({
-  id,
-  atMs: id * 1000,
-  connectionId: "c0000000-0000-4000-8000-000000000001",
-  connectionName: "shop",
-  database: "shop",
-  sql,
-  elapsedMs: 3,
-  outcome: { kind: "Rows", rows: 1 },
+const group = (id: number): HistoryGroupSummary => ({
+  id, latestId: id + 10, latestAtMs: 123, connectionId: "c1", database: "shop", title: "Query", excerpt: "select 1",
+  runCount: 2, failedCount: 0, isWrite: false,
+  representative: { id: id + 10, atMs: 123, connectionName: "dev", elapsedMs: 20, outcome: { kind: "Rows", rows: 1 } },
+});
+const page = (groups: HistoryGroupSummary[], revision = 2): HistoryBrowsePage => ({ groups, counts: { all: 10, failed: 1, writes: 2 }, revision, hasMore: true });
+const list = (): HistoryList => ({ ...page([group(8), group(5)]), text: "orders", filter: "Failed" });
+
+it("pages groups with the latest id, original search, filter and revision", () => {
+  expect(firstPageQuery("  orders  ", "Writes")).toEqual({ text: "orders", filter: "Writes", beforeId: null, limit: 50, revision: null });
+  expect(firstPageQuery(" ", "All").text).toBeNull();
+  expect(olderPageQuery(list())).toEqual({ text: "orders", filter: "Failed", beforeId: 15, limit: 50, revision: 2 });
+  expect(olderPageQuery({ ...list(), hasMore: false })).toBeNull();
 });
 
-const ids = (entries: HistoryEntry[]) => entries.map((h) => h.id);
-
-describe("history paging", () => {
-  it("searches every connection from the newest entry, sending no text for an empty search", () => {
-    expect(firstPageQuery("")).toEqual({ text: null, connectionId: null, beforeId: null, limit: 100 });
-    expect(firstPageQuery("orders").text).toBe("orders");
-  });
-
-  it("asks for the page before the oldest loaded entry, with the same search text", () => {
-    const list: HistoryList = { text: "orders", entries: [entry(9), entry(7), entry(4)], hasMore: true };
-    expect(olderPageQuery(list)).toEqual({ text: "orders", connectionId: null, beforeId: 4, limit: 100 });
-  });
-
-  it("stops asking once the server says there is nothing older", () => {
-    expect(olderPageQuery({ text: "", entries: [entry(2)], hasMore: false })).toBeNull();
-  });
-
-  it("appends an older page below the loaded entries", () => {
-    const list: HistoryList = { text: "", entries: [entry(9), entry(8)], hasMore: true };
-    const next = appendOlder(list, list, { entries: [entry(5), entry(3)], hasMore: false });
-    expect(ids(next.entries)).toEqual([9, 8, 5, 3]);
-    expect(next.hasMore).toBe(false);
-  });
-
-  it("drops an older page that lands after a new search replaced the list", () => {
-    const before: HistoryList = { text: "", entries: [entry(9), entry(8)], hasMore: true };
-    const searched: HistoryList = { text: "", entries: [entry(9)], hasMore: true };
-    expect(appendOlder(searched, before, { entries: [entry(5)], hasMore: false })).toBe(searched);
-  });
+it("appends a matching group page and drops responses from replaced searches or revisions", () => {
+  const current = list();
+  expect(appendOlder(current, current, { ...page([group(1)]), hasMore: false }).groups.map((g) => g.id)).toEqual([8, 5, 1]);
+  expect(appendOlder(current, list(), page([group(1)]))).toBe(current);
+  expect(appendOlder(current, current, page([group(1)], 3))).toBe(current);
 });
 
-describe("history live tail", () => {
-  it("puts queries run since the fetch on top, matching the search case-insensitively", () => {
-    const list: HistoryList = { text: "orders", entries: [entry(5, "select * from orders")], hasMore: false };
-    const tail = [entry(8, "SELECT count(*) FROM Orders"), entry(7, "select 1"), entry(5, "select * from orders"), entry(2, "orders")];
-    expect(ids(withTail(list, tail))).toEqual([8, 5]);
+it("preserves exact-group selection on refresh and otherwise selects the first match", () => {
+  expect(keepSelection([group(8), group(5)], 5)).toBe(5);
+  expect(keepSelection([group(8), group(5)], 7)).toBe(8);
+  expect(keepSelection([], 5)).toBeNull();
+});
+
+it("ignores run pages fetched before another group, page, or revision replaced the preview", () => {
+  const original: HistoryDetail = { id: 5, sql: "select 1", runs: [group(5).representative], hasMore: true, maxElapsedMs: 100, revision: 2 };
+  const next = { ...original, runs: [group(1).representative], hasMore: false };
+  expect(appendRuns(original, original, next).runs.map((r) => r.id)).toEqual([15, 11]);
+  expect(appendRuns({ ...original, id: 8 }, original, next).id).toBe(8);
+  expect(appendRuns(original, original, { ...next, revision: 3 })).toBe(original);
+});
+
+describe("history keys", () => {
+  const key = (key: string, modifiers: Partial<Parameters<typeof historyKey>[0]> = {}, selection = false) => historyKey({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false, ...modifiers }, selection);
+  it("selects with arrows and opens, runs or inserts with the documented keys", () => {
+    expect([key("ArrowDown"), key("ArrowUp"), key("Enter"), key("Enter", { metaKey: true }), key("Enter", { ctrlKey: true }), key("Enter", { altKey: true })]).toEqual(["next", "previous", "open", "run", "run", "insert"]);
+  });
+  it("keeps normal search selection copying and composition intact", () => {
+    expect(key("c", { metaKey: true })).toBe("copy");
+    expect(key("c", { ctrlKey: true }, true)).toBeNull();
+    expect(key("Enter", { isComposing: true })).toBeNull();
+    expect(key("Enter", { shiftKey: true })).toBeNull();
+    expect(key("Escape")).toBeNull();
   });
 });
