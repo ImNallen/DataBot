@@ -276,10 +276,19 @@ impl Shared {
             (session, aborted)
         };
         let (kind, sql) = if commit && !aborted { (sql::StmtKind::Commit, "COMMIT") } else { (sql::StmtKind::Rollback, "ROLLBACK") };
+        let started = std::time::Instant::now();
         let result = session.client.batch_execute(sql).await;
+        let elapsed_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
         let fatal = result.as_ref().err().and_then(|e| e.as_db_error()).filter(|db| db.severity() == "FATAL").map(|db| db.message().to_owned());
         let lost = session.closed_reason_settled(fatal).await;
-        console::publish_notices(&console, self, &mut session, run_id);
+        let result = result.map_err(|e| e.as_db_error().map_or_else(|| connection::transport_error(&e), |db| connection::query_error(db, None)));
+        let mut lines = vec![console::statement_line(0, sql)];
+        lines.extend(console::notice_lines(&mut session));
+        lines.push(match &result {
+            Ok(()) => OutputBody::Command { statement: 0, tag: sql.into(), elapsed_ms },
+            Err(error) => OutputBody::Error { statement: Some(0), error: error.clone() },
+        });
+        console.output_all(self, run_id, lines);
         let outcome = if result.is_ok() { txn::StmtOutcome::Ok } else { txn::StmtOutcome::Err };
         let edited = console
             .edit(self, run_id, |inner| {
@@ -298,11 +307,7 @@ impl Shared {
         match result {
             Ok(()) if commit && aborted => Err(TxnError::RolledBack),
             Ok(()) => Ok(()),
-            Err(e) => {
-                let error = e.as_db_error().map_or_else(|| connection::transport_error(&e), |db| connection::query_error(db, None));
-                console.output(self, run_id, OutputBody::Error { error: error.clone() });
-                Err(TxnError::Query(error))
-            }
+            Err(error) => Err(TxnError::Query(error)),
         }
     }
 
@@ -671,10 +676,30 @@ impl Engine {
             ("BEGIN", (config.mode == TxnMode::AutoCommit).then_some("COMMIT"), "ROLLBACK")
         };
         let as_query_error = |e: &tokio_postgres::Error| e.as_db_error().map_or_else(|| connection::transport_error(e), |db| connection::query_error(db, None));
+        let mut lines = Vec::new();
         let outcome: Result<(), ApplyError> = async {
             session.client.batch_execute(open).await.map_err(|e| ApplyError::Transaction { error: as_query_error(&e) })?;
-            for (change, sql) in &plan {
-                let rows = session.client.execute(sql.as_str(), &[]).await.map_err(|e| ApplyError::Failed { change: *change, error: as_query_error(&e) })?;
+            for (i, (change, sql)) in plan.iter().enumerate() {
+                let statement = i as u16;
+                lines.push(console::statement_line(statement, sql));
+                let started = std::time::Instant::now();
+                let executed = session.client.execute(sql.as_str(), &[]).await;
+                let elapsed_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
+                lines.extend(console::notice_lines(&mut session));
+                let rows = match executed {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        let error = as_query_error(&e);
+                        lines.push(OutputBody::Error { statement: Some(statement), error: error.clone() });
+                        return Err(ApplyError::Failed { change: *change, error });
+                    }
+                };
+                let verb = match change.kind {
+                    ChangeKind::Insert => "INSERT 0",
+                    ChangeKind::Update => "UPDATE",
+                    ChangeKind::Delete => "DELETE",
+                };
+                lines.push(OutputBody::Command { statement, tag: format!("{verb} {rows}"), elapsed_ms });
                 if change.kind != ChangeKind::Insert && rows != 1 {
                     return Err(ApplyError::RowMismatch { change: *change, rows });
                 }
@@ -694,18 +719,13 @@ impl Engine {
             _ => TxnState::Idle,
         };
         let lost = session.closed_reason_settled(None).await;
-        console::publish_notices(&console, s, &mut session, run_id);
-        let _ = console.edit(s, run_id, |inner| Console::return_session(inner, session, after, lost)).await;
-
-        match outcome {
-            Ok(()) => Ok(ApplySummary { committed: after == TxnState::Idle }),
-            Err(e) => {
-                if let ApplyError::Failed { error, .. } | ApplyError::Transaction { error } = &e {
-                    console.output(s, run_id, OutputBody::Error { error: error.clone() });
-                }
-                Err(e)
-            }
+        lines.extend(console::notice_lines(&mut session));
+        if let Err(ApplyError::Transaction { error }) = &outcome {
+            lines.push(OutputBody::Error { statement: None, error: error.clone() });
         }
+        console.output_all(s, run_id, lines);
+        let _ = console.edit(s, run_id, |inner| Console::return_session(inner, session, after, lost)).await;
+        outcome.map(|()| ApplySummary { committed: after == TxnState::Idle })
     }
 
     pub async fn console_close(&self, tab: TabId, force: bool) -> Result<(), DisconnectError> {

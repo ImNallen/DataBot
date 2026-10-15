@@ -288,12 +288,17 @@ export type OpenTxn = {
 	hasWrites: boolean,
 };
 
-export type OutputBody = { kind: "Notice"; severity: string; message: string; detail: string | null } | { kind: "Error"; error: QueryError } | { kind: "Info"; message: string };
+export type OutputBody = 
+/**  Logged when the statement starts, before its notices and its result line. */
+{ kind: "Statement"; statement: number; text: string } | { kind: "Rows"; statement: number; rows: number; elapsedMs: number; truncated: boolean } | { kind: "Command"; statement: number; tag: string; elapsedMs: number } | { kind: "Notice"; severity: string; message: string; detail: string | null } | 
+/**  `statement` is `None` for a failure no statement owns, such as `SET search_path`. */
+{ kind: "Error"; statement: number | null; error: QueryError } | { kind: "Info"; message: string };
 
 /**
- *  A server message or a failure that no statement owns. Statement outcomes live in
- *  `ConsoleState.run`, not here. `run_id` is the run, commit, rollback, or apply that held the
- *  session; run ids share one counter, so `run_id >= run.run_id` means "this run or later".
+ *  One line of a tab's output log: timestamped history of what the session ran and what the
+ *  server said. Statement outcomes also live in `ConsoleState.run`; that snapshot is the current
+ *  status, this log is the history. `run_id` is the run, commit, rollback, or apply that held the
+ *  session; run ids share one counter, so a later entry never carries a lower id.
  */
 export type OutputEntry = {
 	atMs: number,

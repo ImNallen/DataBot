@@ -446,9 +446,10 @@ pub struct ExportSummary {
     pub truncated: bool,
 }
 
-/// A server message or a failure that no statement owns. Statement outcomes live in
-/// `ConsoleState.run`, not here. `run_id` is the run, commit, rollback, or apply that held the
-/// session; run ids share one counter, so `run_id >= run.run_id` means "this run or later".
+/// One line of a tab's output log: timestamped history of what the session ran and what the
+/// server said. Statement outcomes also live in `ConsoleState.run`; that snapshot is the current
+/// status, this log is the history. `run_id` is the run, commit, rollback, or apply that held the
+/// session; run ids share one counter, so a later entry never carries a lower id.
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputEntry {
@@ -460,13 +461,35 @@ pub struct OutputEntry {
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum OutputBody {
+    /// Logged when the statement starts, before its notices and its result line.
+    Statement {
+        statement: u16,
+        text: String,
+    },
+    Rows {
+        statement: u16,
+        rows: u64,
+        elapsed_ms: u32,
+        truncated: bool,
+    },
+    Command {
+        statement: u16,
+        tag: String,
+        elapsed_ms: u32,
+    },
     Notice {
         severity: String,
         message: String,
         detail: Option<String>,
     },
-    Error { error: QueryError },
-    Info { message: String },
+    /// `statement` is `None` for a failure no statement owns, such as `SET search_path`.
+    Error {
+        statement: Option<u16>,
+        error: QueryError,
+    },
+    Info {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Type)]

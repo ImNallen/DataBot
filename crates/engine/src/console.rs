@@ -252,7 +252,7 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
         && let Err(e) = session.set_search_path(plan.schema.as_deref()).await
     {
         let error = e.as_db_error().map_or_else(|| transport_error(&e), |db| query_error(db, None));
-        console.output(&shared, run_id, OutputBody::Error { error });
+        console.output(&shared, run_id, OutputBody::Error { statement: None, error });
     }
 
     let mut index = 0;
@@ -265,16 +265,18 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
             break;
         }
         let sql = stmt.span.text(&plan.text);
+        console.output(&shared, run_id, statement_line(i, sql));
 
         if needs_implicit_begin(plan.mode, txn, &stmt.kind) {
             match session.client.batch_execute("BEGIN").await {
                 Ok(()) => {
                     txn = TxnState::Active;
                     console.edit(&shared, run_id, |inner| inner.txn = txn).await?;
+                    console.output(&shared, run_id, OutputBody::Info { message: "BEGIN (implicit)".into() });
                 }
                 Err(e) => {
                     let error = e.as_db_error().map_or_else(|| transport_error(&e), |db| query_error(db, None));
-                    console.output(&shared, run_id, OutputBody::Error { error });
+                    console.output(&shared, run_id, OutputBody::Error { statement: Some(i), error });
                     outcome = RunOutcome::Failed;
                     break;
                 }
@@ -286,6 +288,7 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
         // A cancel that reached the backend while it was idle between prepare and execute is lost.
         if prepared.is_ok() && stop.load(Ordering::Relaxed) {
             set_status(&console, &shared, run_id, i, StmtStatus::Cancelled).await?;
+            console.output(&shared, run_id, OutputBody::Info { message: "Cancelled.".into() });
             outcome = RunOutcome::Cancelled;
             break;
         }
@@ -326,17 +329,30 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
         }
         txn = txn_after(txn, &stmt.kind, if result.is_ok() { StmtOutcome::Ok } else { StmtOutcome::Err });
 
-        let (status, history) = match &result {
+        let (status, line, history) = match &result {
             Ok(StmtOk::Rows(set)) => {
                 let meta = set.meta();
-                let history = (HistoryOutcome::Rows { rows: meta.rows_seen }, meta.elapsed_ms);
-                (StmtStatus::Rows { result: meta, done: true }, history)
+                (
+                    StmtStatus::Rows { result: meta.clone(), done: true },
+                    OutputBody::Rows { statement: i, rows: meta.rows_seen, elapsed_ms: meta.elapsed_ms, truncated: meta.truncated.is_some() },
+                    (HistoryOutcome::Rows { rows: meta.rows_seen }, meta.elapsed_ms),
+                )
             }
-            Ok(StmtOk::Command { tag, elapsed_ms }) => {
-                (StmtStatus::Command { tag: tag.clone(), elapsed_ms: *elapsed_ms }, (HistoryOutcome::Command { tag: tag.clone() }, *elapsed_ms))
-            }
-            Err(_) if cancelled => (StmtStatus::Cancelled, (HistoryOutcome::Cancelled, 0)),
-            Err(error) => (StmtStatus::Failed { error: error.clone() }, (HistoryOutcome::Error { message: error.message.clone() }, 0)),
+            Ok(StmtOk::Command { tag, elapsed_ms }) => (
+                StmtStatus::Command { tag: tag.clone(), elapsed_ms: *elapsed_ms },
+                OutputBody::Command { statement: i, tag: tag.clone(), elapsed_ms: *elapsed_ms },
+                (HistoryOutcome::Command { tag: tag.clone() }, *elapsed_ms),
+            ),
+            Err(error) if cancelled => (
+                StmtStatus::Cancelled,
+                OutputBody::Error { statement: Some(i), error: error.clone() },
+                (HistoryOutcome::Cancelled, 0),
+            ),
+            Err(error) => (
+                StmtStatus::Failed { error: error.clone() },
+                OutputBody::Error { statement: Some(i), error: error.clone() },
+                (HistoryOutcome::Error { message: error.message.clone() }, 0),
+            ),
         };
         console
             .edit(&shared, run_id, |inner| {
@@ -351,7 +367,9 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
                 }
             })
             .await?;
-        publish_notices(&console, &shared, &mut session, run_id);
+        let mut lines = notice_lines(&mut session);
+        lines.push(line);
+        console.output_all(&shared, run_id, lines);
         shared.record_history(HistoryInsert {
             at_ms: now_ms(),
             connection_id: plan.connection.id,
@@ -406,8 +424,23 @@ async fn set_status(console: &Console, shared: &Shared, run_id: RunId, index: u1
     console.edit(shared, run_id, |inner| Console::statements_mut(inner)[index as usize].status = status).await
 }
 
-pub fn publish_notices(console: &Console, shared: &Shared, session: &mut Session, run_id: RunId) {
-    console.output_all(shared, run_id, session.drain_notices().iter().map(notice_body).collect());
+fn publish_notices(console: &Console, shared: &Shared, session: &mut Session, run_id: RunId) {
+    console.output_all(shared, run_id, notice_lines(session));
+}
+
+pub fn notice_lines(session: &mut Session) -> Vec<OutputBody> {
+    session.drain_notices().iter().map(notice_body).collect()
+}
+
+/// Caps the logged text so one huge pasted statement cannot bloat the webview's 5,000-entry log.
+const STATEMENT_TEXT_CAP: usize = 2_000;
+
+pub fn statement_line(statement: u16, sql: &str) -> OutputBody {
+    let text = match sql.char_indices().nth(STATEMENT_TEXT_CAP) {
+        Some((cut, _)) => format!("{}…", &sql[..cut]),
+        None => sql.to_owned(),
+    };
+    OutputBody::Statement { statement, text }
 }
 
 fn notice_body(n: &DbError) -> OutputBody {

@@ -136,7 +136,7 @@ describe("messagesLabel", () => {
 
   it("warns on a WARNING notice or a run-level error", () => {
     expect(messagesLabel([notice(1, "a"), notice(1, "careful", "WARNING")])).toEqual({ text: "2 messages", tone: "warn" });
-    expect(messagesLabel([{ atMs: 0, runId: 1, body: { kind: "Error", error: failure } }])).toEqual({ text: "1 message", tone: "warn" });
+    expect(messagesLabel([{ atMs: 0, runId: 1, body: { kind: "Error", statement: null, error: failure } }])).toEqual({ text: "1 message", tone: "warn" });
   });
 });
 

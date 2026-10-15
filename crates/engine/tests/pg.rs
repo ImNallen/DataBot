@@ -15,6 +15,17 @@ from orders o join customers c on c.id = o.customer_id
 where o.status = 'paid' and o.created_at > now() - interval '90 days'
 group by c.region order by revenue desc";
 
+fn log_line(body: &OutputBody) -> String {
+    match body {
+        OutputBody::Statement { statement, text } => format!("{statement}> {text}"),
+        OutputBody::Rows { statement, rows, truncated, .. } => format!("{statement} rows {rows}{}", if *truncated { " truncated" } else { "" }),
+        OutputBody::Command { statement, tag, .. } => format!("{statement} {tag}"),
+        OutputBody::Notice { severity, message, .. } => format!("{severity}: {message}"),
+        OutputBody::Error { statement, error } => format!("{statement:?} ERROR: {}", error.message),
+        OutputBody::Info { message } => message.clone(),
+    }
+}
+
 fn url() -> String {
     std::env::var("L1_DATA_TEST_PG").unwrap_or_else(|_| DEFAULT_URL.into())
 }
@@ -131,6 +142,18 @@ impl Harness {
         self.entries(tab).into_iter().map(|e| e.body).collect()
     }
 
+    /// The tab's output log, one short string per entry, for literal assertions.
+    fn log(&self, tab: TabId) -> Vec<String> {
+        self.outputs(tab).iter().map(log_line).collect()
+    }
+
+    /// Collects events already sent, for calls such as `table_apply` that return without a run to wait on.
+    fn drain(&mut self) {
+        while let Ok(ev) = self.events.try_recv() {
+            self.seen.push(ev);
+        }
+    }
+
     async fn oracle(&self) -> tokio_postgres::Client {
         let (client, connection) = tokio_postgres::connect(&url(), NoTls).await.unwrap();
         tokio::spawn(connection);
@@ -218,7 +241,7 @@ async fn mockup_query_returns_six_regions_with_bigint_orders() {
     assert!(regions.contains(&"EU-West") && regions.contains(&"APAC"));
     assert!(rows[0][2].as_deref().unwrap().contains('.'), "numeric text keeps its scale");
     assert!(matches!(h.engine.result_page(meta.r#ref, 7, 10), Err(ResultError::OutOfRange)));
-    assert!(h.outputs(tab).is_empty(), "statement outcomes stay in the snapshot: {:?}", h.outputs(tab));
+    assert_eq!(h.log(tab), [format!("0> {MOCKUP_QUERY}"), "0 rows 6".into()]);
     assert!(matches!(state.session, SessionState::Open { backend_pid } if backend_pid > 0));
 }
 
@@ -280,12 +303,23 @@ async fn multi_statement_run_tags_notices_and_history() {
         })
         .collect();
     assert_eq!(tags, ["CREATE TABLE", "INSERT 0 5", "UPDATE 3", "rows:1", "rows:1"]);
-    let entries = h.entries(tab);
-    assert!(
-        matches!(&entries[..], [OutputEntry { body: OutputBody::Notice { severity, message, .. }, .. }] if severity == "NOTICE" && message == "slept 0.01 seconds"),
-        "{entries:?}"
+    assert_eq!(
+        h.log(tab),
+        [
+            "0> create temp table t_multi (id int, v text)",
+            "0 CREATE TABLE",
+            "1> insert into t_multi select g, 'v' || g from generate_series(1, 5) g",
+            "1 INSERT 0 5",
+            "2> update t_multi set v = 'x' where id <= 3",
+            "2 UPDATE 3",
+            "3> select slow_echo(0.01)",
+            "NOTICE: slept 0.01 seconds",
+            "3 rows 1",
+            "4> select count(*) from t_multi",
+            "4 rows 1",
+        ]
     );
-    assert_eq!(entries[0].run_id, accepted.run_id);
+    assert!(h.entries(tab).iter().all(|e| e.run_id == accepted.run_id));
     assert_eq!(h.scalar(tab, "select count(*) from t_multi where v = 'x'").await, "3", "temp table sticks to the tab's session");
 
     let history = h.engine.history(HistoryQuery { text: None, connection_id: Some(h.conn), before_id: None, limit: 10 });
@@ -315,6 +349,7 @@ async fn error_position_maps_to_utf16_past_an_emoji() {
     assert_eq!(error.position, Some(DocOffset(expected)));
     assert!(matches!(state.run, RunState::Finished { outcome: RunOutcome::Failed, .. }));
     assert_eq!(state.txn, TxnState::Idle);
+    assert_eq!(h.log(tab), ["0> select '😀 ok' as e, nope_column from customers limit 1", "Some(0) ERROR: column \"nope_column\" does not exist"]);
 }
 
 #[tokio::test]
@@ -331,6 +366,7 @@ async fn cancel_finishes_cancelled_quickly() {
     assert!(started.elapsed() < Duration::from_secs(2), "cancel took {:?}", started.elapsed());
     assert!(matches!(state.run, RunState::Finished { outcome: RunOutcome::Cancelled, .. }));
     assert!(matches!(statuses(&state)[..], [StmtStatus::Cancelled, StmtStatus::Skipped]));
+    assert_eq!(h.log(tab), ["0> select slow_echo(30)", "Some(0) ERROR: canceling statement due to user request"]);
     assert_eq!(h.scalar(tab, "select 7").await, "7", "the session is usable afterwards");
     h.engine.console_cancel(tab).await;
 }
@@ -345,6 +381,7 @@ async fn manual_tab_isolated_until_commit_and_abort_rolls_back() {
 
     let state = h.run_ok(a, &format!("insert into {table} values (1)")).await;
     assert_eq!(state.txn, TxnState::Active);
+    assert_eq!(h.log(a), [format!("0> insert into {table} values (1)"), "BEGIN (implicit)".into(), "0 INSERT 0 1".into()]);
     assert_eq!(h.scalar(b, &format!("select count(*) from {table}")).await, "0");
     let err = h.engine.disconnect(h.conn, false).await.unwrap_err();
     assert!(matches!(err, DisconnectError::OpenTransactions { ref tabs } if tabs.len() == 1 && tabs[0].tab_id == a && tabs[0].has_writes));
@@ -384,18 +421,28 @@ async fn a_notice_raised_at_commit_carries_the_commit_run_id() {
     let accepted = h.start_run(tab, script).await;
     let state = h.wait_finished(tab, accepted.run_id).await;
     assert!(matches!(state.run, RunState::Finished { outcome: RunOutcome::Ok, .. }), "{:?}", state.run);
-    assert!(h.entries(tab).is_empty(), "the trigger is deferred to COMMIT: {:?}", h.entries(tab));
 
+    assert!(!h.log(tab).contains(&"NOTICE: deferred".to_owned()), "the trigger is deferred to COMMIT: {:?}", h.log(tab));
+
+    let before = h.entries(tab).len();
     h.engine.console_commit(tab).await.unwrap();
-    let entry = loop {
-        if let AppEvent::ConsoleOutput { tab_id, entries } = h.next_event().await
-            && tab_id == tab
-        {
-            break entries.into_iter().next().unwrap();
-        }
-    };
-    assert!(matches!(&entry.body, OutputBody::Notice { message, .. } if message == "deferred"), "{entry:?}");
-    assert!(entry.run_id > accepted.run_id, "commit run {:?} is not after run {:?}", entry.run_id, accepted.run_id);
+    h.drain();
+    let commit = &h.entries(tab)[before..];
+    assert_eq!(commit.iter().map(|e| log_line(&e.body)).collect::<Vec<_>>(), ["0> COMMIT", "NOTICE: deferred", "0 COMMIT"]);
+    assert!(commit.iter().all(|e| e.run_id == commit[0].run_id));
+    assert!(commit[0].run_id > accepted.run_id, "commit run {:?} is not after run {:?}", commit[0].run_id, accepted.run_id);
+}
+
+#[tokio::test]
+async fn a_long_statement_is_cut_to_two_thousand_chars_in_the_log() {
+    let mut h = Harness::start().await;
+    let tab = h.sql_tab(TxnMode::AutoCommit).await;
+    let sql = format!("select '{}' as long", "é".repeat(2_500));
+    h.run_ok(tab, &sql).await;
+    let Some(OutputBody::Statement { statement: 0, text }) = h.outputs(tab).into_iter().next() else { panic!("{:?}", h.log(tab)) };
+    let expected: String = sql.chars().take(2_000).chain(['…']).collect();
+    assert_eq!(text, expected);
+    assert_eq!(text.chars().count(), 2_001);
 }
 
 #[tokio::test]
@@ -454,6 +501,7 @@ async fn forced_disconnect_during_a_manual_run_leaves_the_tab_idle() {
     let second = h.scalar(tab, "select pg_current_xact_id()::text").await;
     assert_eq!(h.console(tab).txn, TxnState::Active, "manual mode opened a block again");
     assert_eq!(first, second, "both statements ran inside one transaction");
+    assert!(h.log(tab).iter().any(|l| l == "BEGIN (implicit)"), "{:?}", h.log(tab));
     h.engine.console_rollback(tab).await.unwrap();
 }
 
@@ -509,6 +557,7 @@ async fn big_result_truncates_at_max_rows_and_keeps_counting() {
         .filter(|e| matches!(e, AppEvent::ConsoleChanged(s) if s.tab_id == tab && matches!(s.run, RunState::Running { .. })))
         .count();
     assert!(streaming >= 2, "progress snapshots while streaming: {streaming}");
+    assert_eq!(h.log(tab).last().map(String::as_str), Some("0 rows 300000 truncated"));
     assert_eq!(h.scalar(tab, "select 1").await, "1");
     assert!(matches!(h.engine.result_page(meta.r#ref, 0, 1), Err(ResultError::Gone)), "results die on re-run");
 }
@@ -537,6 +586,8 @@ async fn ddl_refreshes_the_catalog() {
     let state = h.wait_finished(tab, page.run_id).await;
     let meta = Harness::result(&state, 0);
     assert_eq!(meta.row_count, 500);
+    let logged: Vec<String> = h.entries(tab).iter().filter(|e| e.run_id == page.run_id).map(|e| log_line(&e.body)).collect();
+    assert_eq!(logged, ["0> SELECT * FROM \"public\".\"orders\" ORDER BY \"id\" LIMIT 500 OFFSET 1000", "0 rows 500"]);
     assert_eq!(h.page(&meta, 0, 1)[0][0].as_deref(), Some("1001"), "page 2 of 500 ordered by pk");
 
     h.run_ok(tab, &format!("drop table public.{table}")).await;
@@ -651,8 +702,21 @@ async fn table_apply_commits_every_change_or_none() {
     ok.deletes.push(vec![cell("id", Some("1"))]);
     ok.updates.push(RowUpdate { key: vec![cell("id", Some("2"))], set: vec![cell("name", Some("b'2")), cell("note", Some("x"))] });
     ok.inserts.push(vec![cell("name", Some("d"))]);
+    let before = h.log(tab).len();
     let summary = h.engine.table_apply(tab, ok).await.unwrap();
     assert!(summary.committed);
+    h.drain();
+    assert_eq!(
+        h.log(tab)[before..],
+        [
+            format!("0> DELETE FROM \"public\".\"{table}\" WHERE \"id\" = '1'"),
+            "0 DELETE 1".into(),
+            format!("1> UPDATE \"public\".\"{table}\" SET \"name\" = 'b''2', \"note\" = 'x' WHERE \"id\" = '2'"),
+            "1 UPDATE 1".into(),
+            format!("2> INSERT INTO \"public\".\"{table}\" (\"name\") VALUES ('d')"),
+            "2 INSERT 0 1".into(),
+        ]
+    );
     assert_eq!(rows_of(&mut h, tab, &table).await, "2:b'2:x 3:c:NULL 4:d:NULL");
     assert_eq!(h.console(tab).txn, TxnState::Idle);
 
@@ -665,8 +729,15 @@ async fn table_apply_commits_every_change_or_none() {
     let mut violating = changes(&table);
     violating.deletes.push(vec![cell("id", Some("3"))]);
     violating.inserts.push(vec![cell("note", Some("no name"))]);
+    h.drain();
+    let before = h.log(tab).len();
     let err = h.engine.table_apply(tab, violating).await.unwrap_err();
     assert!(matches!(&err, ApplyError::Failed { change: ChangeRef { kind: ChangeKind::Insert, index: 0 }, error } if error.sqlstate.as_deref() == Some("23502")), "{err:?}");
+    h.drain();
+    let failed = &h.log(tab)[before..];
+    assert_eq!(failed.len(), 4, "{failed:?}");
+    assert_eq!(failed[1], "0 DELETE 1");
+    assert!(failed[3].starts_with("Some(1) ERROR: null value in column \"name\""), "{failed:?}");
 
     assert_eq!(rows_of(&mut h, tab, &table).await, "2:b'2:x 3:c:NULL 4:d:NULL", "failed applies left nothing behind");
     assert_eq!(h.console(tab).txn, TxnState::Idle);

@@ -54,6 +54,10 @@ function MessageLine({ entry }: { entry: OutputEntry }) {
           <ErrorBlock error={body.error} />
         </Line>
       );
+    case "Statement":
+    case "Rows":
+    case "Command":
+      return null;
     default: {
       const unreachable: never = body;
       return unreachable;

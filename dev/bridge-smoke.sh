@@ -90,7 +90,7 @@ done
 invoke result_page "{\"resultRef\":{\"tabId\":\"$TAB\",\"runId\":$RUN_ID,\"index\":1},\"start\":0,\"len\":10}" | ok
 kill $SSE_PID; wait $SSE_PID 2>/dev/null || true
 
-python3 - "$SSE_LOG" "$TAB" "$RUN_ID" <<'EOF'
+python3 - "$SSE_LOG" "$TAB" "$RUN_ID" "$QUERY" <<'EOF'
 import json, sys
 frames = [json.loads(l[5:]) for l in open(sys.argv[1]) if l.startswith("data:")]
 kinds = [f["kind"] for f in frames]
@@ -101,10 +101,20 @@ assert finished, "no Finished ConsoleChanged on SSE"
 st = finished[-1]["run"]["statements"][1]["status"]
 assert st["kind"] == "Rows" and st["result"]["rowCount"] == 6, st
 print("SSE ConsoleChanged Finished: rows=%d outcome=%s" % (st["result"]["rowCount"], finished[-1]["run"]["outcome"]))
-notices = [e["body"] for f in frames if f["kind"] == "ConsoleOutput" and f["tabId"] == sys.argv[2]
-           for e in f["entries"] if e["runId"] == int(sys.argv[3])]
-assert notices == [{"kind": "Notice", "severity": "NOTICE", "message": "smoke notice", "detail": None}], notices
-print("SSE ConsoleOutput: %s" % notices[0]["message"])
+def line(b):
+    fields = {"Statement": ("statement", "text"), "Notice": ("severity", "message"), "Command": ("statement", "tag"), "Rows": ("statement", "rows")}
+    return (b["kind"],) + tuple(b[k] for k in fields.get(b["kind"], ()))
+log = [line(e["body"]) for f in frames if f["kind"] == "ConsoleOutput" and f["tabId"] == sys.argv[2]
+       for e in f["entries"] if e["runId"] == int(sys.argv[3])]
+expected = [
+    ("Statement", 0, "do $$ begin raise notice 'smoke notice'; end $$"),
+    ("Notice", "NOTICE", "smoke notice"),
+    ("Command", 0, "DO"),
+    ("Statement", 1, sys.argv[4]),
+    ("Rows", 1, 6),
+]
+assert log == expected, log
+print("SSE ConsoleOutput: %d lines, notice %r" % (len(log), log[1][2]))
 assert "ConnectionChanged" in kinds and "CatalogChanged" in kinds and "ConsoleOutput" in kinds and "HistoryAppended" in kinds
 print("bridge smoke ok")
 EOF
