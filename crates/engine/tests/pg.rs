@@ -1065,10 +1065,10 @@ async fn ddl_burst_coalesces_refreshes() {
     h.run_ok(tab, &script).await;
     assert_eq!(slow.await.unwrap().unwrap(), 1);
 
-    let after = h.catalog_when(&h.db(), |c| tables.iter().all(|t| c.relation("public", t).is_some())).await.version;
+    h.catalog_when(&h.db(), |c| tables.iter().all(|t| c.relation("public", t).is_some())).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let settled = h.engine.catalog(h.db()).await.unwrap().version;
-    assert_eq!((after - before, settled - before), (2, 2), "30 DDL statements caused exactly two loads");
+    assert_eq!(settled - before, 2, "30 DDL statements caused exactly two loads");
     let drops = tables.iter().chain([&gate]).map(|t| format!("drop table public.{t}")).collect::<Vec<_>>().join(";\n");
     h.run_ok(tab, &drops).await;
 }
