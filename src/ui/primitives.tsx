@@ -133,9 +133,19 @@ export function ContextMenuArea({ menu, children }: { menu: ReactNode; children:
   );
 }
 
-export function ContextMenuItem({ children, onSelect, testId }: { children: ReactNode; onSelect: () => void; testId?: string }) {
+export function ContextMenuItem({
+  children,
+  onSelect,
+  testId,
+  danger,
+}: {
+  children: ReactNode;
+  onSelect: () => void;
+  testId?: string;
+  danger?: boolean;
+}) {
   return (
-    <ContextMenu.Item data-testid={testId} onSelect={onSelect} className={cx(MENU_ITEM, "pr-3 text-fg")}>
+    <ContextMenu.Item data-testid={testId} onSelect={onSelect} className={cx(MENU_ITEM, "pr-3", danger ? "text-danger" : "text-fg")}>
       {children}
     </ContextMenu.Item>
   );
@@ -161,8 +171,8 @@ export function MenuLabel({ children }: { children: ReactNode }) {
   return <Menu.Label className="px-2 pt-1.5 pb-1 text-ui-11.5 text-dim">{children}</Menu.Label>;
 }
 
-export function MenuSeparator() {
-  return <Menu.Separator className="my-1 h-px bg-control" />;
+export function ContextMenuSeparator() {
+  return <ContextMenu.Separator className="my-1 h-px bg-control" />;
 }
 
 export function Modal({

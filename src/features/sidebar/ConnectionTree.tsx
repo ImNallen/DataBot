@@ -1,4 +1,3 @@
-import * as Menu from "@radix-ui/react-dropdown-menu";
 import {
   IconBolt,
   IconBraces,
@@ -6,7 +5,6 @@ import {
   IconChevronRight,
   IconClock,
   IconDatabase,
-  IconDots,
   IconEqual,
   IconEye,
   IconFilter2,
@@ -47,11 +45,9 @@ import { useWorkspace } from "../../state/workspace";
 import {
   ContextMenuArea,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextSubmenu,
   cx,
-  MenuContent,
-  MenuItem,
-  MenuSeparator,
   PgBadge,
   Spinner,
   StatusDot,
@@ -80,7 +76,6 @@ function Row({
   label,
   trailing,
   second,
-  menu,
   contextMenu,
   quietChevron,
   active,
@@ -101,7 +96,6 @@ function Row({
   trailing?: ReactNode;
   /** A muted line under the label, cut with an ellipsis and whole in its title. */
   second?: string;
-  menu?: ReactNode;
   contextMenu?: ReactNode;
 }) {
   const twoLines = second !== undefined;
@@ -156,7 +150,6 @@ function Row({
           {trailing}
         </>
       )}
-      {menu}
     </div>
   );
   return contextMenu ? <ContextMenuArea menu={contextMenu}>{row}</ContextMenuArea> : row;
@@ -510,31 +503,22 @@ function ConnectionMenu({ config, shown }: { config: ConnectionConfig; shown: Da
   const connected = shown !== null;
   const open = useWorkspace((s) => s.open);
   return (
-    <Menu.Root modal={false}>
-      <Menu.Trigger
-        data-testid={`conn-menu-${config.name}`}
-        onClick={(e) => e.stopPropagation()}
-        className="invisible ml-1 grid size-5 shrink-0 place-items-center rounded text-muted outline-none group-hover:visible hover:bg-control hover:text-fg focus-visible:visible data-[state=open]:visible"
-      >
-        <IconDots size={14} />
-      </Menu.Trigger>
-      <MenuContent align="end">
-        {connected ? (
-          <MenuItem onSelect={() => void disconnect(config.id)}>Disconnect</MenuItem>
-        ) : (
-          <MenuItem onSelect={() => void connect(config.id)}>Connect</MenuItem>
-        )}
-        <MenuItem onSelect={() => openSqlTab({ db: shown?.[0] ?? { connectionId: config.id, database: config.database } })}>New SQL tab</MenuItem>
-        {connected && <MenuItem onSelect={() => void refreshConnection(config.id)}>Refresh catalog</MenuItem>}
-        <MenuSeparator />
-        <MenuItem testId="conn-edit" onSelect={() => open({ kind: "connection", editing: config.id })}>
-          Edit…
-        </MenuItem>
-        <MenuItem danger onSelect={() => confirmDelete(config.id)}>
-          Delete
-        </MenuItem>
-      </MenuContent>
-    </Menu.Root>
+    <>
+      {connected ? (
+        <ContextMenuItem onSelect={() => void disconnect(config.id)}>Disconnect</ContextMenuItem>
+      ) : (
+        <ContextMenuItem onSelect={() => void connect(config.id)}>Connect</ContextMenuItem>
+      )}
+      <ContextMenuItem onSelect={() => openSqlTab({ db: shown?.[0] ?? { connectionId: config.id, database: config.database } })}>New SQL tab</ContextMenuItem>
+      {connected && <ContextMenuItem onSelect={() => void refreshConnection(config.id)}>Refresh catalog</ContextMenuItem>}
+      <ContextMenuSeparator />
+      <ContextMenuItem testId="conn-edit" onSelect={() => open({ kind: "connection", editing: config.id })}>
+        Edit…
+      </ContextMenuItem>
+      <ContextMenuItem danger onSelect={() => confirmDelete(config.id)}>
+        Delete
+      </ContextMenuItem>
+    </>
   );
 }
 
@@ -642,7 +626,7 @@ function ConnectionTrailing({
             e.stopPropagation();
             void connect(config.id);
           }}
-          className="ml-1 h-5 shrink-0 rounded-md px-1.5 text-ui-11.5 text-muted hover:bg-control hover:text-fg"
+          className="-mr-1.5 ml-1 h-5 shrink-0 rounded-md px-1.5 text-ui-11.5 text-muted hover:bg-control hover:text-fg"
         >
           Connect
         </button>
@@ -710,7 +694,7 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         }
         label={<span className={cx("font-medium", status.tone === "off" && "text-muted")}>{config.name}</span>}
         trailing={<ConnectionTrailing config={config} tone={status.tone} instance={instance} target={target} active={picking} />}
-        menu={<ConnectionMenu config={config} shown={instance && shown.map((d) => ({ connectionId: config.id, database: d.name }))} />}
+        contextMenu={<ConnectionMenu config={config} shown={instance && shown.map((d) => ({ connectionId: config.id, database: d.name }))} />}
       />
       {failure && (
         <div data-testid={`conn-error-${config.name}`} className="mx-2 mb-1 pr-2 pl-[38px] text-ui-11.5 leading-4 text-danger/90">

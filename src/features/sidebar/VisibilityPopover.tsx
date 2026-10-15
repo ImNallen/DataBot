@@ -49,7 +49,7 @@ export function PickerPill({ target, count, active, testId }: { target: PickerTa
       }}
       onDoubleClick={(e) => e.stopPropagation()}
       className={cx(
-        "ml-1 inline-flex h-5 shrink-0 items-center rounded-md px-1.5 text-ui-11.5 leading-none tabular-nums",
+        "-mr-1.5 ml-1 inline-flex h-5 shrink-0 items-center rounded-md px-1.5 text-ui-11.5 leading-none tabular-nums",
         count.warn ? "text-amber" : "text-muted",
         active ? "bg-control" : "hover:bg-control",
       )}
