@@ -21,7 +21,8 @@ describe("columnType", () => {
 
 describe("defaultText", () => {
   it("names identity and generated columns and passes expressions through", () => {
-    expect(defaultText({ kind: "Identity", always: true })).toBe("identity");
+    expect(defaultText({ kind: "Identity", always: true })).toBe("identity always");
+    expect(defaultText({ kind: "Identity", always: false })).toBe("identity");
     expect(defaultText({ kind: "Expr", sql: "'pending'" })).toBe("'pending'");
     expect(defaultText({ kind: "Generated", sql: "(qty * price)" })).toBe("generated (qty * price)");
   });

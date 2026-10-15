@@ -11,7 +11,7 @@ export function columnType(c: ColumnInfo): string {
 export function defaultText(v: DefaultValue): string {
   switch (v.kind) {
     case "Identity":
-      return "identity";
+      return v.always ? "identity always" : "identity";
     case "Expr":
       return v.sql;
     case "Generated":
