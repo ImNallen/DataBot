@@ -514,7 +514,7 @@ function ConnectionMenu({ config, shown }: { config: ConnectionConfig; shown: Da
       <Menu.Trigger
         data-testid={`conn-menu-${config.name}`}
         onClick={(e) => e.stopPropagation()}
-        className="ml-1 hidden size-5 shrink-0 place-items-center rounded text-muted outline-none group-hover:grid hover:bg-control hover:text-fg data-[state=open]:grid"
+        className="invisible ml-1 grid size-5 shrink-0 place-items-center rounded text-muted outline-none group-hover:visible hover:bg-control hover:text-fg focus-visible:visible data-[state=open]:visible"
       >
         <IconDots size={14} />
       </Menu.Trigger>
