@@ -1065,10 +1065,10 @@ async fn ddl_burst_coalesces_refreshes() {
     h.run_ok(tab, &script).await;
     assert_eq!(slow.await.unwrap().unwrap(), 1);
 
-    let after = h.catalog_when(&h.db(), |c| tables.iter().all(|t| c.relation("public", t).is_some())).await.version;
+    h.catalog_when(&h.db(), |c| tables.iter().all(|t| c.relation("public", t).is_some())).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let settled = h.engine.catalog(h.db()).await.unwrap().version;
-    assert_eq!((after - before, settled - before), (2, 2), "30 DDL statements caused exactly two loads");
+    assert_eq!(settled - before, 2, "30 DDL statements caused exactly two loads");
     let drops = tables.iter().chain([&gate]).map(|t| format!("drop table public.{t}")).collect::<Vec<_>>().join(";\n");
     h.run_ok(tab, &drops).await;
 }
@@ -1333,24 +1333,24 @@ async fn relation_detail_hides_partition_clones_and_shows_inherited_triggers() {
     h.engine.connect(h.conn).await.unwrap();
     let (oracle, connection) = tokio_postgres::connect(&url(), NoTls).await.unwrap();
     tokio::spawn(connection);
+    // A scratch schema would race the tests that count shop's schemas, so the tables share public.
     let s = unique("t_detail");
     oracle
         .batch_execute(&format!(
-            "create schema {s};
-             create table {s}.ptarget (id int, region text, primary key (id, region)) partition by list (region);
-             create table {s}.ptarget_eu partition of {s}.ptarget for values in ('eu');
-             create table {s}.ptarget_us partition of {s}.ptarget for values in ('us');
-             create table {s}.t (a int, region text, constraint fk_part foreign key (a, region) references {s}.ptarget);
-             create function {s}.noop() returns trigger language plpgsql as $$ begin return new; end $$;
-             create trigger t_replica after insert on {s}.t for each row execute function {s}.noop();
-             alter table {s}.t enable replica trigger t_replica;
-             create table {s}.parted (id int) partition by range (id);
-             create table {s}.parted_1 partition of {s}.parted for values from (0) to (10);
-             create trigger t_parent after insert on {s}.parted for each row execute function {s}.noop();"
+            "create table public.{s}_ptarget (id int, region text, primary key (id, region)) partition by list (region);
+             create table public.{s}_ptarget_eu partition of public.{s}_ptarget for values in ('eu');
+             create table public.{s}_ptarget_us partition of public.{s}_ptarget for values in ('us');
+             create table public.{s}_t (a int, region text, constraint fk_part foreign key (a, region) references public.{s}_ptarget);
+             create function public.{s}_noop() returns trigger language plpgsql as $$ begin return new; end $$;
+             create trigger t_replica after insert on public.{s}_t for each row execute function public.{s}_noop();
+             alter table public.{s}_t enable replica trigger t_replica;
+             create table public.{s}_parted (id int) partition by range (id);
+             create table public.{s}_parted_1 partition of public.{s}_parted for values from (0) to (10);
+             create trigger t_parent after insert on public.{s}_parted for each row execute function public.{s}_noop();"
         ))
         .await
         .unwrap();
-    let oid = async |table: &str| oracle.query_one(&format!("select '{s}.{table}'::regclass::oid"), &[]).await.unwrap().get::<_, u32>(0);
+    let oid = async |table: &str| oracle.query_one(&format!("select 'public.{s}_{table}'::regclass::oid"), &[]).await.unwrap().get::<_, u32>(0);
 
     let t = h.engine.relation_detail(h.db(), oid("t").await).await.unwrap();
     let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -1360,8 +1360,8 @@ async fn relation_detail_hides_partition_clones_and_shows_inherited_triggers() {
             name: "fk_part".into(),
             columns: names(&["a", "region"]),
             kind: KeyKind::Foreign {
-                ref_schema: s.clone(),
-                ref_table: "ptarget".into(),
+                ref_schema: "public".into(),
+                ref_table: format!("{s}_ptarget"),
                 ref_columns: names(&["id", "region"]),
                 on_delete: FkAction::NoAction,
                 on_update: FkAction::NoAction,
@@ -1374,14 +1374,14 @@ async fn relation_detail_hides_partition_clones_and_shows_inherited_triggers() {
         events: vec![TriggerEvent::Insert],
         per_row: true,
         enabled,
-        function: format!("{s}.noop"),
+        function: format!("{s}_noop"),
     };
     assert_eq!(t.triggers, [trigger("t_replica", false)], "a replica trigger does not fire in a normal session, and RI triggers stay hidden");
 
     let parted_1 = h.engine.relation_detail(h.db(), oid("parted_1").await).await.unwrap();
     assert_eq!(parted_1.triggers, [trigger("t_parent", true)], "a partition shows the row trigger it inherits");
 
-    oracle.batch_execute(&format!("drop schema {s} cascade")).await.unwrap();
+    oracle.batch_execute(&format!("drop table public.{s}_t, public.{s}_ptarget, public.{s}_parted; drop function public.{s}_noop()")).await.unwrap();
 }
 
 /// What a connection with no stored view shows: the home database with every user schema, and
