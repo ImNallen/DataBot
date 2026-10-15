@@ -1,14 +1,15 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { IconAlertCircle, IconCheck, IconEye, IconEyeOff, IconLock, IconPlus, IconSelector, IconX } from "@tabler/icons-react";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { commands, type ConnectionConfig, type ConnectionDraft, type ConnectionId, type PasswordInput, type SslMode } from "../../ipc/bindings";
 import { connectErrorText } from "../../ipc/errors";
 import { useLive } from "../../state/live";
 import { connectionTone } from "../../state/status";
 import { useWorkspace } from "../../state/workspace";
-import { Button, cx, DialogBackdrop, IconButton, inputClass, PgBadge, Spinner, StatusDot } from "../../ui/primitives";
+import { Button, cx, DialogBackdrop, IconButton, inputClass, Modal, PgBadge, Spinner, StatusDot } from "../../ui/primitives";
 import { connect } from "./connectionActions";
 import { CONNECTION_COLORS, ConnectionColorDot, connectionColorId, type ConnectionColorId } from "./connectionColors";
+import { initialFields, initialPassword, isDirty, type Fields, type PasswordEdit } from "./connectionForm";
 
 /** Each hint says what the engine's `tls()` does for the mode. */
 const SSL_MODES: { value: SslMode; label: string; hint: string }[] = [
@@ -18,10 +19,6 @@ const SSL_MODES: { value: SslMode; label: string; hint: string }[] = [
   { value: "VerifyCa", label: "Verify CA", hint: "Always uses TLS and checks the certificate chain, but not the host name." },
   { value: "VerifyFull", label: "Verify full", hint: "Always uses TLS and checks the certificate chain and the host name." },
 ];
-
-type Fields = { name: string; host: string; port: string; database: string; user: string; sslMode: SslMode; color: ConnectionColorId | null };
-
-type PasswordEdit = { kind: "keep" } | { kind: "set"; value: string } | { kind: "clear" };
 
 function toPasswordInput(edit: PasswordEdit): PasswordInput {
   switch (edit.kind) {
@@ -39,18 +36,6 @@ function toPasswordInput(edit: PasswordEdit): PasswordInput {
 }
 
 type Probe = { kind: "idle" } | { kind: "testing" } | { kind: "ok"; version: string } | { kind: "error"; message: string };
-
-function initialFields(c: ConnectionConfig | undefined): Fields {
-  return {
-    name: c?.name ?? "",
-    host: c?.host ?? "localhost",
-    port: String(c?.port ?? 5432),
-    database: c?.database ?? "postgres",
-    user: c?.user ?? "postgres",
-    sslMode: c?.sslMode ?? "Prefer",
-    color: connectionColorId(c?.color ?? null),
-  };
-}
 
 function serverText(c: { host: string; port: number; database: string }): string {
   return `${c.host}:${c.port}/${c.database}`;
@@ -97,21 +82,20 @@ function HollowMark({ dashed }: { dashed?: boolean }) {
   return <span className={cx("size-2 rounded-full border border-faint", dashed && "border-dashed")} />;
 }
 
-function ConnectionList({ editing }: { editing: ConnectionId | null }) {
+function ConnectionList({ selected, onSelect }: { selected: ConnectionId | null; onSelect: (id: ConnectionId | null) => void }) {
   const configs = useWorkspace((s) => s.configs);
-  const open = useWorkspace((s) => s.open);
   const connections = useLive((s) => s.connections);
   const list = Object.values(configs).sort((a, b) => a.name.localeCompare(b.name));
   return (
     <aside className="flex w-[210px] shrink-0 flex-col border-r border-border bg-sidebar">
       <div className="flex h-12 shrink-0 items-center justify-between pr-2 pl-4">
         <span className="text-ui-13.5 font-semibold text-fg">Connections</span>
-        <Button data-testid="conn-new" variant="ghost" className="h-7 gap-1 px-2" onClick={() => open({ kind: "connection", editing: null })}>
+        <Button data-testid="conn-new" variant="ghost" className="h-7 gap-1 px-2" onClick={() => onSelect(null)}>
           <IconPlus size={14} /> New
         </Button>
       </div>
       <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
-        {editing === null && (
+        {selected === null && (
           <ListRow testId="conn-list-new" selected mark={<HollowMark dashed />} name={<span className="italic">New connection</span>} detail="Not saved yet" />
         )}
         {list.map((c) => {
@@ -120,12 +104,12 @@ function ConnectionList({ editing }: { editing: ConnectionId | null }) {
             <ListRow
               key={c.id}
               testId={`conn-list-${c.name}`}
-              selected={c.id === editing}
+              selected={c.id === selected}
               mark={connectionColorId(c.color) ? <ConnectionColorDot color={c.color} /> : <HollowMark />}
               name={c.name}
               detail={serverText(c)}
               trailing={tone !== "off" && <StatusDot tone={tone} />}
-              onClick={() => open({ kind: "connection", editing: c.id })}
+              onClick={() => onSelect(c.id)}
             />
           );
         })}
@@ -205,11 +189,21 @@ function ColorPicker({ value, onChange, labelledBy }: { value: ColorChoice; onCh
   );
 }
 
-function ConnectionForm({ existing, onDone }: { existing: ConnectionConfig | undefined; onDone: () => void }) {
+function ConnectionForm({
+  existing,
+  onSaved,
+  onClose,
+  onDirtyChange,
+}: {
+  existing: ConnectionConfig | undefined;
+  onSaved: () => void;
+  onClose: () => void;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
   const upsertConfig = useWorkspace((s) => s.upsertConfig);
   const ids = useId();
   const [fields, setFields] = useState(() => initialFields(existing));
-  const [password, setPassword] = useState<PasswordEdit>(existing?.hasPassword ? { kind: "keep" } : { kind: "clear" });
+  const [password, setPassword] = useState<PasswordEdit>(() => initialPassword(existing));
   const [reveal, setReveal] = useState(false);
   const [url, setUrl] = useState("");
   const [urlError, setUrlError] = useState<string | null>(null);
@@ -218,6 +212,12 @@ function ConnectionForm({ existing, onDone }: { existing: ConnectionConfig | und
   const [probe, setProbe] = useState<Probe>({ kind: "idle" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  const dirty = isDirty(existing, { fields, password, url });
+  useEffect(() => {
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [dirty, onDirtyChange]);
 
   const update = (patch: Partial<Fields>) => {
     setFields((f) => ({ ...f, ...patch }));
@@ -278,7 +278,7 @@ function ConnectionForm({ existing, onDone }: { existing: ConnectionConfig | und
       return;
     }
     upsertConfig(res.data);
-    onDone();
+    onSaved();
     if (!existing) void connect(res.data.id);
   };
 
@@ -369,7 +369,7 @@ function ConnectionForm({ existing, onDone }: { existing: ConnectionConfig | und
                 onChange={(e) => {
                   const value = e.target.value;
                   setProbe({ kind: "idle" });
-                  setPassword(value ? { kind: "set", value } : existing?.hasPassword ? { kind: "keep" } : { kind: "clear" });
+                  setPassword(value ? { kind: "set", value } : initialPassword(existing));
                 }}
               />
               <button
@@ -441,7 +441,7 @@ function ConnectionForm({ existing, onDone }: { existing: ConnectionConfig | und
           {probe.kind === "error" && <ErrorLine message={probe.message} />}
           {saveError && <ErrorLine message={saveError} />}
         </div>
-        <Button variant="ghost" onClick={onDone}>
+        <Button variant="ghost" onClick={onClose}>
           Close
         </Button>
         <Button data-testid="conn-save" type="submit" variant="primary" disabled={!valid || saving}>
@@ -465,18 +465,55 @@ export function ConnectionDialog() {
   const overlay = useWorkspace((s) => s.overlay);
   const configs = useWorkspace((s) => s.configs);
   const close = useWorkspace((s) => s.close);
+  const open = useWorkspace((s) => s.open);
   const editing = overlay.kind === "connection" ? overlay.editing : null;
   const existing = editing ? configs[editing] : undefined;
+  const selected = existing ? editing : null;
+  const [dirty, setDirty] = useState(false);
+  const [pending, setPending] = useState<(() => void) | null>(null);
+  const keepEditing = useRef<HTMLButtonElement>(null);
+
+  const leave = (action: () => void) => {
+    if (dirty) setPending(() => action);
+    else action();
+  };
+  const select = (id: ConnectionId | null) => {
+    if (id !== selected) leave(() => open({ kind: "connection", editing: id }));
+  };
+  const discard = () => {
+    const action = pending;
+    setPending(null);
+    action?.();
+  };
+
   return (
-    <Dialog.Root open={overlay.kind === "connection"} onOpenChange={(o) => !o && close()}>
+    <Dialog.Root open={overlay.kind === "connection"} onOpenChange={(o) => !o && leave(close)}>
       <Dialog.Portal>
         <DialogBackdrop />
         <Dialog.Content
           data-testid="connection-dialog"
           className="motion-pop fixed top-1/2 left-1/2 z-50 flex h-[560px] max-h-[calc(100vh-48px)] w-[760px] max-w-[calc(100vw-48px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border border-control bg-raised shadow-[var(--shadow-dialog)] outline-none"
         >
-          <ConnectionList editing={existing ? editing : null} />
-          <ConnectionForm key={editing ?? "new"} existing={existing} onDone={close} />
+          <ConnectionList selected={selected} onSelect={select} />
+          <ConnectionForm key={editing ?? "new"} existing={existing} onSaved={close} onClose={() => leave(close)} onDirtyChange={setDirty} />
+          <Modal
+            open={pending !== null}
+            onOpenChange={(o) => !o && setPending(null)}
+            title="Discard unsaved changes?"
+            description={existing ? `Your edits to ${existing.name} are lost.` : "This connection is not saved yet."}
+            width={400}
+            testId="discard-dialog"
+            initialFocus={keepEditing}
+          >
+            <div className="flex justify-end gap-2">
+              <Button ref={keepEditing} data-testid="discard-cancel" variant="ghost" onClick={() => setPending(null)}>
+                Keep editing
+              </Button>
+              <Button data-testid="discard-confirm" variant="danger" onClick={discard}>
+                Discard
+              </Button>
+            </div>
+          </Modal>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
