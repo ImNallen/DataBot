@@ -780,8 +780,8 @@ The UI derives its status values instead of storing them:
 | Derived status | Source |
 |---|---|
 | Run button: Run or Cancel | `isRunning(consoles[tab])`, from `run.kind` |
-| Transaction mode menu in the TopBar | SQL tabs only. `config.mode`, `txn` in manual mode, and "rolled back" while `session` is `Lost { txnLost }` |
-| Ln/Col in the results header | SQL tabs only. `cursor` in the workspace store |
+| Transaction mode in the TopBar | A menu on SQL tabs: `config.mode`, `txn` in manual mode, and "rolled back" while `session` is `Lost { txnLost }`. A fixed "Auto-commit" label on table tabs, from `tabMode` |
+| Ln/Col in the results header | Every tab. `cursor` in the workspace store, set by the editor's update listener and again by `SqlEditor` on a tab switch, because `setState` runs no update listeners |
 | Commit/Rollback visibility | SQL tabs only, while `hasUncommittedWork` (`config.mode === "Manual" && txn !== "Idle"`) |
 | "6 rows · 38 ms" in the results toolbar (`result-status`) | `runSummary(run, picked, now)` from `ResultMeta` |
 | Unsaved dot | Shown only while `txn !== "Idle"` in manual mode ("uncommitted work"). Consoles autosave text to the workspace, so a text-dirty dot would mean nothing. |

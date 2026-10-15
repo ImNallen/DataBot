@@ -24,7 +24,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 ### SQL tabs
 
 - SQL tabs complete table and column names from the live catalog. `⌘↵` or **Run** runs the statement under the cursor or the selection. `Esc` or **Cancel** stops a running query.
-- Each SQL tab has its own session, so `SET` and temp tables stay with the tab. The **Auto-commit** menu in the top bar switches the tab between auto-commit and manual-transaction mode. It also shows when a lost connection rolled back the open transaction.
+- Each SQL tab has its own session, so `SET` and temp tables stay with the tab. The **Auto-commit** menu in the top bar switches the tab between auto-commit and manual-transaction mode. It also shows when a lost connection rolled back the open transaction. A table tab always auto-commits, and the top bar says so.
 - In manual mode, **Commit** and **Rollback** appear while a transaction is open, and the tab shows a dot. Closing that tab or disconnecting asks before it rolls back.
 - An error shows its detail, hint, and SQLSTATE, and the editor underlines the error position.
 - The **Output** button at the right end of the results header opens a timestamped log of everything the tab ran: each statement, its server messages such as `RAISE NOTICE` and warnings, and its result line. **Commit**, **Rollback**, and table edits are logged too. When a statement returns no rows, the log fills the results pane. The button turns amber when the latest run raised a warning.
