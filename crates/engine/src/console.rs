@@ -198,7 +198,7 @@ impl Console {
         if let SessionSlot::Busy { cancel, stop, .. } = &inner.session {
             stop.store(true, Ordering::Relaxed);
             let cancel = cancel.clone();
-            tokio::spawn(async move { cancel.cancel().await });
+            shared.spawn(async move { cancel.cancel().await });
         }
         inner.session = SessionSlot::Empty;
         inner.txn = TxnState::Idle;

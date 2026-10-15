@@ -283,6 +283,52 @@ fn main() {
 mod tests {
     use super::*;
 
+    const IPC_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/ipc.rs");
+    const ENGINE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../crates/engine/src/lib.rs");
+
+    /// The body of `pub fn <name>(`, by brace count.
+    fn sync_fn_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+        let start = source.find(&format!("pub fn {name}("))?;
+        let open = start + source[start..].find('{')?;
+        let mut depth = 0usize;
+        for (i, c) in source[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&source[open..open + i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Tauri runs a sync command inline on the thread that delivered the IPC message, which on
+    /// macOS is the main thread, outside its tokio runtime. An engine method such a command calls
+    /// must start tasks through `Shared::spawn`, never through a call that needs the runtime on
+    /// the current thread.
+    #[test]
+    fn sync_commands_never_reach_a_bare_tokio_call() {
+        const NEEDS_RUNTIME: [&str; 5] = ["tokio::spawn(", "tokio::task::spawn", "spawn_blocking(", "Handle::current(", "block_on("];
+        let ipc = std::fs::read_to_string(IPC_PATH).unwrap();
+        let engine = std::fs::read_to_string(ENGINE_PATH).unwrap();
+        let mut checked = 0;
+        for command in ipc.split("#[tauri::command]").skip(1) {
+            let Some(signature) = command.lines().find(|l| l.starts_with("pub fn ")) else { continue };
+            let body = sync_fn_body(command, signature["pub fn ".len()..].split('(').next().unwrap()).unwrap();
+            let method = body.split("engine.").nth(1).map(|rest| rest.split('(').next().unwrap()).unwrap_or_else(|| panic!("no engine call in {signature}"));
+            let engine_body = sync_fn_body(&engine, method).unwrap_or_else(|| panic!("Engine::{method} is not a sync method"));
+            for pattern in NEEDS_RUNTIME {
+                assert!(!engine_body.contains(pattern), "{signature} is sync but Engine::{method} calls {pattern}");
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 8, "the sync commands in ipc.rs");
+    }
+
     #[test]
     fn export_bindings_up_to_date() {
         let fresh_path = std::env::temp_dir().join(format!("l1-data-bindings-{}.ts", std::process::id()));

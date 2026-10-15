@@ -13,6 +13,7 @@ mod txn;
 mod view;
 
 use std::collections::{BTreeSet, HashMap};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
@@ -56,6 +57,10 @@ pub(crate) struct Shared {
     /// and persist.
     view_edits: tokio::sync::Mutex<()>,
     timezone: String,
+    /// The runtime `Engine::open` ran on. Every task the engine starts goes through it, so a
+    /// sync entry point works from any thread: Tauri runs sync commands inline on the main
+    /// thread, where a bare `tokio::spawn` panics.
+    runtime: tokio::runtime::Handle,
 }
 
 const EVENT_BUFFER: usize = 1024;
@@ -67,6 +72,14 @@ const KV_SETTINGS: &str = "settings";
 impl Shared {
     pub(crate) fn emit(&self, ev: AppEvent) {
         let _ = self.events.send(ev);
+    }
+
+    pub(crate) fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.runtime.spawn(task)
     }
 
     pub(crate) fn settings(&self) -> Settings {
@@ -168,7 +181,7 @@ impl Shared {
         for slot in opened {
             let shared = self.clone();
             let instance = instance.clone();
-            tokio::spawn(async move {
+            self.spawn(async move {
                 let _ = shared.ensure_catalog(&instance, &slot).await;
             });
         }
@@ -333,7 +346,7 @@ impl Shared {
         let shared = self.clone();
         let instance: Weak<Instance> = Arc::downgrade(instance);
         let db = db.clone();
-        tokio::spawn(async move {
+        self.spawn(async move {
             while closed.changed().await.is_ok() {
                 let Some(reason) = closed.borrow().clone() else { continue };
                 let Some(instance) = instance.upgrade() else { return };
@@ -367,7 +380,7 @@ impl Shared {
             return;
         }
         let shared = self.clone();
-        tokio::spawn(async move {
+        self.spawn(async move {
             loop {
                 let mut meta = slot.meta.lock().await;
                 let _ = shared.load_catalog(&instance, &slot, &mut meta).await;
@@ -381,7 +394,7 @@ impl Shared {
 
     fn schedule_database_list_refresh(self: &Arc<Self>, id: ConnectionId) {
         let shared = self.clone();
-        tokio::spawn(async move {
+        self.spawn(async move {
             let Some(instance) = shared.instance(id) else { return };
             match shared.reread_databases(&instance).await {
                 Ok(()) => shared.reconcile_instance(&instance),
@@ -554,6 +567,7 @@ impl Engine {
                 next_catalog_version: AtomicU64::new(1),
                 view_edits: tokio::sync::Mutex::new(()),
                 timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
+                runtime: tokio::runtime::Handle::current(),
             }),
         }))
     }
@@ -773,7 +787,7 @@ impl Engine {
         s.republish_connection(id);
         for name in fresh {
             let (shared, instance) = (s.clone(), instance.clone());
-            tokio::spawn(async move {
+            s.spawn(async move {
                 let _permit = instance.probe_gate.acquire().await;
                 let probe = async {
                     let params = shared.params(&instance.config, &name).map_err(|e| connection::connect_error_text(&e))?;
@@ -940,7 +954,7 @@ impl Engine {
         drop(inner);
 
         let plan = RunPlan { run_id, text, statements, mode: config.mode, txn, schema: config.schema.clone(), database: config.database.clone(), connection };
-        tokio::spawn(console::run_task(console.clone(), s.clone(), session, plan, stop));
+        s.spawn(console::run_task(console.clone(), s.clone(), session, plan, stop));
         Ok(RunAccepted { run_id, statements: ranges })
     }
 
@@ -1105,7 +1119,7 @@ impl Engine {
 
     pub async fn export_csv(&self, r: ResultRef, path: PathBuf) -> Result<ExportSummary, ExportError> {
         let set = self.shared.result_set(r).ok_or(ExportError::Gone)?;
-        tokio::task::spawn_blocking(move || {
+        self.shared.runtime.spawn_blocking(move || {
             let file = std::fs::File::create(&path)?;
             let mut out = std::io::BufWriter::new(file);
             let summary = set.write_csv(&mut out)?;
