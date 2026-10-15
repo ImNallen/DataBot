@@ -12,7 +12,7 @@ pub struct ConnectionId(pub Uuid);
 pub struct TabId(pub Uuid);
 
 /// Engine-wide monotonic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 pub struct RunId(pub u64);
 
 /// UTF-16 code-unit offset into the editor document as sent in `RunRequest::Script.text`.
@@ -446,26 +446,25 @@ pub struct ExportSummary {
     pub truncated: bool,
 }
 
+/// One line of a tab's output log: timestamped history of what the session ran and what the
+/// server said. Statement outcomes also live in `ConsoleState.run`; that snapshot is the current
+/// status, this log is the history. `run_id` is the run, commit, rollback, or apply that held the
+/// session; run ids share one counter, so a later entry never carries a lower id.
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputEntry {
     pub at_ms: i64,
-    pub run_id: Option<RunId>,
+    pub run_id: RunId,
     pub body: OutputBody,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum OutputBody {
-    Notice {
-        severity: String,
-        message: String,
-        detail: Option<String>,
-    },
-    Command {
+    /// Logged when the statement starts, before its notices and its result line.
+    Statement {
         statement: u16,
-        tag: String,
-        elapsed_ms: u32,
+        text: String,
     },
     Rows {
         statement: u16,
@@ -473,11 +472,24 @@ pub enum OutputBody {
         elapsed_ms: u32,
         truncated: bool,
     },
+    Command {
+        statement: u16,
+        tag: String,
+        elapsed_ms: u32,
+    },
+    Notice {
+        severity: String,
+        message: String,
+        detail: Option<String>,
+    },
+    /// `statement` is `None` for a failure no statement owns, such as `SET search_path`.
     Error {
         statement: Option<u16>,
         error: QueryError,
     },
-    Info { message: String },
+    Info {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Type)]

@@ -61,8 +61,13 @@ invoke connection_connect "{\"id\":\"$CONN_ID\"}" | ok
 invoke catalog_get "{\"id\":\"$CONN_ID\"}" | ok | python3 -c 'import json,sys; c=json.load(sys.stdin); print("catalog v%d: %s" % (c["version"], ", ".join("%s(%d)" % (s["name"], len(s["relations"])) for s in c["schemas"])))'
 TAB=$(python3 -c 'import uuid; print(uuid.uuid4())')
 invoke console_configure "{\"tabId\":\"$TAB\",\"config\":{\"connectionId\":\"$CONN_ID\",\"schema\":null,\"mode\":\"AutoCommit\"}}" | ok >/dev/null
+NOTICE=$(cat <<'SQL'
+do $$ begin raise notice 'smoke notice'; end $$;
+SQL
+)
 QUERY="select c.region, count(*) as orders, sum(o.total) as revenue from orders o join customers c on c.id = o.customer_id where o.status = 'paid' and o.created_at > now() - interval '90 days' group by c.region order by revenue desc"
-RUN=$(invoke console_run "{\"tabId\":\"$TAB\",\"request\":{\"kind\":\"script\",\"text\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$QUERY"),\"target\":{\"kind\":\"all\"}}}" | ok)
+RUN=$(invoke console_run "{\"tabId\":\"$TAB\",\"request\":{\"kind\":\"script\",\"text\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$NOTICE
+$QUERY"),\"target\":{\"kind\":\"all\"}}}" | ok)
 RUN_ID=$(echo "$RUN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["runId"])')
 echo "run $RUN_ID accepted: $RUN"
 for _ in $(seq 1 30); do
@@ -82,10 +87,10 @@ PY
   fi
   sleep 1
 done
-invoke result_page "{\"resultRef\":{\"tabId\":\"$TAB\",\"runId\":$RUN_ID,\"index\":0},\"start\":0,\"len\":10}" | ok
+invoke result_page "{\"resultRef\":{\"tabId\":\"$TAB\",\"runId\":$RUN_ID,\"index\":1},\"start\":0,\"len\":10}" | ok
 kill $SSE_PID; wait $SSE_PID 2>/dev/null || true
 
-python3 - "$SSE_LOG" "$TAB" "$RUN_ID" <<'EOF'
+python3 - "$SSE_LOG" "$TAB" "$RUN_ID" "$QUERY" <<'EOF'
 import json, sys
 frames = [json.loads(l[5:]) for l in open(sys.argv[1]) if l.startswith("data:")]
 kinds = [f["kind"] for f in frames]
@@ -93,9 +98,23 @@ print("SSE kinds:", kinds)
 finished = [f for f in frames if f["kind"] == "ConsoleChanged" and f["tabId"] == sys.argv[2]
             and f["run"]["kind"] == "Finished" and f["run"]["runId"] == int(sys.argv[3])]
 assert finished, "no Finished ConsoleChanged on SSE"
-st = finished[-1]["run"]["statements"][0]["status"]
+st = finished[-1]["run"]["statements"][1]["status"]
 assert st["kind"] == "Rows" and st["result"]["rowCount"] == 6, st
 print("SSE ConsoleChanged Finished: rows=%d outcome=%s" % (st["result"]["rowCount"], finished[-1]["run"]["outcome"]))
+def line(b):
+    fields = {"Statement": ("statement", "text"), "Notice": ("severity", "message"), "Command": ("statement", "tag"), "Rows": ("statement", "rows")}
+    return (b["kind"],) + tuple(b[k] for k in fields.get(b["kind"], ()))
+log = [line(e["body"]) for f in frames if f["kind"] == "ConsoleOutput" and f["tabId"] == sys.argv[2]
+       for e in f["entries"] if e["runId"] == int(sys.argv[3])]
+expected = [
+    ("Statement", 0, "do $$ begin raise notice 'smoke notice'; end $$"),
+    ("Notice", "NOTICE", "smoke notice"),
+    ("Command", 0, "DO"),
+    ("Statement", 1, sys.argv[4]),
+    ("Rows", 1, 6),
+]
+assert log == expected, log
+print("SSE ConsoleOutput: %d lines, notice %r" % (len(log), log[1][2]))
 assert "ConnectionChanged" in kinds and "CatalogChanged" in kinds and "ConsoleOutput" in kinds and "HistoryAppended" in kinds
 print("bridge smoke ok")
 EOF

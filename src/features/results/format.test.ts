@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactCount, formatElapsed, groupDigits, pageStatus, shortType, toTsv } from "./format";
+import { compactCount, formatClock, formatElapsed, groupDigits, pageStatus, shortType, toTsv } from "./format";
 
 describe("groupDigits", () => {
   it("groups the integer part and keeps sign and fraction verbatim", () => {
@@ -96,5 +96,13 @@ describe("formatElapsed", () => {
     expect(formatElapsed(38)).toBe("38 ms");
     expect(formatElapsed(1_234)).toBe("1.23 s");
     expect(formatElapsed(75_000)).toBe("1m 15s");
+  });
+});
+
+describe("formatClock", () => {
+  it("prints local time as zero-padded HH:MM:SS", () => {
+    expect(formatClock(new Date(2026, 9, 15, 9, 5, 7, 900).getTime())).toBe("09:05:07");
+    expect(formatClock(new Date(2026, 9, 15, 23, 59, 59).getTime())).toBe("23:59:59");
+    expect(formatClock(new Date(2026, 9, 15, 0, 0, 0).getTime())).toBe("00:00:00");
   });
 });

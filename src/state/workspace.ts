@@ -11,6 +11,7 @@ import type {
   Workspace,
 } from "../ipc/bindings";
 import type { SettingId, SettingsSectionId } from "../features/settings/sections";
+import type { ResultPick } from "./status";
 
 export type SqlTab = { kind: "sql"; id: TabId; title: string; console: ConsoleConfigSnapshot };
 export type TableTab = {
@@ -50,7 +51,7 @@ export type WorkspaceData = {
   active: TabId | null;
   layout: Layout;
   configs: Record<ConnectionId, ConnectionConfig>;
-  activeResult: Record<TabId, number>;
+  activeResult: Record<TabId, ResultPick>;
   settings: Settings;
   selected: RelationRef | null;
   overlay: Overlay;
@@ -127,7 +128,7 @@ type WorkspaceActions = {
   setTablePage(id: TabId, page: number, exactRowCount?: number): void;
   setTableQuery(id: TabId, query: TableQuery): void;
   setLayout(patch: Partial<Layout>): void;
-  setActiveResult(id: TabId, index: number): void;
+  setActiveResult(id: TabId, pick: ResultPick): void;
   upsertConfig(c: ConnectionConfig): void;
   removeConfig(id: ConnectionId): void;
   setSettings(s: Settings): void;
@@ -200,7 +201,7 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
       return t?.kind === "table" ? { tabs: { ...s.tabs, [id]: { ...t, query, page: 0, exactRowCount: undefined } } } : {};
     }),
   setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...patch } })),
-  setActiveResult: (id, index) => set((s) => ({ activeResult: { ...s.activeResult, [id]: index } })),
+  setActiveResult: (id, pick) => set((s) => ({ activeResult: { ...s.activeResult, [id]: pick } })),
   upsertConfig: (c) =>
     set((s) => ({
       configs: { ...s.configs, [c.id]: c },
