@@ -159,10 +159,11 @@ pub struct ConnectionConfig {
     pub database: String, pub user: String, pub ssl_mode: SslMode,
     pub ca_cert_path: Option<String>, pub has_password: bool, pub color: Option<String>,
 }
-/// Edit semantics for the secret are explicit; the frontend never reads a password back.
-#[derive(Deserialize, Type)]
+/// Edit semantics for the secret are explicit; the frontend never reads a saved password back.
+/// `connection_parse_url` serializes a draft, so its `Set` only echoes a password the user typed in a URL.
+#[derive(Serialize, Deserialize, Type)]
 pub enum PasswordInput { Keep, Set(String), Clear }
-#[derive(Deserialize, Type)]
+#[derive(Serialize, Deserialize, Type)]
 pub struct ConnectionDraft {
     pub id: Option<ConnectionId>,      // None = create
     pub name: String, pub host: String, pub port: u16, pub database: String,
@@ -402,6 +403,7 @@ Each command is one line delegating to `Engine`. tauri-specta uses `ErrorHandlin
 | `connection_save` | `ConnectionDraft` | `Result<ConnectionConfig, SaveError>` | Upsert. Seals a set password and writes it before the config row. Reads the keychain only when a password is set. |
 | `connection_delete` | `ConnectionId` | `Result<(), DisconnectError>` | Disconnects (refuses on open txns), deletes the config row and sealed password together. Never touches the keychain. |
 | `connection_test` | `ConnectionDraft` | `Result<ServerInfo, ConnectError>` | `PasswordInput::Keep` opens the sealed password, if one is stored. |
+| `connection_parse_url` | `url: String` | `Result<ConnectionDraft, String>` | Pure parse of a `postgres://` URL or a `key=value` string into a draft with an empty name. A password in the URL comes back as `PasswordInput::Set`, otherwise `Clear`. The connection dialog's URL field calls it on each edit. Sync, and it never touches the runtime. |
 | `connection_connect` | `ConnectionId` | `Result<ServerInfo, ConnectError>` | Idempotent. Opens the home session and reads `pg_database`; catalogs load afterwards, each with its own status. |
 | `connection_disconnect` | `ConnectionId, force: bool` | `Result<(), DisconnectError>` | `OpenTransactions { tabs: Vec<OpenTxn> }` unless forced. |
 | `catalog_get` | `DatabaseRef` | `Result<Catalog, CatalogError>` | Whole snapshot of one database, loaded on first use. `NotShown` for a database neither shown nor targeted by a console. |
@@ -834,7 +836,7 @@ src/                          # frontend
   ui/textMatch.ts             # substring matching and highlight ranges for the search boxes
   features/settings/{sections,SettingsScreen,SettingsSidebarBody,SettingLayout,AppearanceSection,QueriesSection}.tsx  features/settings/settingsIndex.ts
   features/sidebar/{Sidebar,SidebarSearch,ConnectionTree}.tsx  features/sidebar/{treeFilter,detailText}.ts
-  features/connections/{ConnectionDialog.tsx,connectionActions.ts}
+  features/connections/{ConnectionDialog,connectionColors}.tsx  features/connections/connectionActions.ts
   features/editor/{SqlEditor.tsx,editorStates.ts,runActions.ts,sqlIdent.ts,theme.ts}
   features/results/{ResultsPane,ResultGrid,FilterBar}.tsx  features/results/{format,tableQuery}.ts
   features/history/{HistoryPalette.tsx,historyList.ts}
@@ -1016,6 +1018,7 @@ Frontend phase (PRs #4 and #11 to #13). These PRs built the live store, the edit
 - **The output log is a toggle in the results pane.** #11 removed the `OutputLog` pane. The log came back as `OutputPanel`, which takes the results body behind an **Output** button in the results header, so it adds no chrome. The log is tab-wide: every run, commit, rollback, and `table_apply` on the tab, oldest first, with a hairline where the `runId` changes. Each statement logs a `Statement` line, its notices, and then a `Rows`, `Command`, or `Error` line. `table_apply` logs the SQL it built for each change and its affected-row tag. Every `OutputEntry` has a `runId`, and commit, rollback, and `table_apply` send the run id they take from the shared counter. `resultView` in `state/status.ts` picks the body: an Output pick made on the current run, then the row grid, then the log when the tab has entries, then the old tail. The tail is still needed because `output` is not in `BootSnapshot`, so after a restart the log is empty while the run state is restored. The pick `{ kind: "output", runId }` in `activeResult` lapses on the next run. The button turns amber only while the latest run in the log raised a WARNING. `output[tabId]` is never freed when a tab closes, which holds up to 5,000 entries per closed tab.
 - **There is no status bar.** The transaction mode menu is in the TopBar on every tab. It also carries the lost-transaction notice, "rolled back" in red with a tooltip. Ln/Col is in the results header on every tab. The connection, database, server version, and UTF-8 chips are gone, so the status bar no longer shows `connection · database` as the database-addressing bullet says. The `results` palette token is gone too, so the results pane paints `background`. A saved custom theme that still has a `results` color loads, because `customVariant` in `themes/catalog.ts` and the importers keep only keys that `isToken` accepts.
 - **Search filters in place (PR: filter the sidebar tree and settings in place).** The ⌘P palettes and cmdk are gone. Each sidebar search box is a text input that narrows what sits under it, and ⌘P reveals the sidebar and focuses the current screen's box. The tree filter searches the domain the palette searched, the shown schemas of the shown databases of connected instances, and matches the names of tables, views, columns, and functions by substring, not fuzzily. A match shows under its connection, database, and schema rows, so the `database.schema` hint that the database-addressing bullet describes is gone. `filterTree` in `features/sidebar/treeFilter.ts` builds the narrowed tree as one typed value, and `ConnectionTree` draws it with its own rows instead of the normal nodes, which carry the pickers and the loading and error rows. `ConnectionTree` holds which connections have had their first-connect reveal, so the normal nodes that remount when the query clears do not reopen a home database the user closed. Enter opens the first listed table or view whose name has every word at a word start, else the first listed, so "ord it" opens `order_items` rather than `order_audit`.
+- **The connection dialog is a connection manager (PR: redesign the connection dialog).** The dialog lists the saved connections beside the form, and choosing one reopens the `connection` overlay with that id. The form is dirty when its fields, password edit, or URL text differ from what the selected connection opens with (`isDirty` in `connectionForm.ts`), and it reports that to the dialog. While the form is dirty, choosing another connection, **New**, **Close**, the X, Esc, or a backdrop click opens a nested "Discard unsaved changes?" prompt instead, and the dialog runs the stored action only on **Discard**. A successful save closes with no prompt. The prompt is a nested Radix dialog, not the workspace `confirm` overlay, because the overlay is a single slot and opening it would close the connection dialog. A new connection's URL field calls `connection_parse_url` on each edit and fills the fields from the draft; a response older than the latest edit is ignored, and a parse error shows only after a blur or once the text has `://` or `=`. An empty name saves as `host / database`. `ConnectionConfig.color` holds an id from `CONNECTION_COLORS` in `connectionColors.tsx` (`red`, `amber`, `green`, `blue`, `purple`), which maps each id to a fixed hue; any other stored value renders as no color. The tree's connection row and the TopBar's connection name show the color as a dot.
 
 ## Open questions and risks
 

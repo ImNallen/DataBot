@@ -295,7 +295,7 @@ it("drops the right panel and its handle while the panel is closed", () => {
   expect(html).not.toContain('data-testid="right-panel"');
 });
 
-function withTableTab(mode: TxnMode = "AutoCommit") {
+function withTableTab(mode: TxnMode = "AutoCommit", color: string | null = null) {
   const tab: Tab = {
     id: "t2",
     title: "orders",
@@ -312,7 +312,7 @@ function withTableTab(mode: TxnMode = "AutoCommit") {
     sslMode: "Prefer",
     caCertPath: null,
     hasPassword: true,
-    color: null,
+    color,
   };
   Object.assign(useWorkspace.getInitialState(), { tabs: { t2: tab }, active: "t2", configs: { c: config } });
 }
@@ -328,7 +328,13 @@ it("shows the transaction mode and cursor position on a table tab", () => {
 it("gives a table tab the connection menu and the transaction mode menu a query tab has", () => {
   withTableTab("Manual");
   const html = renderToStaticMarkup(<TopBar hosted={null} />);
-  expect(html).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*data-testid="tab-connection"[^>]*>dev</);
+  expect(html).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*data-testid="tab-connection"[^>]*><span class="truncate">dev</);
   expect(html).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*data-testid="tx-mode"[^>]*>Manual</);
   expect(html).toMatch(/text-fg">orders</);
+});
+
+it("marks the tab's connection with its color in the top bar", () => {
+  withTableTab("AutoCommit", "red");
+  const html = renderToStaticMarkup(<TopBar hosted={null} />);
+  expect(html).toMatch(/data-testid="tab-connection"[^>]*><span aria-hidden="true" class="[^"]*" style="background-color:#ef4444"><\/span><span class="truncate">dev</);
 });

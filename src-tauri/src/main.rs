@@ -21,6 +21,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ipc::connection_save,
             ipc::connection_delete,
             ipc::connection_test,
+            ipc::connection_parse_url,
             ipc::connection_connect,
             ipc::connection_disconnect,
             ipc::catalog_get,
@@ -349,7 +350,7 @@ mod tests {
             }
             checked += 1;
         }
-        assert_eq!(checked, 10, "the sync commands in ipc.rs");
+        assert_eq!(checked, 11, "the sync commands in ipc.rs");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { IconChevronDown, IconPlayerPlayFilled, IconPlayerStopFilled } from "@tabler/icons-react";
+import { ConnectionColorDot } from "../features/connections/connectionColors";
 import { cancelActive, endTransaction, runActive, setTabMode, setTabTarget } from "../features/editor/runActions";
 import type { TxnMode } from "../ipc/bindings";
 import { homeDb } from "../state/dbKey";
@@ -37,21 +38,26 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
       <div className="flex min-w-0 flex-1 items-center gap-2">
         {tab ? (
           <Menu.Root modal={false}>
-            <Menu.Trigger data-testid="tab-connection" className="truncate rounded px-0.5 text-ui-14 text-dim outline-none hover:text-fg">
-              {config?.name ?? "No connection"}
+            <Menu.Trigger data-testid="tab-connection" className="flex min-w-0 items-center gap-1.5 rounded px-0.5 text-ui-14 text-dim outline-none hover:text-fg">
+              <ConnectionColorDot color={config?.color ?? null} />
+              <span className="truncate">{config?.name ?? "No connection"}</span>
             </Menu.Trigger>
             <MenuContent>
               <MenuLabel>Connection for this tab</MenuLabel>
               {Object.values(configs).map((c) => (
                 <MenuItem key={c.id} checked={c.id === connectionId} onSelect={() => void setTabTarget(tab.id, homeDb(c))}>
                   <StatusDot tone={connectionTone(connections[c.id])} />
+                  <ConnectionColorDot color={c.color} />
                   {c.name}
                 </MenuItem>
               ))}
             </MenuContent>
           </Menu.Root>
         ) : (
-          <span className="truncate text-ui-14 text-dim">{config?.name ?? ""}</span>
+          <span className="flex min-w-0 items-center gap-1.5 text-ui-14 text-dim">
+            <ConnectionColorDot color={config?.color ?? null} />
+            <span className="truncate">{config?.name ?? ""}</span>
+          </span>
         )}
         {tab && (
           <>

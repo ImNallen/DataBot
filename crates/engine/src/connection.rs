@@ -98,7 +98,12 @@ impl ConnectParams {
 }
 
 pub fn draft_from_url(url: &str, name: &str) -> Result<ConnectionDraft, String> {
-    let cfg = tokio_postgres::Config::from_str(url).map_err(|e| error_text(&e))?;
+    // tokio-postgres rejects the verify modes, which `tls()` implements on top of `require`.
+    let verify = [("sslmode=verify-ca", SslMode::VerifyCa), ("sslmode=verify-full", SslMode::VerifyFull)]
+        .into_iter()
+        .find(|(param, _)| url.contains(param));
+    let url = verify.map_or_else(|| url.to_owned(), |(param, _)| url.replace(param, "sslmode=require"));
+    let cfg = tokio_postgres::Config::from_str(&url).map_err(|e| error_text(&e))?;
     let host = match cfg.get_hosts().first() {
         Some(Host::Tcp(h)) => h.clone(),
         #[cfg(unix)]
@@ -116,10 +121,11 @@ pub fn draft_from_url(url: &str, name: &str) -> Result<ConnectionDraft, String> 
         port: cfg.get_ports().first().copied().unwrap_or(5432),
         database: cfg.get_dbname().unwrap_or("postgres").to_owned(),
         user: cfg.get_user().unwrap_or("postgres").to_owned(),
-        ssl_mode: match cfg.get_ssl_mode() {
-            tokio_postgres::config::SslMode::Disable => SslMode::Disable,
-            tokio_postgres::config::SslMode::Require => SslMode::Require,
-            _ => SslMode::Prefer,
+        ssl_mode: match (verify, cfg.get_ssl_mode()) {
+            (Some((_, mode)), _) => mode,
+            (None, tokio_postgres::config::SslMode::Disable) => SslMode::Disable,
+            (None, tokio_postgres::config::SslMode::Require) => SslMode::Require,
+            (None, _) => SslMode::Prefer,
         },
         ca_cert_path: None,
         password: password.map_or(PasswordInput::Clear, PasswordInput::Set),
@@ -508,5 +514,8 @@ mod tests {
         assert_eq!((bare.port, bare.ssl_mode), (5432, SslMode::Prefer));
         assert!(matches!(bare.password, PasswordInput::Clear));
         assert!(draft_from_url("not a url", "x").is_err());
+        assert_eq!(draft_from_url("postgres://db.example/shop?sslmode=verify-full", "").unwrap().ssl_mode, SslMode::VerifyFull);
+        assert_eq!(draft_from_url("host=db.example dbname=shop sslmode=verify-ca", "").unwrap().ssl_mode, SslMode::VerifyCa);
+        assert_eq!(draft_from_url("postgres://:::", "").unwrap_err(), "invalid connection string: invalid value for option `port`");
     }
 }
