@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Drives the dev-bridge through a full flow with curl and checks the SSE stream carried rows.
-# Usage: cargo build -p dev-bridge && dev/bridge-smoke.sh
-# L1_DATA_TEST_PG defaults to postgres://l1data:l1data@localhost:5433/shop.
 set -euo pipefail
 
 BRIDGE=http://127.0.0.1:7077
