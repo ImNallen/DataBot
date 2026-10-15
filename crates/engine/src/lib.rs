@@ -13,7 +13,7 @@ mod txn;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use tokio::sync::broadcast;
@@ -229,6 +229,9 @@ impl Shared {
             *meta = None;
         }
         if meta.is_none() {
+            if instance.is_closed() {
+                return Err(ConnectError::Network { message: "disconnected".into() });
+            }
             let params = self.params(&instance.config, &slot.db.database)?;
             let session = Session::open(&params, None, &self.timezone).await?;
             self.watch_slot_session(instance, &slot.db, session.backend_pid, session.closed_watch());
@@ -250,18 +253,22 @@ impl Shared {
         let still_current = self.instance(id).is_some_and(|i| Arc::ptr_eq(&i, instance));
         if still_current {
             self.set_connection(id, ConnSlot::Lost(reason));
+            instance.close();
         }
     }
 
     /// The home session's death loses the instance. Another slot's death fails only its database,
-    /// and the next load on it reopens the session.
+    /// and the next load on it reopens the session. The task holds the instance weakly: the
+    /// session it watches lives inside the instance, so a strong handle would keep that session
+    /// open past a disconnect.
     fn watch_slot_session(self: &Arc<Self>, instance: &Arc<Instance>, db: &DatabaseRef, backend_pid: i32, mut closed: tokio::sync::watch::Receiver<Option<String>>) {
         let shared = self.clone();
-        let instance = instance.clone();
+        let instance: Weak<Instance> = Arc::downgrade(instance);
         let db = db.clone();
         tokio::spawn(async move {
             while closed.changed().await.is_ok() {
                 let Some(reason) = closed.borrow().clone() else { continue };
+                let Some(instance) = instance.upgrade() else { return };
                 if db.database == instance.home {
                     shared.mark_lost(db.connection_id, &instance, reason);
                 } else if let Some(slot) = instance.slot(&db.database) {
@@ -351,14 +358,7 @@ impl Shared {
         let (server, pid, closed) = (session.server.clone(), session.backend_pid, session.closed_watch());
         let slot = DbSlot::new(DatabaseRef { connection_id: id, database: home.clone() });
         *slot.meta.lock().await = Some(session);
-        let instance = Instance {
-            config,
-            server,
-            home: home.clone(),
-            databases: RwLock::new(Arc::new(databases)),
-            slots: Mutex::new(HashMap::from([(home, Arc::new(slot))])),
-        };
-        Ok((Arc::new(instance), pid, closed))
+        Ok((Arc::new(Instance::new(config, server, home, databases, slot)), pid, closed))
     }
 
     /// Consoles of `id` with an open transaction, with `has_writes` probed on their idle sessions.
@@ -594,8 +594,12 @@ impl Engine {
         for c in &consoles {
             c.drop_session(s).await;
         }
+        let instance = s.instance(id);
         if s.connection_state(id).is_some() {
             s.set_connection(id, ConnSlot::Disconnected);
+        }
+        if let Some(instance) = instance {
+            instance.close();
         }
         Ok(())
     }

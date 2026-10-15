@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::error::Error as _;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -207,6 +208,9 @@ pub struct Instance {
     pub home: String,
     pub databases: RwLock<Arc<Vec<PgDatabase>>>,
     pub slots: Mutex<HashMap<String, Arc<DbSlot>>>,
+    /// Set once the instance is disconnected or lost. A task that still holds the instance may
+    /// finish its query, but it opens no session and converges no slot after this.
+    closed: AtomicBool,
 }
 
 /// One metadata session and catalog for one database.
@@ -302,8 +306,30 @@ impl RefreshGate {
 }
 
 impl Instance {
+    pub fn new(config: ConnectionConfig, server: ServerInfo, home: String, databases: Vec<PgDatabase>, home_slot: DbSlot) -> Self {
+        Self {
+            config,
+            server,
+            home: home.clone(),
+            databases: RwLock::new(Arc::new(databases)),
+            slots: Mutex::new(HashMap::from([(home, Arc::new(home_slot))])),
+            closed: AtomicBool::new(false),
+        }
+    }
+
     pub fn slot(&self, database: &str) -> Option<Arc<DbSlot>> {
         self.slots.lock().unwrap().get(database).cloned()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// Drops every slot, which closes each metadata session as soon as its last holder lets go,
+    /// and stops the instance from opening another.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.slots.lock().unwrap().clear();
     }
 
     pub fn knows(&self, database: &str) -> bool {
@@ -315,6 +341,9 @@ impl Instance {
     /// Running it twice changes nothing.
     pub fn converge(&self, id: ConnectionId, wanted: &BTreeSet<String>) -> Vec<Arc<DbSlot>> {
         let mut slots = self.slots.lock().unwrap();
+        if self.is_closed() {
+            return Vec::new();
+        }
         slots.retain(|name, _| wanted.contains(name));
         for name in wanted {
             if !slots.contains_key(name) && self.knows(name) {

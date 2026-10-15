@@ -45,6 +45,17 @@ impl Harness {
     }
 
     async fn start_in(dir: tempfile::TempDir) -> Self {
+        Self::start_with(dir, draft_from_url(&url(), "dev").unwrap()).await
+    }
+
+    /// A fresh engine whose one connection logs in as `role`, so `pg_stat_activity` can tell
+    /// this test's backends from those of the tests running beside it.
+    async fn start_as(role: &Role) -> Self {
+        let draft = ConnectionDraft { user: role.name.clone(), password: PasswordInput::Set(ROLE_PASSWORD.into()), ..draft_from_url(&url(), "dev").unwrap() };
+        Self::start_with(tempfile::tempdir().unwrap(), draft).await
+    }
+
+    async fn start_with(dir: tempfile::TempDir, draft: ConnectionDraft) -> Self {
         let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(MemoryKeyStore::default()) })
             .await
             .unwrap();
@@ -52,9 +63,25 @@ impl Harness {
         let existing = engine.boot().connections.into_iter().next();
         let config = match existing {
             Some(c) => c,
-            None => engine.save_connection(draft_from_url(&url(), "dev").unwrap()).await.unwrap(),
+            None => engine.save_connection(draft).await.unwrap(),
         };
         Self { engine, events, seen: Vec::new(), conn: config.id, database: config.database, dir }
+    }
+
+    fn status(&self) -> ConnStatus {
+        self.engine.boot().live.into_iter().find(|c| c.id == self.conn).expect("connection entry").status
+    }
+
+    async fn wait_status(&self, done: impl Fn(&ConnStatus) -> bool) -> ConnStatus {
+        let started = Instant::now();
+        loop {
+            let status = self.status();
+            if done(&status) {
+                return status;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "connection never reached the expected status: {status:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// The connection's configured database, the one every tab targets unless told otherwise.
@@ -217,6 +244,51 @@ impl Harness {
         let tz = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into());
         client.batch_execute(&format!("SET TimeZone = '{tz}'")).await.unwrap();
         client
+    }
+}
+
+const ROLE_PASSWORD: &str = "pw";
+
+/// A throwaway login role: every backend it owns on the server belongs to the test that made it.
+struct Role {
+    name: String,
+    oracle: tokio_postgres::Client,
+}
+
+impl Role {
+    async fn create() -> Self {
+        let (oracle, connection) = tokio_postgres::connect(&url(), NoTls).await.unwrap();
+        tokio::spawn(connection);
+        let name = unique("t_role");
+        oracle.batch_execute(&format!("create role {name} login password '{ROLE_PASSWORD}'")).await.unwrap();
+        Self { name, oracle }
+    }
+
+    /// `(database, pid)` of every client backend logged in as the role, sorted.
+    async fn backends(&self) -> Vec<(String, i32)> {
+        let rows = self
+            .oracle
+            .query("select datname, pid from pg_stat_activity where usename = $1 and backend_type = 'client backend' order by datname, pid", &[&self.name])
+            .await
+            .unwrap();
+        rows.iter().map(|r| (r.get::<_, String>(0), r.get::<_, i32>(1))).collect()
+    }
+
+    /// The backends once `done` accepts them, or whatever is left after five seconds: a closed
+    /// socket reaches `pg_stat_activity` a little after the client drops it.
+    async fn backends_when(&self, done: impl Fn(&[(String, i32)]) -> bool) -> Vec<(String, i32)> {
+        let started = Instant::now();
+        loop {
+            let backends = self.backends().await;
+            if done(&backends) || started.elapsed() > Duration::from_secs(5) {
+                return backends;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn drop(self) {
+        self.oracle.batch_execute(&format!("drop role {}", self.name)).await.unwrap();
     }
 }
 
@@ -1002,4 +1074,43 @@ async fn a_database_no_tab_or_tree_uses_gets_no_catalog() {
             ("template1", true, DbAccess::Ok, false),
         ]
     );
+}
+
+/// Connect, use a second database from a console, then disconnect: home metadata, `reporting`
+/// metadata, and the console session must all be gone from the server.
+#[tokio::test]
+async fn disconnect_closes_every_metadata_session() {
+    let role = Role::create().await;
+    let mut h = Harness::start_as(&role).await;
+    let tab = h.sql_tab_on(TxnMode::AutoCommit, "reporting").await;
+    h.run_ok(tab, "select 1").await;
+    h.catalog_when(&h.db_named("reporting"), |_| true).await;
+    let open: Vec<String> = role.backends().await.into_iter().map(|(db, _)| db).collect();
+    assert_eq!(open, ["reporting", "reporting", "shop"], "metadata on shop and reporting, plus the console on reporting");
+
+    h.engine.disconnect(h.conn, false).await.unwrap();
+    let left = role.backends_when(|b| b.is_empty()).await;
+    assert_eq!(left, [], "a disconnect closes every session the instance opened");
+    role.drop().await;
+}
+
+/// Losing the home session loses the instance, and the other databases' metadata sessions go
+/// with it. The console's own session is not the instance's and stays.
+#[tokio::test]
+async fn a_lost_home_session_closes_the_other_metadata_sessions() {
+    let role = Role::create().await;
+    let mut h = Harness::start_as(&role).await;
+    let tab = h.sql_tab_on(TxnMode::AutoCommit, "reporting").await;
+    let state = h.run_ok(tab, "select 1").await;
+    let SessionState::Open { backend_pid: console_pid } = state.session else { panic!("{:?}", state.session) };
+    h.catalog_when(&h.db_named("reporting"), |_| true).await;
+    let home: Vec<i32> = role.backends().await.into_iter().filter(|(db, _)| db == "shop").map(|(_, pid)| pid).collect();
+    let [home_pid] = home[..] else { panic!("one home metadata session, found {home:?}") };
+
+    role.oracle.simple_query(&format!("select pg_terminate_backend({home_pid})")).await.unwrap();
+    let status = h.wait_status(|s| !matches!(s, ConnStatus::Connected { .. })).await;
+    assert!(matches!(status, ConnStatus::Lost { .. }), "{status:?}");
+    let left = role.backends_when(|b| b.len() == 1).await;
+    assert_eq!(left, [("reporting".to_owned(), console_pid)], "only the console's session survives a loss");
+    role.drop().await;
 }
