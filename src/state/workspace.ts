@@ -12,7 +12,7 @@ import type {
   Workspace,
 } from "../ipc/bindings";
 import type { SettingId, SettingsSectionId } from "../features/settings/sections";
-import { homeDb } from "./dbKey";
+import { homeDb, sameDb } from "./dbKey";
 import type { ResultPick } from "./status";
 
 /** A tab's console target. A tab never names a connection without a database. */
@@ -234,14 +234,19 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
   setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...patch } })),
   setActiveResult: (id, pick) => set((s) => ({ activeResult: { ...s.activeResult, [id]: pick } })),
   upsertConfig: (c) =>
-    set((s) => ({
-      configs: { ...s.configs, [c.id]: c },
-      tabs: Object.fromEntries(
-        Object.entries(s.tabs).map(([id, t]) =>
-          t.kind === "sql" && t.console.db === null ? [id, { ...t, console: { ...t.console, db: homeDb(c) } }] : [id, t],
+    set((s) => {
+      const previous = s.configs[c.id];
+      // A SQL tab on the connection's configured database follows an edit of that database. A
+      // table tab names the database its table lives in and stays.
+      const follows = (db: DatabaseRef | null) =>
+        db === null || (previous !== undefined && previous.database !== c.database && sameDb(db, homeDb(previous)));
+      return {
+        configs: { ...s.configs, [c.id]: c },
+        tabs: Object.fromEntries(
+          Object.entries(s.tabs).map(([id, t]) => (t.kind === "sql" && follows(t.console.db) ? [id, { ...t, console: { ...t.console, db: homeDb(c) } }] : [id, t])),
         ),
-      ),
-    })),
+      };
+    }),
   removeConfig: (id) =>
     set((s) => {
       const { [id]: _, ...configs } = s.configs;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConnectionConfig } from "../ipc/bindings";
-import { useWorkspace } from "./workspace";
+import { EMPTY_QUERY, useWorkspace } from "./workspace";
 
 const config = (id: string): ConnectionConfig => ({
   id,
@@ -24,6 +24,26 @@ describe("workspace.upsertConfig", () => {
     const tabs = useWorkspace.getState().tabs;
     expect(tabs.free?.kind === "sql" && tabs.free.console.db).toEqual({ connectionId: "new", database: "shop" });
     expect(tabs.bound?.kind === "sql" && tabs.bound.console.db).toEqual({ connectionId: "old", database: "reporting" });
+  });
+
+  it("moves SQL tabs on the connection's configured database when that database is edited", () => {
+    const ws = useWorkspace.getState();
+    ws.upsertConfig(config("edited"));
+    ws.addTab({ kind: "sql", id: "home", title: "a.sql", console: { db: { connectionId: "edited", database: "shop" }, mode: "AutoCommit" } });
+    ws.addTab({ kind: "sql", id: "elsewhere", title: "b.sql", console: { db: { connectionId: "edited", database: "reporting" }, mode: "AutoCommit" } });
+    ws.addTab({ kind: "sql", id: "otherConn", title: "c.sql", console: { db: { connectionId: "other", database: "shop" }, mode: "AutoCommit" } });
+    ws.addTab({ kind: "table", id: "orders", db: { connectionId: "edited", database: "shop" }, schema: "public", table: "orders", page: 0, query: EMPTY_QUERY });
+    ws.upsertConfig({ ...config("edited"), database: "shop_v2" });
+    const target = (id: string) => {
+      const t = useWorkspace.getState().tabs[id]!;
+      return t.kind === "sql" ? t.console.db : t.db;
+    };
+    expect(target("home")).toEqual({ connectionId: "edited", database: "shop_v2" });
+    expect(target("elsewhere")).toEqual({ connectionId: "edited", database: "reporting" });
+    expect(target("otherConn")).toEqual({ connectionId: "other", database: "shop" });
+    expect(target("orders")).toEqual({ connectionId: "edited", database: "shop" });
+    ws.upsertConfig({ ...config("edited"), database: "shop_v2", name: "renamed" });
+    expect(target("home")).toEqual({ connectionId: "edited", database: "shop_v2" });
   });
 });
 
