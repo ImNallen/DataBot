@@ -23,24 +23,26 @@ import {
   type Icon,
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type {
-  ColumnInfo,
-  ConnectionConfig,
-  DatabaseRef,
-  DatabaseState,
-  FunctionInfo,
-  KeyKind,
-  Relation,
-  RelationDetail,
-  SchemaInfo,
-  TypeCategory,
+import {
+  commands,
+  type ColumnInfo,
+  type ConnectionConfig,
+  type DatabaseRef,
+  type DatabaseState,
+  type FunctionInfo,
+  type InstanceState,
+  type KeyKind,
+  type Relation,
+  type RelationDetail,
+  type SchemaInfo,
+  type TypeCategory,
 } from "../../ipc/bindings";
 import { isViewKind, useCatalog, viewFor } from "../../state/catalog";
 import { connectErrorText } from "../../ipc/errors";
-import { sameDb } from "../../state/dbKey";
+import { dbKey, sameDb } from "../../state/dbKey";
 import { instanceOf, useLive } from "../../state/live";
 import { detailKey, useRelationDetail } from "../../state/relationDetail";
-import { connectionStatus } from "../../state/status";
+import { connectionStatus, type Tone } from "../../state/status";
 import { useWorkspace } from "../../state/workspace";
 import {
   ContextMenuArea,
@@ -54,10 +56,12 @@ import {
   Spinner,
   StatusDot,
 } from "../../ui/primitives";
-import { connect, confirmDelete, disconnect, refreshCatalog } from "../connections/connectionActions";
+import { connect, confirmDelete, disconnect, refreshCatalog, refreshConnection } from "../connections/connectionActions";
 import { insertAtCursor } from "../editor/editorStates";
 import { openSqlTab, openTableTab } from "../editor/runActions";
 import { columnType, defaultText, indexText, keyText, triggerText, type RowText } from "./detailText";
+import { databaseCount, schemaCount } from "./pickers";
+import { PickerHost, PickerPill, useIsPickerOpen, type PickerTarget } from "./VisibilityPopover";
 
 const INDENT = 12;
 
@@ -79,8 +83,11 @@ function Row({
   menu,
   contextMenu,
   quietChevron,
+  active,
 }: {
   quietChevron?: boolean;
+  /** Its picker is open. */
+  active?: boolean;
   path: string;
   depth: number;
   expandable: boolean;
@@ -111,7 +118,7 @@ function Row({
       className={cx(
         "group mx-2 flex cursor-default gap-1.5 rounded-md pr-2.5",
         twoLines ? "items-start py-1" : "h-7 items-center",
-        selected ? "bg-selected" : "hover:bg-hover data-[state=open]:bg-hover",
+        selected || active ? "bg-selected" : "hover:bg-hover data-[state=open]:bg-hover",
       )}
     >
       <span
@@ -518,7 +525,7 @@ function ConnectionMenu({ config, shown }: { config: ConnectionConfig; shown: Da
           <MenuItem onSelect={() => void connect(config.id)}>Connect</MenuItem>
         )}
         <MenuItem onSelect={() => openSqlTab({ db: shown?.[0] ?? { connectionId: config.id, database: config.database } })}>New SQL tab</MenuItem>
-        {shown && <MenuItem onSelect={() => shown.forEach((db) => void refreshCatalog(db))}>Refresh catalog</MenuItem>}
+        {connected && <MenuItem onSelect={() => void refreshConnection(config.id)}>Refresh catalog</MenuItem>}
         <MenuSeparator />
         <MenuItem testId="conn-edit" onSelect={() => open({ kind: "connection", editing: config.id })}>
           Edit…
@@ -536,6 +543,19 @@ function DatabaseNode({ path, db, state, expanded }: { path: string; db: Databas
   const me = `${path}/${db.database}`;
   const open = expanded.has(me);
   const view = useCatalog((s) => viewFor(s.views, db));
+  const target: PickerTarget = { kind: "schemas", db };
+  const picking = useIsPickerOpen(target);
+  const count = schemaCount(state, view?.catalog);
+  const schemas = view ? state.shownSchemas.flatMap((name) => view.catalog.schemas.find((s) => s.name === name) ?? []) : [];
+
+  // Past the engine's cap of auto-opened databases a shown one stays Idle until its row opens. The snapshot then
+  // moves it to Loading and Ready, and the catalog sync fetches it; the reply itself carries nothing new.
+  const idle = state.catalog.kind === "Idle";
+  const key = dbKey(db);
+  useEffect(() => {
+    if (open && idle) void commands.catalogGet(db);
+  }, [open, idle, key]);
+
   return (
     <>
       <Row
@@ -543,10 +563,12 @@ function DatabaseNode({ path, db, state, expanded }: { path: string; db: Databas
         depth={1}
         expandable
         open={open}
+        active={picking}
         onClick={() => expanded.toggle(me)}
         icon={<IconDatabase size={15} className="text-muted" />}
         label={db.database}
         contextMenu={<NewMenu db={db} />}
+        trailing={count && <PickerPill target={target} count={count} active={picking} testId={`schema-pill-${me}`} />}
       />
       {open && state.catalog.kind === "Failed" && (
         <div data-testid={`db-error-${path}/${db.database}`} className="mx-2 mb-1 flex items-baseline gap-2 pr-2 pl-[52px] text-ui-11.5 leading-4 text-danger/90">
@@ -569,13 +591,67 @@ function DatabaseNode({ path, db, state, expanded }: { path: string; db: Databas
           <Spinner /> Loading catalog
         </div>
       )}
+      {open && view && schemas.length === 0 && (
+        <div data-testid={`db-empty-${me}`} className="flex h-7 items-center pl-[52px] text-ui-12 text-muted">
+          No schemas shown
+        </div>
+      )}
       {open &&
         view &&
-        view.catalog.schemas.map((s) => (
-          <SchemaNode key={s.name} path={me} depth={2} db={db} schema={s} version={view.catalog.version} expanded={expanded} />
-        ))}
+        schemas.map((s) => <SchemaNode key={s.name} path={me} depth={2} db={db} schema={s} version={view.catalog.version} expanded={expanded} />)}
     </>
   );
+}
+
+function ConnectionTrailing({
+  config,
+  tone,
+  instance,
+  target,
+  active,
+}: {
+  config: ConnectionConfig;
+  tone: Tone;
+  instance: InstanceState | null;
+  target: PickerTarget;
+  active: boolean;
+}) {
+  if (instance) return <PickerPill target={target} count={databaseCount(instance)} active={active} testId={`db-pill-${config.name}`} />;
+  switch (tone) {
+    case "pending":
+      return (
+        <span className="grid shrink-0 place-items-center pl-2">
+          <Spinner />
+        </span>
+      );
+    case "error":
+      return (
+        <span className="flex shrink-0 items-center gap-1.5 pl-2 text-ui-11.5 text-muted">
+          <StatusDot tone="error" />
+          Failed
+        </span>
+      );
+    case "live":
+      return null;
+    case "off":
+      return (
+        <button
+          type="button"
+          data-testid={`conn-connect-${config.name}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            void connect(config.id);
+          }}
+          className="ml-1 h-5 shrink-0 rounded-md px-1.5 text-ui-11.5 text-muted hover:bg-control hover:text-fg"
+        >
+          Connect
+        </button>
+      );
+    default: {
+      const unreachable: never = tone;
+      return unreachable;
+    }
+  }
 }
 
 function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expanded: Expanded }) {
@@ -587,6 +663,9 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
   const connected = instance !== null;
   const shown = instance?.databases.filter((d) => d.shown) ?? [];
   const home = instance?.home;
+  const homeDefault = useCatalog((s) => (home ? viewFor(s.views, { connectionId: config.id, database: home })?.catalog.defaultSchema : undefined));
+  const target: PickerTarget = { kind: "databases", id: config.id };
+  const picking = useIsPickerOpen(target);
   const failure =
     state?.status.kind === "Failed"
       ? connectErrorText(state.status.error)
@@ -594,15 +673,21 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         ? `Connection lost: ${state.status.reason}`
         : null;
 
-  const revealed = useRef(false);
+  // The first connect opens the connection and its home database, then that database's default schema once its catalog says which.
+  const revealed = useRef<"nothing" | "database" | "schema">("nothing");
   const { toggle } = expanded;
   useEffect(() => {
-    if (!home || revealed.current) return;
-    revealed.current = true;
-    toggle(path, true);
-    toggle(`${path}/${home}`, true);
-    toggle(`${path}/${home}/public`, true);
-  }, [home, toggle, path]);
+    if (!home) return;
+    if (revealed.current === "nothing") {
+      revealed.current = "database";
+      toggle(path, true);
+      toggle(`${path}/${home}`, true);
+    }
+    if (revealed.current === "database" && homeDefault !== undefined) {
+      revealed.current = "schema";
+      if (homeDefault) toggle(`${path}/${home}/${homeDefault}`, true);
+    }
+  }, [home, homeDefault, toggle, path]);
 
   const onClick = () => {
     if (connected || state?.status.kind === "Connecting") expanded.toggle(path);
@@ -616,15 +701,15 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         depth={0}
         expandable
         open={open && connected}
+        active={picking}
         onClick={onClick}
-        icon={<PgBadge />}
-        label={<span className="font-medium">{config.name}</span>}
-        trailing={
-          <span className="flex shrink-0 items-center gap-1.5 pl-2 text-ui-11.5 text-muted">
-            {status.tone === "pending" ? <Spinner /> : status.tone !== "off" && <StatusDot tone={status.tone} />}
-            {connected ? "Live" : status.tone === "error" ? "Failed" : null}
+        icon={
+          <span className={cx(status.tone === "off" && "opacity-50 grayscale")}>
+            <PgBadge />
           </span>
         }
+        label={<span className={cx("font-medium", status.tone === "off" && "text-muted")}>{config.name}</span>}
+        trailing={<ConnectionTrailing config={config} tone={status.tone} instance={instance} target={target} active={picking} />}
         menu={<ConnectionMenu config={config} shown={instance && shown.map((d) => ({ connectionId: config.id, database: d.name }))} />}
       />
       {failure && (
@@ -660,6 +745,7 @@ export function ConnectionTree() {
       {list.map((c) => (
         <ConnectionNode key={c.id} config={c} expanded={expanded} />
       ))}
+      <PickerHost />
     </div>
   );
 }
