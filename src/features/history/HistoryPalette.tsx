@@ -1,11 +1,12 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { IconCheck, IconClock, IconCopy, IconPlayerPlayFilled, IconX } from "@tabler/icons-react";
+import { IconCheck, IconClock, IconCopy, IconPlayerPlayFilled } from "@tabler/icons-react";
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { commands, type HistoryFilter, type HistoryOutcome } from "../../ipc/bindings";
 import { isMac } from "../../shell/hostedWindow";
+import { sameDb } from "../../state/dbKey";
 import { useLive } from "../../state/live";
-import { useWorkspace } from "../../state/workspace";
-import { Button, cx, DialogBackdrop, IconButton, Kbd, PgBadge, StatusDot } from "../../ui/primitives";
+import { tabTarget, useWorkspace } from "../../state/workspace";
+import { Button, cx, DialogBackdrop, Kbd, PgBadge, StatusDot } from "../../ui/primitives";
 import { focusEditor } from "../editor/editorStates";
 import { formatElapsed, pluralRows } from "../results/format";
 import { insertHistoryQuery, openHistoryQuery } from "./historyActions";
@@ -24,7 +25,8 @@ function outcomeText(o: HistoryOutcome): string {
 }
 
 function OutcomeDot({ outcome }: { outcome: HistoryOutcome }) {
-  return <StatusDot tone={outcome.kind === "Error" ? "error" : outcome.kind === "Cancelled" ? "off" : "live"} />;
+  if (outcome.kind === "Cancelled") return <span className="inline-block size-1.5 shrink-0 rounded-full border border-faint" />;
+  return <StatusDot tone={outcome.kind === "Error" ? "error" : "live"} />;
 }
 
 function day(at: number, now: Date): string {
@@ -59,6 +61,7 @@ function HistoryBrowser({ close, restoreEditorFocus }: { close: () => void; rest
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const active = useWorkspace((s) => s.active ? s.tabs[s.active] : undefined);
+  const activeDb = active ? tabTarget(active) : null;
   const insertEnabled = active?.kind === "sql";
   const mod = isMac(navigator.userAgent) ? "⌘" : "Ctrl+";
   const now = new Date();
@@ -120,18 +123,18 @@ function HistoryBrowser({ close, restoreEditorFocus }: { close: () => void; rest
     <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeyDown}>
       <div className="flex min-h-14 shrink-0 items-center gap-3 border-b border-control px-4">
         <IconClock size={18} className="shrink-0 text-green" aria-hidden />
-        <input ref={searchRef} data-testid="history-input" autoFocus value={query} onChange={(e) => setQuery(e.target.value)}
+        <input ref={searchRef} data-testid="history-input" autoFocus spellCheck={false} autoCorrect="off" autoCapitalize="off" value={query} onChange={(e) => setQuery(e.target.value)}
           role="combobox" aria-expanded={true} aria-autocomplete="list" aria-label="Search query history" aria-controls="history-list" aria-activedescendant={selected ? `history-group-${selected.id}` : undefined}
           placeholder="Search SQL, tables, errors or connections" className="h-12 min-w-0 flex-1 bg-transparent text-ui-14 text-fg outline-none placeholder:text-faint" />
         <div role="group" aria-label="Filter history" className="flex shrink-0 gap-1">
           {(["All", "Failed", "Writes"] satisfies HistoryFilter[]).map((value) => (
             <button key={value} type="button" data-testid={`history-filter-${value.toLowerCase()}`} aria-pressed={filter === value} onClick={() => setFilter(value)}
-              className={cx("flex h-7 items-center gap-1.5 rounded-md px-2 text-ui-12 outline-none focus-visible:ring-1 focus-visible:ring-focus", filter === value ? "bg-selected text-fg" : "text-dim hover:bg-hover hover:text-fg")}>
+              className={cx("flex h-7 items-center gap-1.5 rounded-md bg-pill px-2 text-ui-12 outline-none focus-visible:ring-1 focus-visible:ring-focus", filter === value ? "bg-selected text-fg" : "text-dim hover:bg-hover hover:text-fg")}>
               {value}<span className="text-faint tabular-nums">{list ? { All: list.counts.all, Failed: list.counts.failed, Writes: list.counts.writes }[value].toLocaleString() : "…"}</span>
             </button>
           ))}
         </div>
-        <Dialog.Close asChild><IconButton data-testid="history-close" aria-label="Close history"><IconX size={16} /></IconButton></Dialog.Close>
+        <Dialog.Close asChild><button type="button" data-testid="history-close" aria-label="Close history" className="ml-1 border-l border-control pl-3 text-dim outline-none hover:text-fg focus-visible:ring-1 focus-visible:ring-focus"><Kbd className="bg-pill">esc</Kbd></button></Dialog.Close>
       </div>
       {error && <div role="alert" className="flex shrink-0 items-center justify-between gap-3 border-b border-control px-4 py-2 text-ui-12 text-danger"><span className="truncate">{error}</span><Button data-testid="history-retry" variant="ghost" onClick={history.reload}>Try again</Button></div>}
       <div className="grid min-h-0 flex-1 grid-cols-[35%_minmax(0,1fr)]">
@@ -156,8 +159,10 @@ function HistoryBrowser({ close, restoreEditorFocus }: { close: () => void; rest
                   {group.runCount > 1 && <span data-testid="history-repeat" className="shrink-0 rounded bg-pill px-1 text-ui-10.5 text-dim">×{group.runCount.toLocaleString()}</span>}
                   <time dateTime={new Date(group.latestAtMs).toISOString()} className="shrink-0 text-ui-10.5 text-faint">{time(group.latestAtMs)}</time>
                 </div>
-                <div className="mt-1 ml-3.5 truncate font-mono text-code-sm text-dim" title={group.excerpt}>{group.excerpt || group.title}</div>
-                <div className="mt-1 ml-3.5 truncate text-ui-10.5 text-faint"><span className="rounded bg-badge-bg px-1 text-badge">{group.representative.connectionName}</span><span className="ml-1.5">{group.database}</span></div>
+                <div className="mt-1 ml-3.5 flex min-w-0 items-center gap-1.5" title={`${group.representative.connectionName} / ${group.database}`}>
+                  {(!activeDb || !sameDb(activeDb, { connectionId: group.connectionId, database: group.database })) && <span className="max-w-[45%] shrink-0 truncate rounded bg-badge-bg px-1 text-ui-10.5 text-badge">{group.representative.connectionName} / {group.database}</span>}
+                  <span className="min-w-0 truncate font-mono text-code-sm text-dim" title={group.excerpt}>{group.excerpt || group.title}</span>
+                </div>
               </button>
             </Fragment>;
           })}
