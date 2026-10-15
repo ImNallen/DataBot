@@ -196,9 +196,10 @@ pub enum ConnectError {
 pub struct Catalog {
     pub db: DatabaseRef,
     pub version: u64,
-    /// The first existing entry of `current_schemas(false)` on this database's metadata session,
-    /// else `public` when it exists, else the first non-system schema by name. `None` only when
-    /// the database has no non-system schema. "Default only" in the schema picker means this.
+    /// The first existing non-system entry of `current_schemas(false)` on this database's
+    /// metadata session, else `public` when it exists, else the first non-system schema by name.
+    /// `None` only when the database has no non-system schema. "Default only" in the schema
+    /// picker means this.
     pub default_schema: Option<String>,
     /// Every schema except `pg_toast` and temp schemas, in name order. A system schema carries
     /// its relations only while the tree shows it, and never its functions.

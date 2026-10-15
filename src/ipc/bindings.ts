@@ -74,9 +74,10 @@ export type Catalog = {
 	db: DatabaseRef,
 	version: number,
 	/**
-	 *  The first existing entry of `current_schemas(false)` on this database's metadata session,
-	 *  else `public` when it exists, else the first non-system schema by name. `None` only when
-	 *  the database has no non-system schema. "Default only" in the schema picker means this.
+	 *  The first existing non-system entry of `current_schemas(false)` on this database's
+	 *  metadata session, else `public` when it exists, else the first non-system schema by name.
+	 *  `None` only when the database has no non-system schema. "Default only" in the schema
+	 *  picker means this.
 	 */
 	defaultSchema: string | null,
 	/**
