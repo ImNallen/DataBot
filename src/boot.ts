@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { commands, type AppEvent } from "./ipc/bindings";
 import { useCatalog } from "./state/catalog";
 import { useLive, wantedCatalogs, type LiveData } from "./state/live";
+import { useRelationDetail } from "./state/relationDetail";
 import { useWorkspace, workspaceSnapshot } from "./state/workspace";
 import { startAppearance } from "./shell/appearance";
 import { startTheme } from "./shell/theme";
@@ -22,7 +23,7 @@ function startPersistence() {
   onEditorDocChanged(schedule);
 }
 
-/** The catalog store holds exactly the catalogs the connection snapshots serve. */
+/** The catalog store holds exactly the catalogs the connection snapshots serve, and the detail store only their relations. */
 function startCatalogSync() {
   const sync = (s: LiveData) => {
     const wanted = wantedCatalogs(s.connections);
@@ -32,6 +33,9 @@ function startCatalogSync() {
   };
   useLive.subscribe((s, prev) => {
     if (s.connections !== prev.connections) sync(s);
+  });
+  useCatalog.subscribe((s, prev) => {
+    if (s.views !== prev.views) useRelationDetail.getState().prune(s.views);
   });
   sync(useLive.getState());
 }

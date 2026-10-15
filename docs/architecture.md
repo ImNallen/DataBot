@@ -732,7 +732,8 @@ type CatalogView = {
 
 // state/relationDetail.ts: relation_detail results keyed by (DbKey, oid), each tagged with its catalog version.
 // The tree calls ensure(db, catalogVersion, oid) when a relation opens and again when the version moves;
-// the old detail stays on screen until the new one arrives.
+// the old detail stays on screen until the new one arrives. prune(views) drops entries whose relation
+// no held catalog view lists, and boot calls it whenever the catalog views change.
 
 // state/rowCache.ts: outside React, per ResultRef, LRU of 256-row pages (max 64 pages)
 class RowCache {
