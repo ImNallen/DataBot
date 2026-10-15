@@ -277,6 +277,7 @@ pub struct ResultRef { pub tab_id: TabId, pub run_id: RunId, pub index: u16 }
 #[derive(Clone, Serialize, Type)]
 pub struct ResultMeta {
     pub r#ref: ResultRef,
+    pub db: DatabaseRef,         // the database the rows came from; the grid's PK lookup keys on it, not on the tab's current target
     pub columns: Vec<ColumnMeta>,
     pub row_count: u32,          // rows stored and pageable
     pub rows_seen: u64,          // rows the server sent (> row_count when truncated)

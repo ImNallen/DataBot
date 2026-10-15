@@ -428,6 +428,9 @@ pub struct ResultRef {
 #[serde(rename_all = "camelCase")]
 pub struct ResultMeta {
     pub r#ref: ResultRef,
+    /// The database the rows came from. Column sources are its OIDs, so PK lookups key on this,
+    /// not on the tab's current target, which a retarget can change under an old result.
+    pub db: DatabaseRef,
     pub columns: Vec<ColumnMeta>,
     /// Rows stored and pageable.
     pub row_count: u32,

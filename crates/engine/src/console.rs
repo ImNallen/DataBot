@@ -334,7 +334,8 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
                     })
                     .collect();
                 drop(prepared);
-                let set = Arc::new(ResultSet::new(ResultRef { tab_id: console.tab, run_id, index: i }, columns));
+                let db = DatabaseRef { connection_id: plan.connection.id, database: plan.database.clone() };
+                let set = Arc::new(ResultSet::new(ResultRef { tab_id: console.tab, run_id, index: i }, db, columns));
                 console
                     .edit(&shared, run_id, |inner| {
                         console.results.lock().unwrap().push(set.clone());

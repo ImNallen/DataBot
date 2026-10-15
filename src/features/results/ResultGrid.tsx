@@ -23,9 +23,10 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSt
 import type { ColumnMeta, Density, FontSetting, ResultMeta, TypeCategory } from "../../ipc/bindings";
 import { DENSITY_FACTOR, gridRowHeight } from "../../shell/appearance";
 import { rowCacheFor, type RowCache } from "../../state/rowCache";
-import { isPrimaryKey, useCatalog, viewFor } from "../../state/catalog";
+import { isPrimaryKey, useCatalog, viewFor, type CatalogView } from "../../state/catalog";
+import type { DbKey } from "../../state/dbKey";
 import { NO_EDITS, markDeleted, removeNewRows, resetNewCell, rowKey, setCell, setNewCell, useTableEdits, type CellValue, type RowId, type TableEdits } from "../../state/tableEdits";
-import { tabTarget, useWorkspace } from "../../state/workspace";
+import { useWorkspace } from "../../state/workspace";
 import { fontStack } from "../../themes/fonts";
 import { ContextMenuArea, ContextMenuItem, cx } from "../../ui/primitives";
 import { submitEdits } from "../editor/runActions";
@@ -223,6 +224,12 @@ async function copySelection(
   if (cells > 1) notify(`Copied ${groupDigits(String(cells))} cells.`);
 }
 
+/** Which columns are primary keys, per the catalog of the database the rows came from. */
+export function primaryKeyColumns(views: Record<DbKey, CatalogView>, meta: Pick<ResultMeta, "db" | "columns">): boolean[] {
+  const view = viewFor(views, meta.db);
+  return meta.columns.map((c) => isPrimaryKey(view, c.source));
+}
+
 export function ResultGrid({
   meta,
   done,
@@ -245,9 +252,8 @@ export function ResultGrid({
   const [selection, setSelection] = useState<Selection>(null);
   const dragging = useRef<"cells" | "rows" | null>(null);
   const { rowCount, columns } = meta;
-  const target = useWorkspace((s) => tabTarget(s.tabs[meta.ref.tabId]));
-  const catalog = useCatalog((s) => viewFor(s.views, target));
-  const pk = useMemo(() => columns.map((c) => isPrimaryKey(catalog, c.source)), [columns, catalog]);
+  const views = useCatalog((s) => s.views);
+  const pk = useMemo(() => primaryKeyColumns(views, meta), [views, meta]);
   const tabId = meta.ref.tabId;
   const pkIdx = useMemo(() => editing?.pkColumns.map((n) => columns.findIndex((c) => c.name === n)) ?? [], [editing, columns]);
   const editable = editing !== null && pkIdx.length > 0 && pkIdx.every((i) => i >= 0);

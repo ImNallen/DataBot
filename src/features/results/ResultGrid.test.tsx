@@ -1,7 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
-import type { TypeCategory } from "../../ipc/bindings";
-import { HeaderIcon, nextFocus, selectRows } from "./ResultGrid";
+import type { ColumnMeta, TypeCategory } from "../../ipc/bindings";
+import { buildCatalogView } from "../../state/catalog";
+import { dbKey } from "../../state/dbKey";
+import { shopCatalog } from "../../testing/shopCatalog";
+import { HeaderIcon, nextFocus, primaryKeyColumns, selectRows } from "./ResultGrid";
 
 const iconOf = (category: TypeCategory, primaryKey = false) => {
   const html = renderToStaticMarkup(<HeaderIcon column={{ name: "c", type: { oid: 0, display: "t", category }, source: null }} primaryKey={primaryKey} />);
@@ -29,6 +32,38 @@ it("marks each column with an icon for its type", () => {
 
 it("shows the key instead of the type on a primary key column", () => {
   expect(iconOf("Numeric", true)).toBe("key-filled");
+});
+
+it("looks primary keys up in the catalog of the database the rows came from", () => {
+  const shop = buildCatalogView(shopCatalog("conn", 1));
+  const orders = shop.catalog.schemas[1]!.relations.find((r) => r.name === "orders")!;
+  // In `reporting`, the OID `orders` has in `shop` belongs to a table whose key is its second column.
+  const reporting = buildCatalogView({
+    db: { connectionId: "conn", database: "reporting" },
+    version: 2,
+    schemas: [
+      {
+        name: "public",
+        relations: [
+          {
+            ...orders,
+            name: "daily",
+            columns: [
+              { ...orders.columns[0]!, name: "orders", pk: false },
+              { ...orders.columns[1]!, name: "day", pk: true },
+            ],
+          },
+        ],
+        functions: [],
+      },
+    ],
+  });
+  const views = { [dbKey(shop.catalog.db)]: shop, [dbKey(reporting.catalog.db)]: reporting };
+  const column = (name: string, attnum: number): ColumnMeta => ({ name, type: { oid: 20, display: "bigint", category: "Numeric" }, source: { tableOid: orders.oid, attnum } });
+  const columns = [column("a", orders.columns[0]!.attnum), column("b", orders.columns[1]!.attnum)];
+  expect(primaryKeyColumns(views, { db: { connectionId: "conn", database: "shop" }, columns })).toEqual([true, false]);
+  expect(primaryKeyColumns(views, { db: { connectionId: "conn", database: "reporting" }, columns })).toEqual([false, true]);
+  expect(primaryKeyColumns(views, { db: { connectionId: "conn", database: "postgres" }, columns })).toEqual([false, false]);
 });
 
 it("moves the active cell by key, clamped to the result", () => {

@@ -5,6 +5,7 @@ import { nextUntitled, tabFromSnapshot, workspaceSnapshot, type Tab } from "./wo
 
 const meta = (index: number, rowCount: number, extra: Partial<ResultMeta> = {}): ResultMeta => ({
   ref: { tabId: "t", runId: 1, index },
+  db: { connectionId: "c", database: "shop" },
   columns: [],
   rowCount,
   rowsSeen: rowCount,
