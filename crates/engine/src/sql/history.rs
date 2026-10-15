@@ -28,11 +28,14 @@ fn tokens(sql: &str) -> Vec<Token<'_>> {
                 out.push(Token::Other);
                 i = skip_dollar_quoted(bytes, i, dollar_tag(bytes, i).unwrap());
             }
-            c if c.is_ascii_alphabetic() || c == b'_' => {
+            c if c.is_ascii_alphabetic() || c == b'_' || c >= 0x80 => {
                 let start = i;
                 i += 1;
                 while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$')
+                    && (bytes[i].is_ascii_alphanumeric()
+                        || bytes[i] == b'_'
+                        || bytes[i] == b'$'
+                        || bytes[i] >= 0x80)
                 {
                     i += 1;
                 }
@@ -225,6 +228,19 @@ pub(crate) fn history_text(sql: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_cte_names_keep_the_write_statement_recognizable() {
+        assert!(history_is_write(
+            "WITH café AS (SELECT 1) DELETE FROM orders"
+        ));
+        assert!(history_is_write(
+            "WITH café AS (DELETE FROM orders RETURNING *) SELECT * FROM café"
+        ));
+        assert!(!history_is_write(
+            "WITH café AS (SELECT 1) SELECT * FROM café"
+        ));
+    }
 
     #[test]
     fn recognizes_writes_without_changing_runner_classification() {

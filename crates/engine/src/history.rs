@@ -10,9 +10,9 @@ const GROUPS: &str = "WITH groups AS (
         count(*) AS run_count,
         sum(json_extract(outcome_json, '$.kind') = 'Error') AS failed_count,
         max(is_write) AS is_write,
-        max(CASE WHEN ?1 = '' OR instr(lower(sql), ?1) > 0 OR instr(lower(connection_name), ?1) > 0
-            OR instr(lower(database), ?1) > 0
-            OR (json_extract(outcome_json, '$.kind') = 'Error' AND instr(lower(json_extract(outcome_json, '$.message')), ?1) > 0)
+        max(CASE WHEN ?1 = '' OR instr(history_lower(sql), ?1) > 0 OR instr(history_lower(connection_name), ?1) > 0
+            OR instr(history_lower(database), ?1) > 0
+            OR (json_extract(outcome_json, '$.kind') = 'Error' AND instr(history_lower(json_extract(outcome_json, '$.message')), ?1) > 0)
             THEN 1 ELSE 0 END) AS matches
     FROM history GROUP BY sql, connection_id, database
 ) ";
@@ -188,6 +188,40 @@ mod tests {
     fn failed() -> HistoryOutcome {
         HistoryOutcome::Error {
             message: "permission denied for orders".into(),
+        }
+    }
+
+    #[test]
+    fn unicode_search_folds_sql_connection_database_and_errors_consistently() {
+        let (s, _dir) = store();
+        let saved = insert(
+            &s,
+            "SELECT \"État\" FROM orders",
+            "RÉSUMÉ",
+            "Örebro",
+            HistoryOutcome::Error {
+                message: "Échec".into(),
+            },
+        );
+        for text in [
+            "SELECT \"État\" FROM orders",
+            "état",
+            "Örebro",
+            "örebro",
+            "résumé",
+            "échec",
+        ] {
+            let page = s
+                .history_browse(&HistoryBrowseQuery {
+                    text: Some(text.into()),
+                    ..query()
+                })
+                .unwrap();
+            assert_eq!(
+                page.groups.iter().map(|g| g.id).collect::<Vec<_>>(),
+                vec![saved.id],
+                "{text}"
+            );
         }
     }
 
