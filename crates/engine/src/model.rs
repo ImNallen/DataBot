@@ -213,8 +213,11 @@ pub struct ColumnInfo {
     pub attnum: i16,
     pub name: String,
     pub type_display: String,
+    pub category: TypeCategory,
     pub not_null: bool,
     pub pk: bool,
+    /// Part of any foreign key.
+    pub fk: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -233,6 +236,115 @@ pub enum FnKind {
     Procedure,
     Aggregate,
     Window,
+}
+
+/// What a table row shows past its columns, read by `relation_detail` when the row first opens.
+/// It is not in `Catalog`, so a DDL refresh never scans constraints, indexes, and triggers.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationDetail {
+    pub db: DatabaseRef,
+    pub oid: u32,
+    /// The catalog version the detail is at least as new as.
+    pub catalog_version: u64,
+    /// In `attnum` order.
+    pub defaults: Vec<ColumnDefault>,
+    /// Primary, then foreign, unique, and check, each by name.
+    pub keys: Vec<KeyInfo>,
+    /// Primary, then unique, then the rest, each by name.
+    pub indexes: Vec<IndexInfo>,
+    /// By name.
+    pub triggers: Vec<TriggerInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnDefault {
+    pub column: String,
+    pub value: DefaultValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum DefaultValue {
+    /// `pg_get_expr` of the default, with the cast dropped from a lone literal: `'pending'`, `now()`.
+    Expr { sql: String },
+    /// `GENERATED ALWAYS` (`always`) or `BY DEFAULT AS IDENTITY`.
+    Identity { always: bool },
+    /// `GENERATED ALWAYS AS (sql) STORED`.
+    Generated { sql: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyInfo {
+    pub name: String,
+    /// In key order.
+    pub columns: Vec<String>,
+    pub kind: KeyKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum KeyKind {
+    Primary,
+    Unique,
+    Foreign { ref_schema: String, ref_table: String, ref_columns: Vec<String>, on_delete: FkAction, on_update: FkAction },
+    /// `definition` is `pg_get_constraintdef`: `CHECK ((qty > 0))`.
+    Check { definition: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum FkAction {
+    NoAction,
+    Restrict,
+    Cascade,
+    SetNull,
+    SetDefault,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInfo {
+    pub name: String,
+    /// `pg_am.amname`: btree, hash, gin, gist, brin.
+    pub method: String,
+    pub unique: bool,
+    pub primary: bool,
+    /// False while `CREATE INDEX CONCURRENTLY` builds it or after that failed.
+    pub valid: bool,
+    /// The key list cut from `pg_get_indexdef`: `(created_at DESC)`, `(a) INCLUDE (b)`.
+    pub keys: String,
+    /// The predicate of a partial index, without redundant parentheses: `status <> 'paid'::text`.
+    pub predicate: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerInfo {
+    pub name: String,
+    pub timing: TriggerTiming,
+    /// In INSERT, UPDATE, DELETE, TRUNCATE order.
+    pub events: Vec<TriggerEvent>,
+    pub per_row: bool,
+    pub enabled: bool,
+    /// Schema-qualified only when the function is not on the search path: `set_updated_at`.
+    pub function: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum TriggerTiming {
+    Before,
+    After,
+    InsteadOf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum TriggerEvent {
+    Insert,
+    Update,
+    Delete,
+    Truncate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -465,6 +577,9 @@ pub struct PgTypeRef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 pub enum TypeCategory {
+    /// int2, int4, int8, oid.
+    Integer,
+    /// numeric, real, double precision, money.
     Numeric,
     Text,
     Bool,
@@ -899,6 +1014,15 @@ pub enum CatalogError {
     /// their catalog through the console path, so a frontend bug cannot open a session per database.
     NotShown { database: String },
     /// The metadata session or the load failed. `CatalogStatus::Failed` carries the same message.
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum DetailError {
+    Catalog { error: CatalogError },
+    /// The relation was dropped after the catalog the caller holds was read.
+    Gone,
     Failed { message: String },
 }
 

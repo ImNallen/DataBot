@@ -14,8 +14,9 @@ export function groupDigits(text: string): string {
   return sign + int.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + frac + exp;
 }
 
-export function isRightAligned(category: TypeCategory): boolean {
-  return category === "Numeric";
+/** Numbers right-align in the grid and get thousands separators when measured. */
+export function isNumeric(category: TypeCategory): boolean {
+  return category === "Integer" || category === "Numeric";
 }
 
 const UNITS: readonly [number, string][] = [

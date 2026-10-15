@@ -130,7 +130,7 @@ async fn manual_tab_isolated_until_commit_and_abort_rolls_back() {
 4. **During a run, the session moves into the run task.** `Console` holds `Option<Session>`. A run takes it and gives it back when finished. Commit, rollback, or a second run while it is gone returns `Busy`. Concurrent use of one session cannot be expressed.
 5. **Snapshots over deltas.** The backend emits whole `ConsoleState` and `ConnectionState` values with a monotonically increasing `rev`. The frontend's live store is a pure projection: `apply(event)` keeps the higher rev. This is idempotent and tolerant of event order. Only `ConsoleOutput`, the append-only output log, uses deltas.
 6. **One SQL lexer, in Rust.** `split_statements` and `classify` are pure functions. They handle dollar quotes, `E''` strings, nested block comments, and quoted identifiers. They drive statement picking, transaction-state tracking, DDL-triggered catalog refresh, and synthesized command tags. The frontend sends the whole document plus a cursor or selection. All offsets crossing IPC are UTF-16 code units (CodeMirror's unit), and the conversion happens once at the boundary.
-7. **One full-catalog snapshot per database, keyed by `DatabaseRef { connectionId, database }`, loaded in four queries.** It covers schemas, relations with `reltuples`, columns with PK flags, and functions. The tree, ⌘P fuzzy search, CodeMirror completion, and the PK lookups for table pages and staged edits are all derived from the catalog of the database they address; OIDs are never compared across databases. The connection snapshot is the single source of catalog versions: `ConnStatus::Connected.instance` lists every database with its `CatalogStatus` (`Idle`, `Loading`, `Ready { version }`, `Failed`), and the frontend fetches `catalog_get(db)` when the served version is newer than what it holds. `Failed` carries the last good catalog's version, and `catalog_get` keeps serving that catalog, so a failed reload shows its error in the tree beside the schemas it already had, with a Retry; the frontend drops only views whose database serves no version (`Idle`, `Loading`, or a `Failed` first load). Versions come from one engine-wide counter, so a reconnect never reissues one. Successful DDL schedules a refresh of the console's database; a slot's `RefreshGate` coalesces a burst into at most two loads.
+7. **One full-catalog snapshot per database, keyed by `DatabaseRef { connectionId, database }`, loaded in four queries.** It covers schemas, relations with `reltuples`, columns with their `TypeCategory` and PK and FK flags, and functions. Defaults, constraints, indexes, and triggers are not in it: `relation_detail(db, oid)` reads them for one relation when the tree opens it, so a DDL refresh never scans `pg_constraint`, `pg_index`, or `pg_trigger` for the whole database, and the frontend refetches an open relation's detail when the catalog version moves. The tree, ⌘P fuzzy search, CodeMirror completion, and the PK lookups for table pages and staged edits are all derived from the catalog of the database they address; OIDs are never compared across databases. The connection snapshot is the single source of catalog versions: `ConnStatus::Connected.instance` lists every database with its `CatalogStatus` (`Idle`, `Loading`, `Ready { version }`, `Failed`), and the frontend fetches `catalog_get(db)` when the served version is newer than what it holds. `Failed` carries the last good catalog's version, and `catalog_get` keeps serving that catalog, so a failed reload shows its error in the tree beside the schemas it already had, with a Retry; the frontend drops only views whose database serves no version (`Idle`, `Loading`, or a `Failed` first load). Versions come from one engine-wide counter, so a reconnect never reissues one. Successful DDL schedules a refresh of the console's database; a slot's `RefreshGate` coalesces a burst into at most two loads.
 8. **Contract generation.** Every IPC type lives in `crates/engine` with `#[derive(Serialize, Deserialize, specta::Type)]`. `src-tauri` registers commands with `tauri-specta` and adds `AppEvent` as a plain exported type; the shell forwards `Engine::subscribe()` with `app.emit("app-event", ev)`, which sidesteps the release-candidate event API. Debug builds export `src/ipc/bindings.ts`, and a test fails if the checked-in file differs.
 9. **SQL text is interpreted only in Rust.** That includes table-browse SQL: `RunRequest::TablePage` makes the engine build `SELECT * FROM "schema"."table" WHERE <filters> ORDER BY <user order>, <pk> LIMIT n OFFSET m` with its own identifier and literal quoting and the catalog's PK columns. The user's `WHERE` and `ORDER BY` text goes in as written, and the engine refuses the page if the result isn't one statement. Staged row edits go through `table_apply`, which builds the `INSERT`, `UPDATE`, and `DELETE` statements the same way.
 
@@ -219,7 +219,7 @@ pub struct Relation {
     pub columns: Vec<ColumnInfo>,          // attnum order
 }
 #[derive(Clone, Serialize, Type)]
-pub struct ColumnInfo { pub attnum: i16, pub name: String, pub type_display: String, pub not_null: bool, pub pk: bool }
+pub struct ColumnInfo { pub attnum: i16, pub name: String, pub type_display: String, pub category: TypeCategory, pub not_null: bool, pub pk: bool, pub fk: bool }
 #[derive(Clone, Serialize, Type)]
 pub struct FunctionInfo { pub oid: u32, pub name: String, pub args: String, pub returns: String, pub kind: FnKind }
 #[derive(Clone, Serialize, Type)] pub enum FnKind { Function, Procedure, Aggregate, Window }
@@ -295,7 +295,7 @@ pub struct ColumnMeta {
 #[derive(Clone, Serialize, Type)]
 pub struct PgTypeRef { pub oid: u32, pub display: String /* "bigint", "integer[]", "order_status" */, pub category: TypeCategory }
 #[derive(Clone, Copy, Serialize, Type)]
-pub enum TypeCategory { Numeric, Text, Bool, Temporal, Json, Binary, Uuid, Network, Array, Enum, Composite, Range, Other }
+pub enum TypeCategory { Integer /* int2, int4, int8, oid */, Numeric, Text, Bool, Temporal, Json, Binary, Uuid, Network, Array, Enum, Composite, Range, Other }
 #[derive(Clone, Copy, Serialize, Type)] pub struct ColumnSource { pub table_oid: u32, pub attnum: i16 }
 
 /// Row-major page. Cells longer than `cell_char_limit` (default 2,000) are cut; their
@@ -396,6 +396,7 @@ Each command is one line delegating to `Engine`. tauri-specta uses `ErrorHandlin
 | `connection_disconnect` | `ConnectionId, force: bool` | `Result<(), DisconnectError>` | `OpenTransactions { tabs: Vec<OpenTxn> }` unless forced. |
 | `catalog_get` | `DatabaseRef` | `Result<Catalog, CatalogError>` | Whole snapshot of one database, loaded on first use. `NotShown` for a database neither shown nor targeted by a console. |
 | `catalog_refresh` | `DatabaseRef` | `Result<u64, CatalogError>` | Returns the new version. The connection snapshot carries it too. |
+| `relation_detail` | `DatabaseRef, oid: u32` | `Result<RelationDetail, DetailError>` | Defaults, keys, indexes, and triggers of one relation, read on that database's metadata session with OID-scoped queries. Carries the catalog version it is at least as new as. `Gone` when the OID names no relation. |
 | `exact_row_count` | `DatabaseRef, schema: String, table: String, TableQuery` | `Result<u64, CountError>` | `count(*)` with the query's filters, on that database's metadata session. The pager's Last button calls it. |
 | `console_configure` | `TabId, ConsoleConfig` | `Result<ConsoleState, ConfigureError>` | Upsert. `TransactionOpen` if mode, connection, or database change with a live txn. A connection or database change resets the session. A schema change issues `SET search_path` (applied on next run if busy). |
 | `console_run` | `TabId, RunRequest` | `Result<RunAccepted, RunError>` | Returns once statements are picked. Progress arrives as events. `BadFilter` when a table page's SQL isn't one statement. |
@@ -501,6 +502,7 @@ impl Engine {
     pub async fn disconnect(&self, id: ConnectionId, force: bool) -> Result<(), DisconnectError>;
     pub async fn catalog(&self, db: DatabaseRef) -> Result<Arc<Catalog>, CatalogError>;
     pub async fn refresh_catalog(&self, db: DatabaseRef) -> Result<u64, CatalogError>;
+    pub async fn relation_detail(&self, db: DatabaseRef, oid: u32) -> Result<RelationDetail, DetailError>;
     pub async fn exact_row_count(&self, db: DatabaseRef, schema: String, table: String, query: TableQuery) -> Result<u64, CountError>;
 
     pub async fn console_configure(&self, tab: TabId, c: ConsoleConfig) -> Result<ConsoleState, ConfigureError>;
@@ -728,6 +730,10 @@ type CatalogView = {
 };
 // useCatalog: { views: Record<DbKey, CatalogView>; ensure(ref, version): Promise<void>; prune(keep: Set<DbKey>): void }
 
+// state/relationDetail.ts: relation_detail results keyed by (DbKey, oid), each tagged with its catalog version.
+// The tree calls ensure(db, catalogVersion, oid) when a relation opens and again when the version moves;
+// the old detail stays on screen until the new one arrives.
+
 // state/rowCache.ts: outside React, per ResultRef, LRU of 256-row pages (max 64 pages)
 class RowCache {
   constructor(ref: ResultRef, source?: RowSource);    // source defaults to result_page / result_cell
@@ -803,12 +809,12 @@ src/                          # frontend
   main.tsx  boot.ts  index.css
   ipc/bindings.ts             # GENERATED, checked in
   ipc/errors.ts               # typed IPC errors -> user-facing text
-  state/{live,workspace,catalog,rowCache,status,tableEdits}.ts
+  state/{live,workspace,catalog,relationDetail,rowCache,status,tableEdits}.ts
   shell/{AppLayout,TopBar,StatusBar,TabBar,Overlays,RightPanel,PixelColumn,ResizeHandle,WindowChrome,WindowEdgeActions}.tsx
   shell/{theme,hostedWindow,commands}.ts
   ui/primitives.tsx           # shared buttons, menus, dialogs, context menus
   features/settings/{sections,SettingsScreen,SettingsSearchPalette,SettingsSidebarBody,AppearanceSection,QueriesSection}.tsx
-  features/sidebar/{Sidebar,SidebarSearch,ConnectionTree,SearchPalette}.tsx  features/sidebar/fuzzy.ts
+  features/sidebar/{Sidebar,SidebarSearch,ConnectionTree,SearchPalette}.tsx  features/sidebar/{fuzzy,detailText}.ts
   features/connections/{ConnectionDialog.tsx,connectionActions.ts}
   features/editor/{SqlEditor.tsx,editorStates.ts,runActions.ts,sqlIdent.ts,theme.ts}
   features/results/{ResultsPane,ResultGrid,FilterBar}.tsx  features/results/{format,tableQuery}.ts

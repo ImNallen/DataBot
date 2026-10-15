@@ -40,7 +40,7 @@ function relation(spec: TableSpec, oid: number): Relation {
     rowEstimate: spec.rows,
     columns: spec.columns.map((c, i): ColumnInfo => {
       const [name = "", typeDisplay = "", ...flags] = c.split("|");
-      return { attnum: i + 1, name, typeDisplay, notNull: !flags.includes("null"), pk: flags.includes("pk") };
+      return { attnum: i + 1, name, typeDisplay, category: "Other", notNull: !flags.includes("null"), pk: flags.includes("pk"), fk: false };
     }),
   };
 }

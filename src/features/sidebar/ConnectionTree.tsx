@@ -1,11 +1,45 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { IconBraces, IconChevronRight, IconDatabase, IconDots, IconEye, IconKey, IconTable } from "@tabler/icons-react";
+import {
+  IconBolt,
+  IconBraces,
+  IconChecks,
+  IconChevronRight,
+  IconClock,
+  IconDatabase,
+  IconDots,
+  IconEqual,
+  IconEye,
+  IconFilter2,
+  IconHash,
+  IconKey,
+  IconLetterT,
+  IconLink,
+  IconList,
+  IconPoint,
+  IconStack2,
+  IconSum,
+  IconTable,
+  IconToggleLeft,
+  type Icon,
+} from "@tabler/icons-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { ColumnInfo, ConnectionConfig, DatabaseRef, DatabaseState, FunctionInfo, Relation, SchemaInfo } from "../../ipc/bindings";
+import type {
+  ColumnInfo,
+  ConnectionConfig,
+  DatabaseRef,
+  DatabaseState,
+  FunctionInfo,
+  KeyKind,
+  Relation,
+  RelationDetail,
+  SchemaInfo,
+  TypeCategory,
+} from "../../ipc/bindings";
 import { isViewKind, useCatalog, viewFor } from "../../state/catalog";
 import { connectErrorText } from "../../ipc/errors";
 import { sameDb } from "../../state/dbKey";
 import { instanceOf, useLive } from "../../state/live";
+import { detailKey, useRelationDetail } from "../../state/relationDetail";
 import { connectionStatus } from "../../state/status";
 import { useWorkspace } from "../../state/workspace";
 import {
@@ -23,7 +57,7 @@ import {
 import { connect, confirmDelete, disconnect, refreshCatalog } from "../connections/connectionActions";
 import { insertAtCursor } from "../editor/editorStates";
 import { openSqlTab, openTableTab } from "../editor/runActions";
-import { compactCount, shortType } from "../results/format";
+import { columnType, defaultText, indexText, keyText, triggerText, type RowText } from "./detailText";
 
 const INDENT = 12;
 
@@ -41,6 +75,7 @@ function Row({
   icon,
   label,
   trailing,
+  second,
   menu,
   contextMenu,
   quietChevron,
@@ -57,9 +92,12 @@ function Row({
   icon?: ReactNode;
   label: ReactNode;
   trailing?: ReactNode;
+  /** A muted line under the label, cut with an ellipsis and whole in its title. */
+  second?: string;
   menu?: ReactNode;
   contextMenu?: ReactNode;
 }) {
+  const twoLines = second !== undefined;
   const row = (
     <div
       data-testid={`tree-node-${path}`}
@@ -71,7 +109,8 @@ function Row({
       onDoubleClick={onDoubleClick}
       style={{ paddingLeft: 8 + depth * INDENT }}
       className={cx(
-        "group mx-2 flex h-7 cursor-default items-center gap-1.5 rounded-md pr-2.5",
+        "group mx-2 flex cursor-default gap-1.5 rounded-md pr-2.5",
+        twoLines ? "items-start py-1" : "h-7 items-center",
         selected ? "bg-selected" : "hover:bg-hover data-[state=open]:bg-hover",
       )}
     >
@@ -93,9 +132,23 @@ function Row({
           />
         )}
       </span>
-      {icon && <span className="grid w-[18px] shrink-0 place-items-center">{icon}</span>}
-      <span className="min-w-0 flex-1 truncate text-ui-14 text-tree">{label}</span>
-      {trailing}
+      {icon && <span className={cx("grid w-[18px] shrink-0 place-items-center", twoLines && "h-5")}>{icon}</span>}
+      {twoLines ? (
+        <span className="min-w-0 flex-1">
+          <span className="flex h-5 items-center">
+            <span className="min-w-0 flex-1 truncate text-ui-14 text-tree">{label}</span>
+            {trailing}
+          </span>
+          <span title={second} className="block truncate font-mono text-ui-11 leading-4 text-muted">
+            {second}
+          </span>
+        </span>
+      ) : (
+        <>
+          <span className="min-w-0 flex-1 truncate text-ui-14 text-tree">{label}</span>
+          {trailing}
+        </>
+      )}
       {menu}
     </div>
   );
@@ -116,16 +169,173 @@ function Count({ children }: { children: ReactNode }) {
   return <span className="shrink-0 pl-2 text-ui-11.5 text-muted tabular-nums">{children}</span>;
 }
 
+const COLUMN_GLYPHS: Partial<Record<TypeCategory, Icon>> = {
+  Integer: IconHash,
+  Numeric: IconSum,
+  Text: IconLetterT,
+  Enum: IconList,
+  Bool: IconToggleLeft,
+  Json: IconBraces,
+  Temporal: IconClock,
+};
+
+const glyph = (Glyph: Icon, className = "text-muted") => <Glyph size={14} className={className} />;
+
+/** A detail row's name in mono, with marks after it that stay visible when the name is cut. */
+function DetailName({ name, marks }: { name: string; marks?: ReactNode }) {
+  return (
+    <span className="flex min-w-0 items-center gap-1">
+      <span className="truncate font-mono text-ui-12.5">{name}</span>
+      {marks}
+    </span>
+  );
+}
+
+function Trailing({ children }: { children: string }) {
+  return <span className="max-w-[65%] shrink-0 truncate pl-2 font-mono text-ui-11 text-muted">{children}</span>;
+}
+
 function ColumnRow({ path, depth, column }: { path: string; depth: number; column: ColumnInfo }) {
+  const marks = (
+    <>
+      {column.pk && <IconKey size={13} className="shrink-0 text-amber" />}
+      {column.fk && <IconLink size={13} className="shrink-0 text-badge" />}
+    </>
+  );
   return (
     <Row
       path={`${path}/${column.name}`}
       depth={depth}
       expandable={false}
-      icon={column.pk ? <IconKey size={13} className="text-amber" /> : <span className="size-[3px] rounded-full bg-faint" />}
-      label={<span className="text-ui-13">{column.name}</span>}
-      trailing={<span className="max-w-[55%] min-w-0 truncate pl-2 font-mono text-ui-10.5 text-muted">{shortType(column.typeDisplay)}</span>}
+      icon={glyph(COLUMN_GLYPHS[column.category] ?? IconPoint)}
+      label={<DetailName name={column.name} marks={marks} />}
+      trailing={<Trailing>{columnType(column)}</Trailing>}
     />
+  );
+}
+
+const KEY_GLYPHS: Record<KeyKind["kind"], ReactNode> = {
+  Primary: glyph(IconKey, "text-amber"),
+  Foreign: glyph(IconLink, "text-badge"),
+  Unique: glyph(IconKey),
+  Check: glyph(IconChecks),
+};
+
+function TextRow({ path, depth, icon, name, text }: { path: string; depth: number; icon: ReactNode; name: string; text: RowText }) {
+  return (
+    <Row
+      path={path}
+      depth={depth}
+      expandable={false}
+      icon={icon}
+      label={<DetailName name={name} />}
+      trailing={<Trailing>{text.trailing}</Trailing>}
+      second={text.second}
+    />
+  );
+}
+
+type DetailGroup = { id: string; label: string; count: number | null; rows: () => ReactNode };
+
+/** Columns come from the catalog. The other groups wait for `relation_detail` and hide when empty. */
+function detailGroups(path: string, depth: number, schema: string, rel: Relation, detail: RelationDetail | null): DetailGroup[] {
+  const at = (group: string, name: string) => `${path}/#${group}/${name}`;
+  const columns: DetailGroup = {
+    id: "columns",
+    label: "Columns",
+    count: rel.columns.length,
+    rows: () => rel.columns.map((c) => <ColumnRow key={c.attnum} path={`${path}/#columns`} depth={depth} column={c} />),
+  };
+  if (!detail) {
+    const pending = (id: string, label: string): DetailGroup => ({ id, label, count: null, rows: () => null });
+    return [columns, pending("defaults", "Defaults"), pending("keys", "Keys"), pending("indexes", "Indexes"), pending("triggers", "Triggers")];
+  }
+  const rest: DetailGroup[] = [
+    {
+      id: "defaults",
+      label: "Defaults",
+      count: detail.defaults.length,
+      rows: () =>
+        detail.defaults.map((d) => (
+          <Row
+            key={d.column}
+            path={at("defaults", d.column)}
+            depth={depth}
+            expandable={false}
+            icon={glyph(IconEqual)}
+            label={<DetailName name={d.column} />}
+            trailing={<Trailing>{defaultText(d.value)}</Trailing>}
+          />
+        )),
+    },
+    {
+      id: "keys",
+      label: "Keys",
+      count: detail.keys.length,
+      rows: () =>
+        detail.keys.map((k) => (
+          <TextRow key={k.name} path={at("keys", k.name)} depth={depth} icon={KEY_GLYPHS[k.kind.kind]} name={k.name} text={keyText(k, schema)} />
+        )),
+    },
+    {
+      id: "indexes",
+      label: "Indexes",
+      count: detail.indexes.length,
+      rows: () =>
+        detail.indexes.map((i) => <TextRow key={i.name} path={at("indexes", i.name)} depth={depth} icon={glyph(IconFilter2)} name={i.name} text={indexText(i)} />),
+    },
+    {
+      id: "triggers",
+      label: "Triggers",
+      count: detail.triggers.length,
+      rows: () =>
+        detail.triggers.map((t) => <TextRow key={t.name} path={at("triggers", t.name)} depth={depth} icon={glyph(IconBolt)} name={t.name} text={triggerText(t)} />),
+    },
+  ];
+  return [columns, ...rest.filter((g) => g.count !== 0)];
+}
+
+/** Fetches the relation's detail on first open and again whenever the catalog version moves. */
+function RelationGroups({
+  path,
+  depth,
+  db,
+  schema,
+  rel,
+  version,
+  expanded,
+}: {
+  path: string;
+  depth: number;
+  db: DatabaseRef;
+  schema: string;
+  rel: Relation;
+  version: number;
+  expanded: Expanded;
+}) {
+  const key = detailKey(db, rel.oid);
+  const entry = useRelationDetail((s) => s.entries[key]);
+  // `key` stands in for `db`, which is a new object on every render.
+  useEffect(() => {
+    void useRelationDetail.getState().ensure(db, version, rel.oid);
+  }, [key, version, rel.oid]);
+  return (
+    <>
+      {detailGroups(path, depth + 1, schema, rel, entry?.detail ?? null).map((g) => (
+        <Group key={g.id} path={`${path}/#${g.id}`} depth={depth} label={g.label} count={g.count} expanded={expanded}>
+          {g.rows()}
+        </Group>
+      ))}
+      {entry?.error && (
+        <div
+          data-testid={`detail-error-${path}`}
+          style={{ paddingLeft: 30 + depth * INDENT }}
+          className="mx-2 mb-1 pr-2 text-ui-11.5 leading-4 text-danger/90"
+        >
+          {entry.error}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -135,6 +345,7 @@ function RelationRow({
   db,
   schema,
   rel,
+  version,
   expanded,
 }: {
   path: string;
@@ -142,13 +353,17 @@ function RelationRow({
   db: DatabaseRef;
   schema: string;
   rel: Relation;
+  version: number;
   expanded: Expanded;
 }) {
   const me = `${path}/${rel.name}`;
   const open = expanded.has(me);
   const selected = useWorkspace((s) => sameDb(s.selected?.db, db) && s.selected?.schema === schema && s.selected.relation === rel.name);
   const select = useWorkspace((s) => s.select);
-  const view = isViewKind(rel.kind);
+  const toggle = () => {
+    if (!open) expanded.toggle(`${me}/#columns`, true);
+    expanded.toggle(me);
+  };
   return (
     <>
       <Row
@@ -159,14 +374,13 @@ function RelationRow({
         open={open}
         selected={selected}
         onClick={() => select({ db, schema, relation: rel.name })}
-        onToggle={() => expanded.toggle(me)}
+        onToggle={toggle}
         onDoubleClick={() => openTableTab({ db, schema, relation: rel.name })}
         contextMenu={<NewMenu db={db} />}
-        icon={view ? <IconEye size={15} className="text-muted" /> : <IconTable size={15} className="text-muted" />}
+        icon={isViewKind(rel.kind) ? <IconEye size={15} className="text-muted" /> : <IconTable size={15} className="text-muted" />}
         label={rel.name}
-        trailing={!view && rel.rowEstimate !== null ? <Count>{compactCount(rel.rowEstimate)}</Count> : undefined}
       />
-      {open && rel.columns.map((c) => <ColumnRow key={c.attnum} path={me} depth={depth + 1} column={c} />)}
+      {open && <RelationGroups path={me} depth={depth + 1} db={db} schema={schema} rel={rel} version={version} expanded={expanded} />}
     </>
   );
 }
@@ -192,6 +406,7 @@ function FunctionRow({ path, depth, fn }: { path: string; depth: number; fn: Fun
   );
 }
 
+/** `count` is null while it loads. */
 function Group({
   path,
   depth,
@@ -203,22 +418,45 @@ function Group({
 }: {
   path: string;
   depth: number;
-  icon: ReactNode;
+  icon?: ReactNode;
   label: string;
-  count: number;
+  count: number | null;
   expanded: Expanded;
   children: ReactNode;
 }) {
   const open = expanded.has(path);
   return (
     <>
-      <Row path={path} depth={depth} expandable open={open} onClick={() => expanded.toggle(path)} icon={icon} label={label} trailing={<Count>{count}</Count>} />
+      <Row
+        path={path}
+        depth={depth}
+        expandable
+        open={open}
+        onClick={() => expanded.toggle(path)}
+        icon={icon}
+        label={icon ? label : <span className="text-ui-13 text-muted">{label}</span>}
+        trailing={<Count>{count ?? <span className="text-faint">…</span>}</Count>}
+      />
       {open && children}
     </>
   );
 }
 
-function SchemaNode({ path, depth, db, schema, expanded }: { path: string; depth: number; db: DatabaseRef; schema: SchemaInfo; expanded: Expanded }) {
+function SchemaNode({
+  path,
+  depth,
+  db,
+  schema,
+  version,
+  expanded,
+}: {
+  path: string;
+  depth: number;
+  db: DatabaseRef;
+  schema: SchemaInfo;
+  version: number;
+  expanded: Expanded;
+}) {
   const me = `${path}/${schema.name}`;
   const open = expanded.has(me);
   const tables = schema.relations.filter((r) => !isViewKind(r.kind));
@@ -231,25 +469,19 @@ function SchemaNode({ path, depth, db, schema, expanded }: { path: string; depth
         expandable
         open={open}
         onClick={() => expanded.toggle(me)}
+        icon={<IconStack2 size={15} className="text-muted" />}
         label={schema.name}
         contextMenu={<NewMenu db={db} />}
-        trailing={<Count>{`${tables.length} ${tables.length === 1 ? "table" : "tables"}`}</Count>}
+        trailing={<Count>{tables.length}</Count>}
       />
       {open && (
         <>
-          {tables.map((rel) => (
-            <RelationRow key={rel.oid} path={me} depth={depth + 1} db={db} schema={schema.name} rel={rel} expanded={expanded} />
+          {[...tables, ...views].map((rel) => (
+            <RelationRow key={rel.oid} path={me} depth={depth + 1} db={db} schema={schema.name} rel={rel} version={version} expanded={expanded} />
           ))}
-          {views.length > 0 && (
-            <Group path={`${me}/views`} depth={depth + 1} icon={<IconEye size={15} className="text-muted" />} label="Views" count={views.length} expanded={expanded}>
-              {views.map((rel) => (
-                <RelationRow key={rel.oid} path={`${me}/views`} depth={depth + 2} db={db} schema={schema.name} rel={rel} expanded={expanded} />
-              ))}
-            </Group>
-          )}
           {schema.functions.length > 0 && (
             <Group
-              path={`${me}/functions`}
+              path={`${me}/#functions`}
               depth={depth + 1}
               icon={<IconBraces size={14} className="text-muted" />}
               label="Functions"
@@ -257,7 +489,7 @@ function SchemaNode({ path, depth, db, schema, expanded }: { path: string; depth
               expanded={expanded}
             >
               {schema.functions.map((fn) => (
-                <FunctionRow key={fn.oid} path={`${me}/functions`} depth={depth + 2} fn={fn} />
+                <FunctionRow key={fn.oid} path={`${me}/#functions`} depth={depth + 2} fn={fn} />
               ))}
             </Group>
           )}
@@ -337,7 +569,11 @@ function DatabaseNode({ path, db, state, expanded }: { path: string; db: Databas
           <Spinner /> Loading catalog
         </div>
       )}
-      {open && view && view.catalog.schemas.map((s) => <SchemaNode key={s.name} path={me} depth={2} db={db} schema={s} expanded={expanded} />)}
+      {open &&
+        view &&
+        view.catalog.schemas.map((s) => (
+          <SchemaNode key={s.name} path={me} depth={2} db={db} schema={s} version={view.catalog.version} expanded={expanded} />
+        ))}
     </>
   );
 }

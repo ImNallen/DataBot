@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactCount, formatClock, formatElapsed, groupDigits, pageStatus, shortType, toTsv } from "./format";
+import { compactCount, formatClock, formatElapsed, groupDigits, isNumeric, pageStatus, shortType, toTsv } from "./format";
 
 describe("groupDigits", () => {
   it("groups the integer part and keeps sign and fraction verbatim", () => {
@@ -65,6 +65,12 @@ describe("shortType", () => {
     expect(shortType("character(3)")).toBe("char(3)");
     expect(shortType("numeric(12,2)")).toBe("numeric(12,2)");
     expect(shortType("lab.mood")).toBe("lab.mood");
+  });
+});
+
+describe("isNumeric", () => {
+  it("treats integers and other numbers alike and nothing else", () => {
+    expect((["Integer", "Numeric", "Text", "Bool", "Temporal", "Other"] as const).map(isNumeric)).toEqual([true, true, false, false, false, false]);
   });
 });
 

@@ -25,6 +25,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ipc::connection_disconnect,
             ipc::catalog_get,
             ipc::catalog_refresh,
+            ipc::relation_detail,
             ipc::exact_row_count,
             ipc::console_configure,
             ipc::console_run,

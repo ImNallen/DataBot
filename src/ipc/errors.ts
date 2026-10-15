@@ -1,4 +1,4 @@
-import type { ApplyError, ConfigureError, ConnectError, DisconnectError, ExportError, RunError, TxnError } from "./bindings";
+import type { ApplyError, CatalogError, ConfigureError, ConnectError, DetailError, DisconnectError, ExportError, RunError, TxnError } from "./bindings";
 
 export function connectErrorText(e: ConnectError): string {
   switch (e.kind) {
@@ -113,4 +113,36 @@ export function disconnectErrorText(e: DisconnectError): string {
 
 export function exportErrorText(e: ExportError): string {
   return e.kind === "Gone" ? "This result is gone. Run the query again to export it." : e.message;
+}
+
+function catalogErrorText(e: CatalogError): string {
+  switch (e.kind) {
+    case "NotConnected":
+      return "The connection is closed.";
+    case "UnknownDatabase":
+      return `The database ${e.database} no longer exists.`;
+    case "NotShown":
+      return `The database ${e.database} is not shown.`;
+    case "Failed":
+      return e.message;
+    default: {
+      const unreachable: never = e;
+      return unreachable;
+    }
+  }
+}
+
+export function detailErrorText(e: DetailError): string {
+  switch (e.kind) {
+    case "Catalog":
+      return catalogErrorText(e.error);
+    case "Gone":
+      return "This relation no longer exists.";
+    case "Failed":
+      return e.message;
+    default: {
+      const unreachable: never = e;
+      return unreachable;
+    }
+  }
 }

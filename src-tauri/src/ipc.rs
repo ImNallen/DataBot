@@ -55,6 +55,12 @@ pub async fn catalog_refresh(engine: State<'_, Arc<Engine>>, db: DatabaseRef) ->
 
 #[tauri::command]
 #[specta::specta]
+pub async fn relation_detail(engine: State<'_, Arc<Engine>>, db: DatabaseRef, oid: u32) -> Result<RelationDetail, DetailError> {
+    engine.relation_detail(db, oid).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn exact_row_count(engine: State<'_, Arc<Engine>>, db: DatabaseRef, schema: String, table: String, query: TableQuery) -> Result<u64, CountError> {
     engine.exact_row_count(db, schema, table, query).await
 }

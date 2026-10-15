@@ -13,7 +13,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 
 ### Connections and the catalog
 
-- The connection tree shows each connection's database, schemas, tables, views, and functions. Tables show the planner's row estimate. Expand a table to see its columns, types, and primary key.
+- The connection tree shows each connection's database, its schemas with their table counts, the tables and views of each schema, and a Functions group. Expand a table to see Columns, with a type glyph, primary and foreign key marks, the type, and `· null` on nullable columns. Defaults, Keys (primary, foreign with its target, unique, and check), Indexes (key list, method, and partial predicate), and Triggers (timing, events, and function) follow when the table has any.
 - Double-click a table or a view to browse its rows in a tab. Double-click a function to insert a call into the active SQL tab. The status bar names the active tab's connection and database.
 - `⌘P` searches tables, views, functions, and columns in every connected catalog. A column opens its table.
 - The connection dialog tests a connection and shows the server version before you save. The **…** menu on a connection connects, disconnects, opens a SQL tab, refreshes the catalog, edits, and deletes.

@@ -4,6 +4,7 @@ use tokio_postgres::Client;
 
 use crate::connection::PgDatabase;
 use crate::model::{Catalog, ColumnInfo, DatabaseRef, DbAccess, FnKind, FunctionInfo, RelKind, Relation, SchemaInfo};
+use crate::text;
 
 const SCHEMA_FILTER: &str = "n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
     AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'";
@@ -87,9 +88,13 @@ pub async fn load(client: &Client, db: DatabaseRef, version: u64) -> Result<Cata
         .query(
             &format!(
                 "SELECT a.attrelid, a.attnum, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
-                        EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = a.attrelid AND i.indisprimary AND a.attnum = ANY (i.indkey))
+                        EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = a.attrelid AND i.indisprimary AND a.attnum = ANY (i.indkey)),
+                        EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = a.attrelid AND k.contype = 'f' AND a.attnum = ANY (k.conkey)),
+                        t.oid, t.typtype, t.typcategory
                  FROM pg_attribute a
                  JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+                 JOIN pg_type declared ON declared.oid = a.atttypid
+                 JOIN pg_type t ON t.oid = CASE WHEN declared.typtype = 'd' THEN declared.typbasetype ELSE declared.oid END
                  WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND {SCHEMA_FILTER}
                  ORDER BY a.attrelid, a.attnum"
             ),
@@ -102,8 +107,10 @@ pub async fn load(client: &Client, db: DatabaseRef, version: u64) -> Result<Cata
             attnum: r.get(1),
             name: r.get(2),
             type_display: r.get(3),
+            category: text::catalog_category(r.get(7), r.get(8), r.get(9)),
             not_null: r.get(4),
             pk: r.get(5),
+            fk: r.get(6),
         });
     }
 

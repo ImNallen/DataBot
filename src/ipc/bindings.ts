@@ -12,6 +12,7 @@ export const commands = {
 	connectionDisconnect: (id: ConnectionId, force: boolean) => typedError<null, DisconnectError>(__TAURI_INVOKE("connection_disconnect", { id, force })),
 	catalogGet: (db: DatabaseRef) => typedError<Catalog, CatalogError>(__TAURI_INVOKE("catalog_get", { db })),
 	catalogRefresh: (db: DatabaseRef) => typedError<number, CatalogError>(__TAURI_INVOKE("catalog_refresh", { db })),
+	relationDetail: (db: DatabaseRef, oid: number) => typedError<RelationDetail, DetailError>(__TAURI_INVOKE("relation_detail", { db, oid })),
 	exactRowCount: (db: DatabaseRef, schema: string, table: string, query: TableQuery) => typedError<number, CountError>(__TAURI_INVOKE("exact_row_count", { db, schema, table, query })),
 	consoleConfigure: (tabId: TabId, config: ConsoleConfig) => typedError<ConsoleState, ConfigureError>(__TAURI_INVOKE("console_configure", { tabId, config })),
 	consoleRun: (tabId: TabId, request: RunRequest) => typedError<RunAccepted, RunError>(__TAURI_INVOKE("console_run", { tabId, request })),
@@ -115,6 +116,11 @@ export type ChangeRef = {
 
 export type ColorScheme = "System" | "Light" | "Dark";
 
+export type ColumnDefault = {
+	column: string,
+	value: DefaultValue,
+};
+
 export type ColumnFilter = {
 	column: string,
 	op: FilterOp,
@@ -126,8 +132,11 @@ export type ColumnInfo = {
 	attnum: number,
 	name: string,
 	typeDisplay: string,
+	category: TypeCategory,
 	notNull: boolean,
 	pk: boolean,
+	/**  Part of any foreign key. */
+	fk: boolean,
 };
 
 export type ColumnMeta = {
@@ -267,7 +276,19 @@ export type DbAccess = "Ok" |
 /**  `has_database_privilege(datname, 'CONNECT')` is false. */
 "NoPrivilege";
 
+export type DefaultValue = 
+/**  `pg_get_expr` of the default, with the cast dropped from a lone literal: `'pending'`, `now()`. */
+{ kind: "Expr"; sql: string } | 
+/**  `GENERATED ALWAYS` (`always`) or `BY DEFAULT AS IDENTITY`. */
+{ kind: "Identity"; always: boolean } | 
+/**  `GENERATED ALWAYS AS (sql) STORED`. */
+{ kind: "Generated"; sql: string };
+
 export type Density = "Compact" | "Standard" | "Spacious";
+
+export type DetailError = { kind: "Catalog"; error: CatalogError } | 
+/**  The relation was dropped after the catalog the caller holds was read. */
+{ kind: "Gone" } | { kind: "Failed"; message: string };
 
 export type DisconnectError = { kind: "OpenTransactions"; tabs: OpenTxn[] } | { kind: "Store"; message: string };
 
@@ -288,6 +309,8 @@ export type ExportSummary = {
 };
 
 export type FilterOp = "Eq" | "Ne" | "Lt" | "Le" | "Gt" | "Ge" | "Contains" | "StartsWith" | "IsNull" | "NotNull";
+
+export type FkAction = "NoAction" | "Restrict" | "Cascade" | "SetNull" | "SetDefault";
 
 export type FnKind = "Function" | "Procedure" | "Aggregate" | "Window";
 
@@ -330,6 +353,20 @@ export type HistoryQuery = {
 	limit: number,
 };
 
+export type IndexInfo = {
+	name: string,
+	/**  `pg_am.amname`: btree, hash, gin, gist, brin. */
+	method: string,
+	unique: boolean,
+	primary: boolean,
+	/**  False while `CREATE INDEX CONCURRENTLY` builds it or after that failed. */
+	valid: boolean,
+	/**  The key list cut from `pg_get_indexdef`: `(created_at DESC)`, `(a) INCLUDE (b)`. */
+	keys: string,
+	/**  The predicate of a partial index, without redundant parentheses: `status <> 'paid'::text`. */
+	predicate: string | null,
+};
+
 /**
  *  Every database of the instance, with the state of its catalog. The connection snapshot is the
  *  single source of catalog versions.
@@ -340,6 +377,17 @@ export type InstanceState = {
 	/**  Every row of `pg_database`, sorted by name. */
 	databases: DatabaseState[],
 };
+
+export type KeyInfo = {
+	name: string,
+	/**  In key order. */
+	columns: string[],
+	kind: KeyKind,
+};
+
+export type KeyKind = { kind: "Primary" } | { kind: "Unique" } | { kind: "Foreign"; refSchema: string; refTable: string; refColumns: string[]; onDelete: FkAction; onUpdate: FkAction } | 
+/**  `definition` is `pg_get_constraintdef`: `CHECK ((qty > 0))`. */
+{ kind: "Check"; definition: string };
 
 export type Layout = {
 	sidebar: boolean,
@@ -403,6 +451,25 @@ export type Relation = {
 	rowEstimate: number | null,
 	/**  In `attnum` order. */
 	columns: ColumnInfo[],
+};
+
+/**
+ *  What a table row shows past its columns, read by `relation_detail` when the row first opens.
+ *  It is not in `Catalog`, so a DDL refresh never scans constraints, indexes, and triggers.
+ */
+export type RelationDetail = {
+	db: DatabaseRef,
+	oid: number,
+	/**  The catalog version the detail is at least as new as. */
+	catalogVersion: number,
+	/**  In `attnum` order. */
+	defaults: ColumnDefault[],
+	/**  Primary, then foreign, unique, and check, each by name. */
+	keys: KeyInfo[],
+	/**  Primary, then unique, then the rest, each by name. */
+	indexes: IndexInfo[],
+	/**  By name. */
+	triggers: TriggerInfo[],
 };
 
 export type ResultError = { kind: "Gone" } | { kind: "OutOfRange" };
@@ -543,6 +610,21 @@ export type TableQuery = {
 	where: string,
 };
 
+export type TriggerEvent = "Insert" | "Update" | "Delete" | "Truncate";
+
+export type TriggerInfo = {
+	name: string,
+	timing: TriggerTiming,
+	/**  In INSERT, UPDATE, DELETE, TRUNCATE order. */
+	events: TriggerEvent[],
+	perRow: boolean,
+	enabled: boolean,
+	/**  Schema-qualified only when the function is not on the search path: `set_updated_at`. */
+	function: string,
+};
+
+export type TriggerTiming = "Before" | "After" | "InsteadOf";
+
 export type TruncateReason = "RowLimit" | "ByteLimit";
 
 export type TxnError = { kind: "Busy" } | { kind: "NoTransaction" } | { kind: "RolledBack" } | {
@@ -555,7 +637,11 @@ export type TxnState = "Idle" | "Active" |
 /**  Only `ROLLBACK [TO SAVEPOINT]` is accepted. */
 "Aborted";
 
-export type TypeCategory = "Numeric" | "Text" | "Bool" | "Temporal" | "Json" | "Binary" | "Uuid" | "Network" | "Array" | "Enum" | "Composite" | "Range" | "Other";
+export type TypeCategory = 
+/**  int2, int4, int8, oid. */
+"Integer" | 
+/**  numeric, real, double precision, money. */
+"Numeric" | "Text" | "Bool" | "Temporal" | "Json" | "Binary" | "Uuid" | "Network" | "Array" | "Enum" | "Composite" | "Range" | "Other";
 
 /**  Owned by the frontend, stored verbatim by the engine (single writer: the UI). */
 export type Workspace = {

@@ -1,6 +1,7 @@
 mod catalog;
 mod connection;
 mod console;
+mod detail;
 pub mod model;
 mod results;
 mod secrets;
@@ -652,6 +653,19 @@ impl Engine {
         let session = self.shared.session_in(&instance, &slot, &mut meta).await.map_err(|e| CountError::Failed { message: connection::connect_error_text(&e) })?;
         let row = session.client.query_one(&sql, &[]).await.map_err(|e| CountError::Failed { message: connection::error_text(&e) })?;
         Ok(row.get::<_, i64>(0) as u64)
+    }
+
+    /// Defaults, keys, indexes, and triggers of one relation, read on the database's metadata
+    /// session when the tree opens the relation. The engine keeps no copy.
+    pub async fn relation_detail(&self, db: DatabaseRef, oid: u32) -> Result<RelationDetail, DetailError> {
+        let (instance, slot) = self.shared.slot(&db).map_err(|error| DetailError::Catalog { error })?;
+        let version = self.shared.ensure_catalog(&instance, &slot).await.map_err(|error| DetailError::Catalog { error })?.version;
+        let mut meta = slot.meta.lock().await;
+        let session = self.shared.session_in(&instance, &slot, &mut meta).await.map_err(|e| DetailError::Failed { message: connection::connect_error_text(&e) })?;
+        detail::load(&session.client, db, oid, version)
+            .await
+            .map_err(|e| DetailError::Failed { message: connection::error_text(&e) })?
+            .ok_or(DetailError::Gone)
     }
 
     /// A connection, database, or mode change needs an idle tab with no open transaction. A

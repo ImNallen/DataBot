@@ -379,7 +379,7 @@ async fn mockup_query_returns_six_regions_with_bigint_orders() {
         meta.columns.iter().map(|c| (c.name.as_str(), c.r#type.display.as_str(), c.r#type.category)).collect();
     assert_eq!(
         cols,
-        [("region", "text", TypeCategory::Text), ("orders", "bigint", TypeCategory::Numeric), ("revenue", "numeric", TypeCategory::Numeric)]
+        [("region", "text", TypeCategory::Text), ("orders", "bigint", TypeCategory::Integer), ("revenue", "numeric", TypeCategory::Numeric)]
     );
     assert_eq!(meta.columns[0].source.map(|s| s.attnum), Some(4), "region is customers.region");
     let rows = h.page(&meta, 0, 10);
@@ -1190,4 +1190,109 @@ async fn a_dead_metadata_session_keeps_the_last_catalog_until_the_next_load() {
     assert_eq!(h.catalog_status("reporting"), CatalogStatus::Ready { version: reloaded.version });
     h.engine.disconnect(h.conn, false).await.unwrap();
     role.drop().await;
+}
+
+#[tokio::test]
+async fn relation_detail_reads_orders() {
+    let h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let catalog = h.engine.catalog(h.db()).await.unwrap();
+    let orders = catalog.relation("public", "orders").unwrap();
+    // By name: a dev database migrated in place has the same columns in another attnum order.
+    let mut columns: Vec<(&str, TypeCategory, bool, bool)> = orders.columns.iter().map(|c| (c.name.as_str(), c.category, c.pk, c.fk)).collect();
+    columns.sort_by_key(|c| c.0);
+    assert_eq!(
+        columns,
+        [
+            ("created_at", TypeCategory::Temporal, false, false),
+            ("customer_id", TypeCategory::Integer, false, true),
+            ("id", TypeCategory::Integer, true, false),
+            ("metadata", TypeCategory::Json, false, false),
+            ("number", TypeCategory::Text, false, false),
+            ("ship_address_id", TypeCategory::Integer, false, true),
+            ("status", TypeCategory::Text, false, false),
+            ("total", TypeCategory::Numeric, false, false),
+            ("updated_at", TypeCategory::Temporal, false, false),
+        ]
+    );
+    let zoo = catalog.relation("lab", "type_zoo").unwrap();
+    let category = |name: &str| zoo.columns.iter().find(|c| c.name == name).unwrap().category;
+    assert_eq!(
+        [category("m"), category("arr_i"), category("rng"), category("b")],
+        [TypeCategory::Enum, TypeCategory::Array, TypeCategory::Range, TypeCategory::Bool]
+    );
+
+    let detail = h.engine.relation_detail(h.db(), orders.oid).await.unwrap();
+    assert_eq!((detail.oid, detail.catalog_version), (orders.oid, catalog.version));
+    let expr = |sql: &str| DefaultValue::Expr { sql: sql.into() };
+    let mut defaults: Vec<(&str, DefaultValue)> = detail.defaults.iter().map(|d| (d.column.as_str(), d.value.clone())).collect();
+    defaults.sort_by_key(|d| d.0);
+    assert_eq!(
+        defaults,
+        [
+            ("created_at", expr("now()")),
+            ("id", DefaultValue::Identity { always: true }),
+            ("metadata", expr("'{}'")),
+            ("status", expr("'pending'")),
+            ("updated_at", expr("now()")),
+        ]
+    );
+
+    let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let foreign = |table: &str, cols: &[&str]| KeyKind::Foreign {
+        ref_schema: "public".into(),
+        ref_table: table.into(),
+        ref_columns: names(cols),
+        on_delete: FkAction::NoAction,
+        on_update: FkAction::NoAction,
+    };
+    assert_eq!(
+        detail.keys,
+        [
+            KeyInfo { name: "orders_pkey".into(), columns: names(&["id"]), kind: KeyKind::Primary },
+            KeyInfo { name: "orders_customer_id_fkey".into(), columns: names(&["customer_id"]), kind: foreign("customers", &["id"]) },
+            KeyInfo {
+                name: "orders_customer_id_ship_address_id_fkey".into(),
+                columns: names(&["customer_id", "ship_address_id"]),
+                kind: foreign("addresses", &["customer_id", "id"]),
+            },
+            KeyInfo { name: "orders_number_key".into(), columns: names(&["number"]), kind: KeyKind::Unique },
+        ]
+    );
+
+    let indexes: Vec<(&str, bool, bool, &str, Option<&str>)> =
+        detail.indexes.iter().map(|i| (i.name.as_str(), i.unique, i.primary, i.keys.as_str(), i.predicate.as_deref())).collect();
+    assert_eq!(
+        indexes,
+        [
+            ("orders_pkey", true, true, "(id)", None),
+            ("orders_number_key", true, false, "(number)", None),
+            ("orders_created_at_idx", false, false, "(created_at DESC)", None),
+            ("orders_customer_id_idx", false, false, "(customer_id)", None),
+            ("orders_open_idx", false, false, "(status)", Some("status <> 'paid'::text")),
+        ]
+    );
+    assert!(detail.indexes.iter().all(|i| i.method == "btree" && i.valid));
+
+    let trigger = |name: &str, timing, events: &[TriggerEvent], function: &str| TriggerInfo {
+        name: name.into(),
+        timing,
+        events: events.to_vec(),
+        per_row: true,
+        enabled: true,
+        function: function.into(),
+    };
+    assert_eq!(
+        detail.triggers,
+        [
+            trigger("orders_audit", TriggerTiming::After, &[TriggerEvent::Insert, TriggerEvent::Update, TriggerEvent::Delete], "audit_order"),
+            trigger("orders_set_updated_at", TriggerTiming::Before, &[TriggerEvent::Update], "set_updated_at"),
+        ]
+    );
+
+    assert!(matches!(h.engine.relation_detail(h.db(), 0).await, Err(DetailError::Gone)));
+    assert!(matches!(
+        h.engine.relation_detail(h.db_named("postgres"), orders.oid).await,
+        Err(DetailError::Catalog { error: CatalogError::NotShown { .. } })
+    ));
 }

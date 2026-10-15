@@ -30,7 +30,7 @@ import { useWorkspace } from "../../state/workspace";
 import { fontStack } from "../../themes/fonts";
 import { ContextMenuArea, ContextMenuItem, cx } from "../../ui/primitives";
 import { submitEdits } from "../editor/runActions";
-import { groupDigits, isRightAligned, toTsv } from "./format";
+import { groupDigits, isNumeric, toTsv } from "./format";
 import type { SortKey } from "./tableQuery";
 
 const HEADER_H = 28;
@@ -68,6 +68,7 @@ export type GridQuery = {
 };
 
 const TYPE_ICONS: Record<TypeCategory, Icon> = {
+  Integer: IconHash,
   Numeric: IconHash,
   Text: IconLetterCase,
   Bool: IconToggleLeft,
@@ -115,7 +116,7 @@ function naturalWidths(columns: ColumnMeta[], cache: RowCache, sampleRows: numbe
     let longest = 0;
     for (let r = 0; r < sampleRows; r++) {
       const v = cache.get(r)?.[i];
-      const shown = v == null ? 4 : isRightAligned(c.type.category) ? groupDigits(v).length : Math.min(v.length, 60);
+      const shown = v == null ? 4 : isNumeric(c.type.category) ? groupDigits(v).length : Math.min(v.length, 60);
       longest = Math.max(longest, shown);
     }
     const header = headerTextWidth(c.name, look) + HEADER_ICON + (HEADER_GAP + headerExtra) * factor;
@@ -598,7 +599,7 @@ export function ResultGrid({
               {virtualCols.map((vc) => {
                 const c = columns[vc.index]!;
                 const value = cellValue(vr.index, vc.index);
-                const right = isRightAligned(c.type.category);
+                const right = isNumeric(c.type.category);
                 const cut = !added && !(changed && c.name in changed) && cache.isCut(vr.index, vc.index);
                 const isEditing = editingCell?.row === vr.index && editingCell.col === vc.index;
                 const selected = inSelection(selection, vr.index, vc.index);

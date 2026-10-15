@@ -12,8 +12,9 @@ const iconOf = (category: TypeCategory, primaryKey = false) => {
 };
 
 it("marks each column with an icon for its type", () => {
-  const categories: TypeCategory[] = ["Numeric", "Text", "Bool", "Temporal", "Json", "Uuid", "Binary", "Network", "Array", "Enum", "Composite", "Range", "Other"];
+  const categories: TypeCategory[] = ["Integer", "Numeric", "Text", "Bool", "Temporal", "Json", "Uuid", "Binary", "Network", "Array", "Enum", "Composite", "Range", "Other"];
   expect(categories.map((c) => iconOf(c))).toEqual([
+    "hash",
     "hash",
     "letter-case",
     "toggle-left",
@@ -31,7 +32,7 @@ it("marks each column with an icon for its type", () => {
 });
 
 it("shows the key instead of the type on a primary key column", () => {
-  expect(iconOf("Numeric", true)).toBe("key-filled");
+  expect(iconOf("Integer", true)).toBe("key-filled");
 });
 
 it("looks primary keys up in the catalog of the database the rows came from", () => {

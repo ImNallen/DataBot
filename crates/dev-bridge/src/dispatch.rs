@@ -106,6 +106,7 @@ routes! { e;
     connection_disconnect(id: ConnectionId, force: bool) => e.disconnect(id, force).await;
     catalog_get(db: DatabaseRef) => e.catalog(db).await;
     catalog_refresh(db: DatabaseRef) => e.refresh_catalog(db).await;
+    relation_detail(db: DatabaseRef, oid: u32) => e.relation_detail(db, oid).await;
     exact_row_count(db: DatabaseRef, schema: String, table: String, query: TableQuery) => e.exact_row_count(db, schema, table, query).await;
     console_configure(tab_id: TabId, config: ConsoleConfig) => e.console_configure(tab_id, config).await;
     console_run(tab_id: TabId, request: RunRequest) => e.console_run(tab_id, request).await;
