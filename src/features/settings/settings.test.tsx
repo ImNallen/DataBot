@@ -11,7 +11,8 @@ import { fakeRoot } from "../../testing/fakeRoot";
 import { BUILT_IN_FAMILIES, customFamily, familyPicks } from "../../themes/catalog";
 import { chooseDensity, chooseFont, previewPanelMotion, savePanelMotion } from "./appearanceActions";
 import { addCustomThemes, chooseColorScheme, chooseThemes, deleteCustomTheme } from "./themeActions";
-import { searchSettings } from "./sections";
+import { parseQuery } from "../../ui/textMatch";
+import { filterSettings } from "./settingsIndex";
 
 const initial = { ...useWorkspace.getInitialState() };
 
@@ -30,16 +31,16 @@ function render(patch: Partial<WorkspaceData>) {
 const breadcrumb = (html: string) =>
   /data-testid="settings-breadcrumb"[^>]*>(.*?)<\/h1>/.exec(html)?.[1]?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
-const settingsOpen = (section: "appearance" | "queries" = "appearance") => ({ screen: { kind: "settings", section } }) as const;
+const settingsOpen = (section: "appearance" | "queries" = "appearance", query = "") => ({ screen: { kind: "settings", section, query } }) as const;
 
 it("puts the settings nav in the sidebar and the section in the main panel, with no workspace chrome", () => {
   const html = render({ ...settingsOpen(), layout: { ...initial.layout, rightPanel: "Assistant" } });
   expect(html).toMatch(/data-testid="sidebar"[^>]*>.*data-testid="settings-nav"/);
   expect(html).toContain('data-testid="settings-back"');
-  expect(html).toMatch(/data-testid="settings-search-open"[^>]*>.*Search</);
+  expect(html).toMatch(/<input[^>]*data-testid="settings-search"[^>]*placeholder="Search"/);
   expect(breadcrumb(html)).toBe("Settings / Appearance");
   expect(html).toMatch(/aria-current="page"[^>]*data-testid="settings-section-appearance"|data-testid="settings-section-appearance"[^>]*aria-current="page"/);
-  for (const absent of ["run-btn", "tab-bar", "no-tabs", "right-panel", "search-open", "new-connection"]) {
+  for (const absent of ["run-btn", "tab-bar", "no-tabs", "right-panel", "sidebar-search", "new-connection"]) {
     expect(html).not.toContain(`data-testid="${absent}"`);
   }
 });
@@ -92,34 +93,77 @@ it("returns to the workspace layout once settings close", () => {
   expect(html).toContain('data-testid="no-tabs"');
 });
 
+const matching = (query: string) => filterSettings(parseQuery(query)).map((s) => s.id);
+
 it.each([
-  ["dark", "colorScheme"],
-  ["dracula", "themes"],
-  ["theme", "themes"],
-  ["page", "tablePageSize"],
-  ["error", "stopOnError"],
-  ["row limit", "maxRows"],
-  ["compact", "density"],
-  ["animation", "panelMotion"],
-  ["sf pro", "interfaceFont"],
-  ["jetbrains", "codeFont"],
-])("ranks %s to the %s setting first", (query, id) => {
-  expect(searchSettings(query)[0]?.id).toBe(id);
+  ["font", ["interfaceFont", "codeFont"]],
+  ["row limit", ["maxRows"]],
+  ["results", ["codeFont", "maxRows", "tablePageSize"]],
+  ["typography", ["interfaceFont", "codeFont"]],
+  ["dark", ["colorScheme"]],
+  ["dracula", ["themes"]],
+  ["theme", ["themes"]],
+  ["page", ["tablePageSize"]],
+  ["error", ["stopOnError"]],
+  ["compact", ["density"]],
+  ["animation", ["panelMotion"]],
+  ["SF Pro", ["interfaceFont"]],
+  ["jetbrains", ["codeFont"]],
+  ["zzqx", []],
+])("filters %j to %j by label, section, group, and keywords", (query, ids) => {
+  expect(matching(query)).toEqual(ids);
 });
 
-it("lists every setting in registry order for an empty query, and nothing for a miss", () => {
-  expect(searchSettings(" ").map((s) => s.id)).toEqual([
-    "colorScheme",
-    "themes",
-    "density",
-    "panelMotion",
-    "interfaceFont",
-    "codeFont",
-    "maxRows",
-    "tablePageSize",
-    "stopOnError",
+it("lists every setting in registry order for an empty query", () => {
+  expect(matching(" ")).toEqual(["colorScheme", "themes", "density", "panelMotion", "interfaceFont", "codeFont", "maxRows", "tablePageSize", "stopOnError"]);
+});
+
+const text = (html: string | undefined) => html?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+const summary = (html: string) => text(/data-testid="settings-search-summary"[^>]*>(.*?)<\/p>/.exec(html)?.[1]);
+const navEntries = (html: string) =>
+  [...html.matchAll(/<button type="button" data-testid="settings-section-(\w+)"( aria-current="page")?[^>]*>(.*?)<\/button>/g)].map(([, id, current, body]) => [
+    id,
+    text(body),
+    current !== undefined,
   ]);
-  expect(searchSettings("zzqx")).toEqual([]);
+const resultHeadings = (html: string) => [...html.matchAll(/<h2 id="[^"]*" class="mb-2[^"]*">(.*?)<\/h2>/g)].map(([, h]) => text(h));
+const settingIds = (html: string) => [...html.matchAll(/data-setting="(\w+)"/g)].map(([, id]) => id);
+
+it("lists the matching settings live in place of the section while a settings search is set", () => {
+  const html = render(settingsOpen("queries", "font"));
+  expect(breadcrumb(html)).toBe("Settings / Search results");
+  expect(summary(html)).toBe("2 settings match “font” Clear search");
+  expect(resultHeadings(html)).toEqual(["Appearance · Typography"]);
+  expect(settingIds(html)).toEqual(["interfaceFont", "codeFont"]);
+  expect(html).toContain('Interface <mark class="rounded-[2px] bg-amber/20 text-inherit">font</mark>');
+  expect(html).toMatch(/data-testid="setting-codeFont-family"/);
+  expect(navEntries(html)).toEqual([["appearance", "Appearance 2", false]]);
+  expect(html).toContain('data-testid="settings-search-hint"');
+  expect(html).toMatch(/data-testid="settings-search-count"[^>]*>2</);
+});
+
+it("heads each run of results with its section and group, and a bare run with the section alone", () => {
+  const html = render(settingsOpen("appearance", "results"));
+  expect(resultHeadings(html)).toEqual(["Appearance · Typography", "Queries · Results"]);
+  expect(settingIds(html)).toEqual(["codeFont", "maxRows", "tablePageSize"]);
+  expect(navEntries(html)).toEqual([
+    ["appearance", "Appearance 1", false],
+    ["queries", "Queries 2", false],
+  ]);
+  const scheme = render(settingsOpen("appearance", "scheme"));
+  expect([summary(scheme), resultHeadings(scheme), settingIds(scheme)]).toEqual(["1 setting matches “scheme” Clear search", ["Appearance"], ["colorScheme"]]);
+});
+
+it("says when no setting matches, and shows the section with every nav entry once the query is blank", () => {
+  const html = render(settingsOpen("queries", "zzqx"));
+  expect([summary(html), settingIds(html), navEntries(html)]).toEqual(["No settings match “zzqx”. Clear search", [], []]);
+  const blank = render(settingsOpen("queries", "  "));
+  expect(breadcrumb(blank)).toBe("Settings / Queries");
+  expect(navEntries(blank)).toEqual([
+    ["appearance", "Appearance", false],
+    ["queries", "Queries", true],
+  ]);
+  expect(blank).not.toContain('data-testid="settings-search-hint"');
 });
 
 const radioTags = (html: string, name: string) => (html.match(/<input type="radio"[^>]*>/g) ?? []).filter((tag) => tag.includes(`name="${name}"`));
@@ -183,6 +227,15 @@ it("shows the query settings with their saved values", () => {
   expect(html).toMatch(/data-testid="setting-maxRows"[^>]*value="1234"/);
   expect(html).toMatch(/data-testid="setting-tablePageSize"[^>]*value="77"/);
   expect(html).toMatch(/data-testid="setting-stopOnError"(?![^>]*checked)[^>]*>/);
+});
+
+/** The page's settings in order, each card's title as "# Title" before its settings. */
+const layout = (html: string) =>
+  [...html.matchAll(/data-setting="(\w+)"|<h2 id="[^"]*" class="mb-2[^"]*">([^<]+)</g)].map(([, setting, card]) => setting ?? `# ${card}`);
+
+it("draws each section's settings in registry order, a run of one group in one card", () => {
+  expect(layout(render(settingsOpen()))).toEqual(["colorScheme", "themes", "# Layout", "density", "# Motion", "panelMotion", "# Typography", "interfaceFont", "codeFont"]);
+  expect(layout(render(settingsOpen("queries")))).toEqual(["# Results", "maxRows", "tablePageSize", "# Scripts", "stopOnError"]);
 });
 
 function paintAndRecordSaves() {

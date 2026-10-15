@@ -3,6 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { IconCheck, IconChevronRight, IconX } from "@tabler/icons-react";
 import type { ButtonHTMLAttributes, ReactElement, ReactNode } from "react";
+import type { TextRange } from "./textMatch";
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
@@ -25,6 +26,24 @@ export function Kbd({ children, className }: { children: ReactNode; className?: 
       {children}
     </kbd>
   );
+}
+
+/** `text` with a dim amber mark over each range, as a filter's matches show. */
+export function Highlight({ text, ranges }: { text: string; ranges: readonly TextRange[] | null | undefined }) {
+  if (!ranges?.length) return text;
+  const parts: ReactNode[] = [];
+  let at = 0;
+  for (const r of ranges) {
+    if (r.start > at) parts.push(text.slice(at, r.start));
+    parts.push(
+      <mark key={r.start} className="rounded-[2px] bg-amber/20 text-inherit">
+        {text.slice(r.start, r.end)}
+      </mark>,
+    );
+    at = r.end;
+  }
+  if (at < text.length) parts.push(text.slice(at));
+  return parts;
 }
 
 export function StatusDot({ tone }: { tone: "live" | "pending" | "off" | "error" }) {

@@ -20,11 +20,12 @@ import {
   IconToggleLeft,
   type Icon,
 } from "@tabler/icons-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   commands,
   type ColumnInfo,
   type ConnectionConfig,
+  type ConnectionId,
   type DatabaseRef,
   type DatabaseState,
   type FunctionInfo,
@@ -48,15 +49,18 @@ import {
   ContextMenuSeparator,
   ContextSubmenu,
   cx,
+  Highlight,
   PgBadge,
   Spinner,
   StatusDot,
 } from "../../ui/primitives";
+import type { TextRange } from "../../ui/textMatch";
 import { connect, confirmDelete, disconnect, refreshCatalog, refreshConnection } from "../connections/connectionActions";
 import { insertAtCursor } from "../editor/editorStates";
 import { openSqlTab, openTableTab } from "../editor/runActions";
 import { columnType, defaultText, indexText, keyText, triggerText, type RowText } from "./detailText";
 import { databaseCount, schemaCount } from "./pickers";
+import type { FilteredRelation, FilteredSchema, TreeFilter } from "./treeFilter";
 import { PickerHost, PickerPill, useIsPickerOpen, type PickerTarget } from "./VisibilityPopover";
 
 const INDENT = 12;
@@ -78,9 +82,12 @@ function Row({
   second,
   contextMenu,
   quietChevron,
+  keepChevronSpace,
   active,
 }: {
   quietChevron?: boolean;
+  /** A leaf keeps the chevron's width, so its icon lines up with expandable siblings. */
+  keepChevronSpace?: boolean;
   /** Its picker is open. */
   active?: boolean;
   path: string;
@@ -124,7 +131,7 @@ function Row({
           })
         }
         onDoubleClick={onToggle && ((e) => e.stopPropagation())}
-        className={cx("shrink-0 place-items-center self-stretch text-muted", expandable ? "grid w-3.5" : "hidden")}
+        className={cx("shrink-0 place-items-center self-stretch text-muted", expandable || keepChevronSpace ? "grid w-3.5" : "hidden")}
       >
         {expandable && (
           <IconChevronRight
@@ -182,7 +189,7 @@ const COLUMN_GLYPHS: Partial<Record<TypeCategory, Icon>> = {
 const glyph = (Glyph: Icon, className = "text-muted") => <Glyph size={14} className={className} />;
 
 /** A detail row's name in mono, with marks after it that stay visible when the name is cut. */
-function DetailName({ name, marks }: { name: string; marks?: ReactNode }) {
+function DetailName({ name, marks }: { name: ReactNode; marks?: ReactNode }) {
   return (
     <span className="flex min-w-0 items-center gap-1">
       <span className="truncate font-mono text-ui-12.5">{name}</span>
@@ -195,7 +202,7 @@ function Trailing({ children }: { children: string }) {
   return <span className="max-w-[65%] shrink-0 truncate pl-2 font-mono text-ui-11 text-muted">{children}</span>;
 }
 
-function ColumnRow({ path, depth, column }: { path: string; depth: number; column: ColumnInfo }) {
+function ColumnRow({ path, depth, column, ranges }: { path: string; depth: number; column: ColumnInfo; ranges?: readonly TextRange[] }) {
   const marks = (
     <>
       {column.pk && <IconKey size={13} className="shrink-0 text-amber" />}
@@ -208,7 +215,7 @@ function ColumnRow({ path, depth, column }: { path: string; depth: number; colum
       depth={depth}
       expandable={false}
       icon={glyph(COLUMN_GLYPHS[column.category] ?? IconPoint)}
-      label={<DetailName name={column.name} marks={marks} />}
+      label={<DetailName name={<Highlight text={column.name} ranges={ranges} />} marks={marks} />}
       trailing={<Trailing>{columnType(column)}</Trailing>}
     />
   );
@@ -339,6 +346,12 @@ function RelationGroups({
   );
 }
 
+function useIsSelected(db: DatabaseRef, schema: string, rel: Relation): boolean {
+  return useWorkspace((s) => sameDb(s.selected?.db, db) && s.selected?.schema === schema && s.selected.relation === rel.name);
+}
+
+const relationIcon = (rel: Relation) => (isViewKind(rel.kind) ? <IconEye size={15} className="text-muted" /> : <IconTable size={15} className="text-muted" />);
+
 function RelationRow({
   path,
   depth,
@@ -358,7 +371,7 @@ function RelationRow({
 }) {
   const me = `${path}/${rel.name}`;
   const open = expanded.has(me);
-  const selected = useWorkspace((s) => sameDb(s.selected?.db, db) && s.selected?.schema === schema && s.selected.relation === rel.name);
+  const selected = useIsSelected(db, schema, rel);
   const select = useWorkspace((s) => s.select);
   const toggle = () => {
     if (!open) expanded.toggle(`${me}/#columns`, true);
@@ -377,7 +390,7 @@ function RelationRow({
         onToggle={toggle}
         onDoubleClick={() => openTableTab({ db, schema, relation: rel.name })}
         contextMenu={<NewMenu db={db} />}
-        icon={isViewKind(rel.kind) ? <IconEye size={15} className="text-muted" /> : <IconTable size={15} className="text-muted" />}
+        icon={relationIcon(rel)}
         label={rel.name}
       />
       {open && <RelationGroups path={me} depth={depth + 1} db={db} schema={schema} rel={rel} version={version} expanded={expanded} />}
@@ -385,7 +398,7 @@ function RelationRow({
   );
 }
 
-function FunctionRow({ path, depth, fn }: { path: string; depth: number; fn: FunctionInfo }) {
+function FunctionRow({ path, depth, fn, ranges }: { path: string; depth: number; fn: FunctionInfo; ranges?: readonly TextRange[] }) {
   return (
     <Row
       path={`${path}/${fn.name}`}
@@ -397,7 +410,7 @@ function FunctionRow({ path, depth, fn }: { path: string; depth: number; fn: Fun
       }}
       label={
         <span title={`${fn.name}(${fn.args}) → ${fn.returns}`} className="text-ui-13.5">
-          {fn.name}
+          <Highlight text={fn.name} ranges={ranges} />
         </span>
       }
       trailing={<span className="shrink-0 truncate pl-2 font-mono text-ui-11 text-muted">{fn.returns}</span>}
@@ -637,7 +650,9 @@ function ConnectionTrailing({
   }
 }
 
-function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expanded: Expanded }) {
+type Revealed = Map<ConnectionId, "database" | "schema">;
+
+function ConnectionNode({ config, expanded, revealed }: { config: ConnectionConfig; expanded: Expanded; revealed: Revealed }) {
   const state = useLive((s) => s.connections[config.id]);
   const instance = instanceOf(state);
   const tone = connectionTone(state);
@@ -657,20 +672,19 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         : null;
 
   // The first connect opens the connection and its home database, then that database's default schema once its catalog says which.
-  const revealed = useRef<"nothing" | "database" | "schema">("nothing");
   const { toggle } = expanded;
   useEffect(() => {
     if (!home) return;
-    if (revealed.current === "nothing") {
-      revealed.current = "database";
+    if (!revealed.has(config.id)) {
+      revealed.set(config.id, "database");
       toggle(path, true);
       toggle(`${path}/${home}`, true);
     }
-    if (revealed.current === "database" && homeDefault !== undefined) {
-      revealed.current = "schema";
+    if (revealed.get(config.id) === "database" && homeDefault !== undefined) {
+      revealed.set(config.id, "schema");
       if (homeDefault) toggle(`${path}/${home}/${homeDefault}`, true);
     }
-  }, [home, homeDefault, toggle, path]);
+  }, [home, homeDefault, toggle, path, revealed, config.id]);
 
   const onClick = () => {
     if (connected || state?.status.kind === "Connecting") expanded.toggle(path);
@@ -707,7 +721,114 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
   );
 }
 
-export function ConnectionTree() {
+/** A container row while filtering: it opens and closes and matches nothing itself. */
+function FoldRow({ path, depth, icon, label, expanded }: { path: string; depth: number; icon: ReactNode; label: ReactNode; expanded: Expanded }) {
+  return <Row path={path} depth={depth} expandable open={expanded.has(path)} onClick={() => expanded.toggle(path)} icon={icon} label={label} />;
+}
+
+function FilteredRelationNode({
+  path,
+  db,
+  schema,
+  match: { rel, ranges, columns },
+  expanded,
+}: {
+  path: string;
+  db: DatabaseRef;
+  schema: string;
+  match: FilteredRelation;
+  expanded: Expanded;
+}) {
+  const me = `${path}/${rel.name}`;
+  const expandable = columns.length > 0;
+  const open = expandable && expanded.has(me);
+  const selected = useIsSelected(db, schema, rel);
+  const select = useWorkspace((s) => s.select);
+  return (
+    <>
+      <Row
+        path={me}
+        depth={3}
+        expandable={expandable}
+        keepChevronSpace
+        quietChevron
+        open={open}
+        selected={selected}
+        onClick={() => select({ db, schema, relation: rel.name })}
+        onToggle={expandable ? () => expanded.toggle(me) : undefined}
+        onDoubleClick={() => openTableTab({ db, schema, relation: rel.name })}
+        contextMenu={<NewMenu db={db} />}
+        icon={relationIcon(rel)}
+        label={<Highlight text={rel.name} ranges={ranges} />}
+      />
+      {open && columns.map((c) => <ColumnRow key={c.column.attnum} path={`${me}/#columns`} depth={4} column={c.column} ranges={c.ranges} />)}
+    </>
+  );
+}
+
+function FilteredSchemaNode({ path, db, match, expanded }: { path: string; db: DatabaseRef; match: FilteredSchema; expanded: Expanded }) {
+  const me = `${path}/${match.name}`;
+  const functions = `${me}/#functions`;
+  return (
+    <>
+      <FoldRow path={me} depth={2} icon={<IconStack2 size={15} className="text-muted" />} label={match.name} expanded={expanded} />
+      {expanded.has(me) && (
+        <>
+          {match.relations.map((r) => (
+            <FilteredRelationNode key={r.rel.oid} path={me} db={db} schema={match.name} match={r} expanded={expanded} />
+          ))}
+          {match.functions.length > 0 && (
+            <FoldRow path={functions} depth={3} icon={<IconBraces size={14} className="text-muted" />} label="Functions" expanded={expanded} />
+          )}
+          {expanded.has(functions) && match.functions.map((f) => <FunctionRow key={f.fn.oid} path={functions} depth={4} fn={f.fn} ranges={f.ranges} />)}
+        </>
+      )}
+    </>
+  );
+}
+
+function TreeNote({ children }: { children: ReactNode }) {
+  return (
+    <p data-testid="tree-search-empty" className="px-4 py-1.5 text-ui-12.5 text-muted">
+      {children}
+    </p>
+  );
+}
+
+/** The tree narrowed to a search, every node open until its chevron closes it. */
+function FilteredTree({ filter, query }: { filter: TreeFilter; query: string }) {
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const expanded: Expanded = {
+    has: (p) => !collapsed.has(p),
+    toggle: (p, open) =>
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        if (open ?? prev.has(p)) next.delete(p);
+        else next.add(p);
+        return next;
+      }),
+  };
+  if (filter.searched === 0) return <TreeNote>Connect to a database to search its catalog.</TreeNote>;
+  if (filter.connections.length === 0) return <TreeNote>No matches for “{query}”.</TreeNote>;
+  return filter.connections.map(({ config, databases }) => (
+    <Fragment key={config.id}>
+      <FoldRow path={config.name} depth={0} icon={<PgBadge />} label={<span className="font-medium">{config.name}</span>} expanded={expanded} />
+      {expanded.has(config.name) &&
+        databases.map(({ db, schemas }) => {
+          const path = `${config.name}/${db.database}`;
+          return (
+            <Fragment key={db.database}>
+              <FoldRow path={path} depth={1} icon={<IconDatabase size={15} className="text-muted" />} label={db.database} expanded={expanded} />
+              {expanded.has(path) && schemas.map((s) => <FilteredSchemaNode key={s.name} path={path} db={db} match={s} expanded={expanded} />)}
+            </Fragment>
+          );
+        })}
+    </Fragment>
+  ));
+}
+
+/** `filter` is set while the sidebar search holds a query, and the tree then shows only its matches. */
+export function ConnectionTree({ filter, query }: { filter: TreeFilter | null; query: string }) {
   const configs = useWorkspace((s) => s.configs);
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const toggle = useCallback(
@@ -721,13 +842,17 @@ export function ConnectionTree() {
     [],
   );
   const expanded: Expanded = { has: (p) => open.has(p), toggle };
+  // Held here, not in each node, so a search that swaps the nodes out does not reopen what the user closed.
+  const revealed = useRef<Revealed>(new Map()).current;
   const list = Object.values(configs).sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div data-testid="conn-tree" role="tree" className="min-h-0 flex-1 overflow-y-auto pt-2 pb-3">
-      {list.map((c) => (
-        <ConnectionNode key={c.id} config={c} expanded={expanded} />
-      ))}
+      {filter ? (
+        <FilteredTree key={query} filter={filter} query={query.trim()} />
+      ) : (
+        list.map((c) => <ConnectionNode key={c.id} config={c} expanded={expanded} revealed={revealed} />)
+      )}
       <PickerHost />
     </div>
   );

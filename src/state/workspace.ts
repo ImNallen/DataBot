@@ -11,7 +11,7 @@ import type {
   TxnMode,
   Workspace,
 } from "../ipc/bindings";
-import type { SettingId, SettingsSectionId } from "../features/settings/sections";
+import type { SettingsSectionId } from "../features/settings/settingsIndex";
 import { homeDb, sameDb } from "./dbKey";
 import type { ResultPick } from "./status";
 
@@ -38,14 +38,13 @@ export type RelationRef = { db: DatabaseRef; schema: string; relation: string };
 
 export type Overlay =
   | { kind: "none" }
-  | { kind: "palette" }
   | { kind: "history" }
-  | { kind: "settings-search" }
   | { kind: "connection"; editing: ConnectionId | null }
   | { kind: "cell"; title: string; value: string | null }
   | { kind: "confirm"; title: string; body: string; confirmLabel: string; onConfirm: () => void };
 
-export type Screen = { kind: "workspace" } | { kind: "settings"; section: SettingsSectionId; target?: SettingId };
+/** `query` filters the settings in place; while it is set the page lists matches instead of `section`. */
+export type Screen = { kind: "workspace" } | { kind: "settings"; section: SettingsSectionId; query: string };
 
 export type WorkspaceData = {
   tabs: Record<TabId, Tab>;
@@ -58,6 +57,10 @@ export type WorkspaceData = {
   selected: RelationRef | null;
   overlay: Overlay;
   screen: Screen;
+  /** Filters the connection tree in place. Not saved, and kept across a trip to settings. */
+  treeQuery: string;
+  /** ⌘P asks the shown sidebar search box for focus; the box clears this once it has it. */
+  searchFocus: boolean;
   toast: { id: number; text: string } | null;
   cursor: { line: number; col: number };
 };
@@ -138,8 +141,12 @@ type WorkspaceActions = {
   select(r: RelationRef | null): void;
   open(o: Overlay): void;
   close(): void;
-  openSettings(section?: SettingsSectionId, target?: SettingId): void;
+  openSettings(section?: SettingsSectionId): void;
   closeSettings(): void;
+  setTreeQuery(query: string): void;
+  setSettingsQuery(query: string): void;
+  focusSearch(): void;
+  searchFocused(): void;
   notify(text: string): void;
   setCursor(cursor: { line: number; col: number }): void;
 };
@@ -157,6 +164,8 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
   selected: null,
   overlay: { kind: "none" },
   screen: { kind: "workspace" },
+  treeQuery: "",
+  searchFocus: false,
   toast: null,
   cursor: { line: 1, col: 1 },
 
@@ -229,8 +238,13 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
   select: (selected) => set({ selected }),
   open: (overlay) => set({ overlay }),
   close: () => set({ overlay: { kind: "none" } }),
-  openSettings: (section = "appearance", target) => set({ screen: { kind: "settings", section, target }, overlay: { kind: "none" } }),
+  openSettings: (section = "appearance") => set({ screen: { kind: "settings", section, query: "" }, overlay: { kind: "none" } }),
   closeSettings: () => set({ screen: { kind: "workspace" }, overlay: { kind: "none" } }),
+  setTreeQuery: (treeQuery) => set({ treeQuery }),
+  setSettingsQuery: (query) => set((s) => (s.screen.kind === "settings" ? { screen: { ...s.screen, query } } : {})),
+  focusSearch: () =>
+    set((s) => ({ overlay: { kind: "none" }, layout: s.layout.sidebar ? s.layout : { ...s.layout, sidebar: true }, searchFocus: true })),
+  searchFocused: () => set({ searchFocus: false }),
   notify: (text) => set({ toast: { id: ++toastSeq, text } }),
   setCursor: (cursor) => set({ cursor }),
 }));

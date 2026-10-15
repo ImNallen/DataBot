@@ -1,20 +1,8 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { useWorkspace } from "../../state/workspace";
 import { cx, inputClass } from "../../ui/primitives";
 import { saveSettings } from "../editor/runActions";
-import type { SettingId } from "./sections";
-
-function SettingRow({ setting, id, label, hint, children }: { setting: SettingId; id: string; label: string; hint: string; children: ReactNode }) {
-  return (
-    <div data-setting={setting} className="flex items-center justify-between gap-6 border-b border-border py-4 first:pt-0 last:border-b-0">
-      <label htmlFor={id} className="min-w-0">
-        <span className="block text-ui-13 text-fg">{label}</span>
-        <span className="mt-0.5 block text-ui-12 text-dim">{hint}</span>
-      </label>
-      {children}
-    </div>
-  );
-}
+import { Row } from "./SettingLayout";
 
 function NumberInput({ id, field, value }: { id: string; field: "maxRows" | "tablePageSize"; value: number }) {
   const [draft, setDraft] = useState(String(value));
@@ -48,26 +36,47 @@ function NumberInput({ id, field, value }: { id: string; field: "maxRows" | "tab
   );
 }
 
-export function QueriesSection() {
-  const settings = useWorkspace((s) => s.settings);
+export function MaxRowsSetting() {
+  const maxRows = useWorkspace((s) => s.settings.maxRows);
   return (
-    <div>
-      <SettingRow setting="maxRows" id="setting-max-rows" label="Row limit per result" hint="Rows past this are counted but not kept.">
-        <NumberInput key={settings.maxRows} id="setting-max-rows" field="maxRows" value={settings.maxRows} />
-      </SettingRow>
-      <SettingRow setting="tablePageSize" id="setting-page-size" label="Table page size" hint="Rows per page when browsing a table.">
-        <NumberInput key={settings.tablePageSize} id="setting-page-size" field="tablePageSize" value={settings.tablePageSize} />
-      </SettingRow>
-      <SettingRow setting="stopOnError" id="setting-stop-on-error" label="Stop a script at the first error" hint="Later statements are skipped once one fails.">
+    <Row
+      setting="maxRows"
+      labelFor="setting-max-rows"
+      hint="Rows past this are counted but not kept."
+      control={<NumberInput key={maxRows} id="setting-max-rows" field="maxRows" value={maxRows} />}
+    />
+  );
+}
+
+export function TablePageSizeSetting() {
+  const tablePageSize = useWorkspace((s) => s.settings.tablePageSize);
+  return (
+    <Row
+      setting="tablePageSize"
+      labelFor="setting-page-size"
+      hint="Rows per page when browsing a table."
+      control={<NumberInput key={tablePageSize} id="setting-page-size" field="tablePageSize" value={tablePageSize} />}
+    />
+  );
+}
+
+export function StopOnErrorSetting() {
+  const stopOnError = useWorkspace((s) => s.settings.stopOnError);
+  return (
+    <Row
+      setting="stopOnError"
+      labelFor="setting-stop-on-error"
+      hint="Later statements are skipped once one fails."
+      control={
         <input
           id="setting-stop-on-error"
           data-testid="setting-stopOnError"
           type="checkbox"
           className="size-4 shrink-0 accent-run"
-          checked={settings.stopOnError}
+          checked={stopOnError}
           onChange={(e) => void saveSettings({ stopOnError: e.target.checked })}
         />
-      </SettingRow>
-    </div>
+      }
+    />
   );
 }

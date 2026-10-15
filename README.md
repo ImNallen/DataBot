@@ -17,7 +17,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 - A connection row's `shown/total` count opens a picker of the server's databases, and a database row's count opens a picker of its schemas. Check a box to show that database or schema in the tree, or use **All**, **Default only**, or **None**. Adding a database also shows its default schema. System databases and schemas stay out of the pickers until you turn on **Show system databases** or **Show system schemas**. The count turns amber when nothing is shown. Each connection keeps its choices. The picker opens with its filter focused, `Tab` cycles inside it, and `Esc` or **Done** closes it and returns focus to the count.
 - A disconnected connection row shows a **Connect** button in place of its count; a connected row shows only the count, dimmed while it is off.
 - Double-click a table or a view to browse its rows in a tab. Double-click a function to insert a call into the active tab.
-- `⌘P` searches tables, views, functions, and columns in the schemas the tree shows. A column opens its table.
+- The sidebar's search box filters the tree in place. The tree keeps the tables, views, columns, and functions whose names contain every word you type, in the schemas it shows, and opens each match's parents and highlights the match. A matching column sits under its table. `Enter` opens the first table or view whose name starts with the words you typed, else the first one listed. `Esc` clears the search. `⌘P` focuses the box.
 - The connection dialog tests a connection and shows the server version before you save. Right-clicking a connection connects, disconnects, opens a SQL tab, refreshes the catalog, edits, and deletes.
 - The OS credential store holds one master key, and saved passwords are sealed under it. macOS asks for keychain access once per launch.
 
@@ -40,7 +40,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 
 ### The window
 
-- **Settings** (`⌘,`) opens in place of the sidebar and editor. **Appearance** picks a System, Light, or Dark scheme and the themes for each. It also sets the density (Compact, Standard, or Spacious), the speed of panel, dialog, and menu animations, and the interface and monospace fonts and sizes. The monospace font is used by the SQL editor and the result tables. **Queries** sets the row limit, the table page size, and whether a script stops at its first error.
+- **Settings** (`⌘,`) opens in place of the sidebar and editor. **Appearance** picks a System, Light, or Dark scheme and the themes for each. It also sets the density (Compact, Standard, or Spacious), the speed of panel, dialog, and menu animations, and the interface and monospace fonts and sizes. The monospace font is used by the SQL editor and the result tables. **Queries** sets the row limit, the table page size, and whether a script stops at its first error. The search box above the sections filters the settings in place and shows the matches with their controls. `Esc` clears it and returns to the section you were on.
 - On macOS the window keeps the native traffic lights. On Windows and Linux the app draws its own window controls and resize edges.
 - The right panel holds a placeholder for an AI assistant.
 
@@ -52,7 +52,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 |---|---|
 | `⌘T` | New SQL tab |
 | `⌘N` | New connection |
-| `⌘P` | Search the catalog, or search settings while Settings is open |
+| `⌘P` | Focus the sidebar search: the tree, or the settings while Settings is open |
 | `⌘,` | Open or close Settings |
 | `⌘W` | Close the tab, or close Settings |
 | `⌘↵` | Run the statement under the cursor or the selection |

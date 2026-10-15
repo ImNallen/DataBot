@@ -71,17 +71,6 @@ export function wantedCatalogs(connections: Record<ConnectionId, ConnectionState
   return wanted;
 }
 
-/** The schemas the tree shows, by database, across the connected instances: the user's working set, which ⌘P searches. */
-export function shownSchemas(connections: Record<ConnectionId, ConnectionState>): Map<DbKey, ReadonlySet<string>> {
-  const shown = new Map<DbKey, ReadonlySet<string>>();
-  for (const conn of Object.values(connections)) {
-    for (const db of instanceOf(conn)?.databases ?? []) {
-      if (db.shown) shown.set(dbKey({ connectionId: conn.id, database: db.name }), new Set(db.shownSchemas));
-    }
-  }
-  return shown;
-}
-
 export function applyEvent(s: LiveData, e: AppEvent): LiveData {
   switch (e.kind) {
     case "ConnectionChanged": {

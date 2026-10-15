@@ -1,36 +1,13 @@
 import { IconArrowBackUp, IconSelector } from "@tabler/icons-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Density, FontSetting } from "../../ipc/bindings";
 import { gridRowHeight } from "../../shell/appearance";
 import { DEFAULT_SETTINGS, useWorkspace } from "../../state/workspace";
 import { canvasFontProbe, FONT_SIZES, fontChoices, fontStack, type FontKind } from "../../themes/fonts";
 import { cx, IconButton, PgBadge } from "../../ui/primitives";
 import { chooseDensity, chooseFont, previewPanelMotion, savePanelMotion } from "./appearanceActions";
-import type { SettingId } from "./sections";
-
-function Card({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section aria-label={title}>
-      <h2 className="mb-2 px-1 text-ui-13 font-medium text-fg">{title}</h2>
-      <div className="divide-y divide-border rounded-xl border border-control">{children}</div>
-    </section>
-  );
-}
-
-function Row({ setting, label, hint, control, children }: { setting: SettingId; label: ReactNode; hint: string; control: ReactNode; children?: ReactNode }) {
-  return (
-    <div data-setting={setting} className="px-4 py-3.5">
-      <div className="flex items-center justify-between gap-6">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1 text-ui-13 text-fg">{label}</div>
-          <p className="mt-0.5 text-ui-12 text-dim">{hint}</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">{control}</div>
-      </div>
-      {children}
-    </div>
-  );
-}
+import { Row } from "./SettingLayout";
+import { settingLabel, type SettingId } from "./settingsIndex";
 
 const DENSITIES: Density[] = ["Compact", "Standard", "Spacious"];
 
@@ -81,11 +58,13 @@ function Select({ testId, label, value, options, onChange, className }: {
 
 const noFonts = () => false;
 
+const FONT_SETTINGS = { interface: "interfaceFont", code: "codeFont" } as const satisfies Record<FontKind, SettingId>;
+
 function FontControls({ kind, font, isInstalled }: { kind: FontKind; font: FontSetting; isInstalled: (probe: string) => boolean }) {
-  const name = kind === "code" ? "Monospace font" : "Interface font";
+  const name = settingLabel(FONT_SETTINGS[kind]);
   const families = fontChoices(kind, font.family, isInstalled).map((f) => ({ value: f, label: f }));
   const sizes = FONT_SIZES[kind].map((n) => ({ value: String(n), label: `${n} px` }));
-  const testId = kind === "code" ? "setting-codeFont" : "setting-interfaceFont";
+  const testId = `setting-${FONT_SETTINGS[kind]}`;
   return (
     <>
       <Select testId={`${testId}-family`} label={`${name} family`} value={font.family} options={families} onChange={(family) => void chooseFont(kind, { family })} className="w-44" />
@@ -223,46 +202,58 @@ function PanelMotionControl({ ms }: { ms: number }) {
   );
 }
 
-export function AppearanceCards() {
-  const { interfaceFont, codeFont, density, panelMotionMs } = useWorkspace((s) => s.settings);
-  const [isInstalled] = useState(() => (typeof document === "undefined" ? noFonts : canvasFontProbe()));
+export function DensitySetting() {
+  const density = useWorkspace((s) => s.settings.density);
+  return <Row setting="density" hint="Spacing and row height across panels, lists, and result tables." control={<DensityControl value={density} />} />;
+}
+
+export function PanelMotionSetting() {
+  const panelMotionMs = useWorkspace((s) => s.settings.panelMotionMs);
   const motionDefault = DEFAULT_SETTINGS.panelMotionMs;
   return (
-    <>
-      <Card title="Layout">
-        <Row setting="density" label="Density" hint="Spacing and row height across panels, lists, and result tables." control={<DensityControl value={density} />} />
-      </Card>
-      <Card title="Motion">
-        <Row
-          setting="panelMotion"
-          label={
-            <>
-              Panel animations
-              {panelMotionMs !== motionDefault && (
-                <IconButton
-                  data-testid="setting-panelMotion-reset"
-                  aria-label="Reset panel animations"
-                  title={`Reset to ${motionDefault} ms`}
-                  className="size-5"
-                  onClick={() => void savePanelMotion(motionDefault)}
-                >
-                  <IconArrowBackUp size={13} />
-                </IconButton>
-              )}
-            </>
-          }
-          hint="How fast panels, dialogs, and menus open and close."
-          control={<PanelMotionControl ms={panelMotionMs} />}
-        />
-      </Card>
-      <Card title="Typography">
-        <Row setting="interfaceFont" label="Interface font" hint="Everything outside the SQL editor and result tables." control={<FontControls kind="interface" font={interfaceFont} isInstalled={isInstalled} />}>
-          <InterfaceSample font={interfaceFont} />
-        </Row>
-        <Row setting="codeFont" label="Monospace font" hint="SQL editor and result tables." control={<FontControls kind="code" font={codeFont} isInstalled={isInstalled} />}>
-          <CodeSample font={codeFont} density={density} />
-        </Row>
-      </Card>
-    </>
+    <Row
+      setting="panelMotion"
+      extra={
+        panelMotionMs !== motionDefault && (
+          <IconButton
+            data-testid="setting-panelMotion-reset"
+            aria-label="Reset panel animations"
+            title={`Reset to ${motionDefault} ms`}
+            className="size-5"
+            onClick={() => void savePanelMotion(motionDefault)}
+          >
+            <IconArrowBackUp size={13} />
+          </IconButton>
+        )
+      }
+      hint="How fast panels, dialogs, and menus open and close."
+      control={<PanelMotionControl ms={panelMotionMs} />}
+    />
+  );
+}
+
+function useFontProbe() {
+  const [isInstalled] = useState(() => (typeof document === "undefined" ? noFonts : canvasFontProbe()));
+  return isInstalled;
+}
+
+export function InterfaceFontSetting() {
+  const font = useWorkspace((s) => s.settings.interfaceFont);
+  const isInstalled = useFontProbe();
+  return (
+    <Row setting="interfaceFont" hint="Everything outside the SQL editor and result tables." control={<FontControls kind="interface" font={font} isInstalled={isInstalled} />}>
+      <InterfaceSample font={font} />
+    </Row>
+  );
+}
+
+export function CodeFontSetting() {
+  const font = useWorkspace((s) => s.settings.codeFont);
+  const density = useWorkspace((s) => s.settings.density);
+  const isInstalled = useFontProbe();
+  return (
+    <Row setting="codeFont" hint="SQL editor and result tables." control={<FontControls kind="code" font={font} isInstalled={isInstalled} />}>
+      <CodeSample font={font} density={density} />
+    </Row>
   );
 }

@@ -6,16 +6,10 @@ import { shortType } from "../features/results/format";
 import { commands, type Catalog, type ColumnSource, type DatabaseRef, type RelKind, type Relation } from "../ipc/bindings";
 import { dbKey, type DbKey } from "./dbKey";
 
-export type SearchItem =
-  | { kind: "table" | "view"; label: string; db: DatabaseRef; schema: string; relation: string; detail: string }
-  | { kind: "column"; label: string; db: DatabaseRef; schema: string; relation: string; column: string; detail: string }
-  | { kind: "function"; label: string; db: DatabaseRef; schema: string; name: string; detail: string };
-
 export type CatalogView = {
   catalog: Catalog;
   completion: SQLNamespace;
   qualifiedTables: Completion[];
-  searchItems: SearchItem[];
   relationsById: Map<number, { schema: string; rel: Relation }>;
 };
 
@@ -27,11 +21,6 @@ export function buildCatalogView(catalog: Catalog): CatalogView {
   const completion: Record<string, SQLNamespace> = {};
   const qualifiedTables: Completion[] = [];
   const relationsById = new Map<number, { schema: string; rel: Relation }>();
-  const relations: SearchItem[] = [];
-  const views: SearchItem[] = [];
-  const functions: SearchItem[] = [];
-  const columns: SearchItem[] = [];
-  const db = catalog.db;
 
   for (const schema of catalog.schemas) {
     const tables: Record<string, SQLNamespace> = {};
@@ -48,40 +37,11 @@ export function buildCatalogView(catalog: Catalog): CatalogView {
         type: view ? "type" : "class",
         detail: view ? "view" : "table",
       });
-      (view ? views : relations).push({
-        kind: view ? "view" : "table",
-        label: rel.name,
-        db,
-        schema: schema.name,
-        relation: rel.name,
-        detail: schema.name,
-      });
-      for (const c of rel.columns) {
-        columns.push({
-          kind: "column",
-          label: `${rel.name}.${c.name}`,
-          db,
-          schema: schema.name,
-          relation: rel.name,
-          column: c.name,
-          detail: shortType(c.typeDisplay),
-        });
-      }
-    }
-    for (const fn of schema.functions) {
-      functions.push({
-        kind: "function",
-        label: fn.name,
-        db,
-        schema: schema.name,
-        name: fn.name,
-        detail: `(${fn.args}) → ${fn.returns}`,
-      });
     }
     completion[schema.name] = tables;
   }
 
-  return { catalog, completion, qualifiedTables, searchItems: [...relations, ...views, ...functions, ...columns], relationsById };
+  return { catalog, completion, qualifiedTables, relationsById };
 }
 
 export function isPrimaryKey(view: CatalogView | undefined, source: ColumnSource | null): boolean {
