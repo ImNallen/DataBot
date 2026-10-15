@@ -17,7 +17,7 @@ import { useLive } from "../../state/live";
 import { dropRowCaches } from "../../state/rowCache";
 import { isRunning } from "../../state/status";
 import { pendingCount, toChanges, useTableEdits, type TableEdits } from "../../state/tableEdits";
-import { EMPTY_QUERY, nextUntitled, tabTarget, useWorkspace, type ConsoleTarget, type RelationRef, type Tab, type TableTab } from "../../state/workspace";
+import { EMPTY_QUERY, nextUntitled, tabMode, tabTarget, useWorkspace, type ConsoleTarget, type RelationRef, type Tab, type TableTab } from "../../state/workspace";
 import {
   dropEditor,
   editorStateOf,
@@ -35,7 +35,7 @@ const notify = (text: string) => ws().notify(text);
 function consoleConfig(tab: Tab): ConsoleConfig | null {
   const db = tabTarget(tab);
   if (!db) return null;
-  return { connectionId: db.connectionId, database: db.database, schema: null, mode: tab.kind === "sql" ? tab.console.mode : "AutoCommit" };
+  return { connectionId: db.connectionId, database: db.database, schema: null, mode: tabMode(tab) };
 }
 
 function sameConfig(a: ConsoleConfig, b: ConsoleConfig): boolean {

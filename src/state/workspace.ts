@@ -143,6 +143,11 @@ export function tabTarget(tab: Tab | undefined): DatabaseRef | null {
   return tab.kind === "sql" ? tab.console.db : tab.db;
 }
 
+/** A table tab has no mode of its own. Its browse runs and staged edits always auto-commit. */
+export function tabMode(tab: Tab): TxnMode {
+  return tab.kind === "sql" ? tab.console.mode : "AutoCommit";
+}
+
 type WorkspaceActions = {
   restore(w: Workspace, connections: ConnectionConfig[], settings: Settings): void;
   addTab(tab: Tab): void;

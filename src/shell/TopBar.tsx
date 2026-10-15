@@ -5,7 +5,7 @@ import type { TxnMode } from "../ipc/bindings";
 import { homeDb } from "../state/dbKey";
 import { useLive } from "../state/live";
 import { connectionTone, hasUncommittedWork, isRunning } from "../state/status";
-import { tabLabel, tabTarget, useWorkspace } from "../state/workspace";
+import { tabLabel, tabMode, tabTarget, useWorkspace } from "../state/workspace";
 import { Button, Kbd, MenuContent, MenuItem, MenuLabel, StatusDot, cx } from "../ui/primitives";
 import { SidebarToggle, WindowEdgeActions, windowEdgeInset, windowLeadingInset } from "./WindowEdgeActions";
 import type { HostedWindow } from "./hostedWindow";
@@ -84,6 +84,12 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
             ))}
           </MenuContent>
         </Menu.Root>
+      )}
+
+      {tab?.kind === "table" && (
+        <span data-testid="tx-mode" title="Table tabs always auto-commit" className="inline-flex h-7 items-center px-2 text-ui-12.5 text-muted">
+          {MODE_LABEL[tabMode(tab)]}
+        </span>
       )}
 
       {sql && hasUncommittedWork(liveConsole) && (

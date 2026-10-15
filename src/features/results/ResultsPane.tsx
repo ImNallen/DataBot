@@ -352,7 +352,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
         <div className="flex-1" />
 
         {summary && <SummaryText summary={summary} />}
-        {tab?.kind === "sql" && <CursorPosition />}
+        {tab && <CursorPosition />}
 
         <div className="flex items-center gap-0.5">
           <Menu.Root modal={false}>
