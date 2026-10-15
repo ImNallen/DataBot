@@ -48,7 +48,7 @@ export const editorTheme = EditorView.theme({
   ".cm-diagnostic": { padding: "6px 10px", fontFamily: "var(--font-sans)", fontSize: "var(--text-ui-12)" },
   ".cm-diagnostic-error": { borderLeft: "2px solid var(--color-danger)" },
   ".cm-tooltip-autocomplete > ul": { fontFamily: "var(--code-font)", fontSize: "calc(var(--code-size) - 0.5px)", maxHeight: "280px" },
-  ".cm-tooltip-autocomplete > ul > li": { padding: "3px 10px 3px 6px", lineHeight: "18px" },
+  ".cm-tooltip-autocomplete > ul > li": { padding: "3px 10px 3px 6px" },
   ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "var(--color-selected)", color: "var(--color-fg)" },
   ".cm-completionDetail": { color: "var(--color-dim)", fontStyle: "normal", marginLeft: "12px" },
   ".cm-completionIcon": { opacity: "0.6", width: "18px" },
