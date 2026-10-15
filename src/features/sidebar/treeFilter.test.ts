@@ -1,42 +1,13 @@
 import { expect, it } from "vitest";
-import type { ConnectionConfig, ConnectionState, DatabaseState } from "../../ipc/bindings";
+import type { ConnectionState } from "../../ipc/bindings";
 import { buildCatalogView } from "../../state/catalog";
 import { dbKey } from "../../state/dbKey";
+import { connectedState, connectionConfig, databaseState } from "../../testing/connections";
 import { shopCatalog } from "../../testing/shopCatalog";
 import { parseQuery } from "../../ui/textMatch";
 import { filterTree, firstRelation, type TreeFilter } from "./treeFilter";
 
-const config = (id: string, name: string): ConnectionConfig => ({
-  id,
-  name,
-  host: "localhost",
-  port: 5432,
-  database: "shop",
-  user: "u",
-  sslMode: "Prefer",
-  caCertPath: null,
-  hasPassword: false,
-  color: null,
-});
-
-const database = (name: string, shown: boolean, shownSchemas: string[]): DatabaseState => ({
-  name,
-  system: false,
-  access: "Ok",
-  shown,
-  showSystemSchemas: false,
-  shownSchemas,
-  schemaCount: { kind: "Unknown" },
-  catalog: { kind: "Ready", version: 1 },
-});
-
-const connected = (id: string, databases: DatabaseState[]): ConnectionState => ({
-  id,
-  rev: 1,
-  status: { kind: "Connected", server: { version: "16.4", versionNum: 160004, encoding: "UTF8" }, instance: { home: "shop", showSystemDatabases: false, databases } },
-});
-
-const configs = { p: config("p", "prod"), d: config("d", "dev"), off: config("off", "archive") };
+const configs = { p: connectionConfig("p", "prod"), d: connectionConfig("d", "dev"), off: connectionConfig("off", "archive") };
 const views = Object.fromEntries(["p", "d", "off"].map((id) => [dbKey({ connectionId: id, database: "shop" }), buildCatalogView(shopCatalog(id, 1))]));
 
 function search(query: string, connections: Record<string, ConnectionState>) {
@@ -61,7 +32,7 @@ function rows(filter: TreeFilter): string[] {
   );
 }
 
-const prodOnly = { p: connected("p", [database("postgres", false, ["public"]), database("shop", true, ["public"])]) };
+const prodOnly = { p: connectedState("p", [databaseState("postgres", false, ["public"]), databaseState("shop", true, ["public"])]) };
 
 it("lists matching tables, then views, then functions, with matching columns under their table", () => {
   const filter = search("order", prodOnly);
@@ -93,7 +64,7 @@ it("carries the ranges to highlight for each matched name", () => {
 it("searches only connected instances, shown databases, and shown schemas, ordering connections by name", () => {
   const connections = {
     ...prodOnly,
-    d: connected("d", [database("shop", true, ["lab", "public"])]),
+    d: connectedState("d", [databaseState("shop", true, ["lab", "public"])]),
     off: { id: "off", rev: 1, status: { kind: "Disconnected" } } satisfies ConnectionState,
   };
   expect(rows(search("zoo", connections))).toEqual(["dev/shop/lab/type_zoo"]);
@@ -109,7 +80,7 @@ it("searches only connected instances, shown databases, and shown schemas, order
 it("drops every container without a match and searches nothing before a catalog loads", () => {
   expect(search("zzqx", prodOnly)).toEqual({ connections: [], count: 0, searched: 1 });
   expect(search("shop public", prodOnly).connections).toEqual([]);
-  const unloaded = { p: connected("p", [database("reporting", true, ["public"])]) };
+  const unloaded = { p: connectedState("p", [databaseState("reporting", true, ["public"])]) };
   expect(search("order", unloaded)).toEqual({ connections: [], count: 0, searched: 0 });
 });
 

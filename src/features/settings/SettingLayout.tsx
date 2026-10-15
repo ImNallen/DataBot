@@ -1,18 +1,25 @@
 import { useId, type ReactNode } from "react";
+import { useWorkspace } from "../../state/workspace";
+import { Highlight } from "../../ui/primitives";
+import { matchRanges, parseQuery } from "../../ui/textMatch";
 import { settingLabel, type SettingId } from "./settingsIndex";
 
+/** The setting's registry label, marked where it holds the settings search. */
 export function SettingLabel({ id }: { id: SettingId }) {
-  return settingLabel(id);
+  const query = useWorkspace((s) => (s.screen.kind === "settings" ? s.screen.query : ""));
+  const label = settingLabel(id);
+  return <Highlight text={label} ranges={matchRanges(parseQuery(query), label)} />;
 }
 
-export function Card({ title, children }: { title: ReactNode; children: ReactNode }) {
+/** `bare` drops the border for settings that draw their own, such as the color scheme previews. */
+export function Card({ title, bare, children }: { title: ReactNode; bare?: boolean; children: ReactNode }) {
   const heading = useId();
   return (
     <section aria-labelledby={heading}>
       <h2 id={heading} className="mb-2 flex items-center gap-2 px-1 text-ui-13 font-medium text-fg">
         {title}
       </h2>
-      <div className="divide-y divide-border rounded-xl border border-control">{children}</div>
+      <div className={bare ? "flex flex-col gap-8" : "divide-y divide-border rounded-xl border border-control"}>{children}</div>
     </section>
   );
 }

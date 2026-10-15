@@ -1,11 +1,17 @@
 import { IconAdjustmentsHorizontal, IconClock, IconPlus } from "@tabler/icons-react";
+import { useMemo } from "react";
+import { useCatalog } from "../../state/catalog";
+import { useLive } from "../../state/live";
 import { useWorkspace, type Screen } from "../../state/workspace";
 import { cx, IconButton } from "../../ui/primitives";
+import { parseQuery } from "../../ui/textMatch";
 import type { HostedWindow } from "../../shell/hostedWindow";
 import { SidebarToggle, windowLeadingInset } from "../../shell/WindowEdgeActions";
+import { openTableTab } from "../editor/runActions";
 import { SettingsSidebarBody } from "../settings/SettingsSidebarBody";
 import { ConnectionTree } from "./ConnectionTree";
 import { SidebarSearch } from "./SidebarSearch";
+import { filterTree, firstRelation, type TreeFilter } from "./treeFilter";
 
 function SidebarHeader({ hosted }: { hosted: HostedWindow | null }) {
   return (
@@ -33,7 +39,7 @@ function sidebarBody(screen: Screen) {
     case "workspace":
       return <WorkspaceSidebarBody />;
     case "settings":
-      return <SettingsSidebarBody section={screen.section} />;
+      return <SettingsSidebarBody section={screen.section} query={screen.query} />;
     default: {
       const unreachable: never = screen;
       return unreachable;
@@ -41,13 +47,30 @@ function sidebarBody(screen: Screen) {
   }
 }
 
+function useTreeFilter(query: string): TreeFilter | null {
+  const configs = useWorkspace((s) => s.configs);
+  const connections = useLive((s) => s.connections);
+  const views = useCatalog((s) => s.views);
+  return useMemo(() => {
+    const tokens = parseQuery(query);
+    return tokens.length > 0 ? filterTree(tokens, configs, connections, views) : null;
+  }, [query, configs, connections, views]);
+}
+
 function WorkspaceSidebarBody() {
   const open = useWorkspace((s) => s.open);
   const openSettings = useWorkspace((s) => s.openSettings);
+  const query = useWorkspace((s) => s.treeQuery);
+  const setTreeQuery = useWorkspace((s) => s.setTreeQuery);
+  const filter = useTreeFilter(query);
+  const openFirst = () => {
+    const first = filter && firstRelation(filter);
+    if (first) openTableTab(first);
+  };
 
   return (
     <>
-      <SidebarSearch testId="search-open" label="Search" onOpen={() => open({ kind: "palette" })}>
+      <SidebarSearch testId="sidebar-search" query={query} count={filter?.count ?? 0} onQueryChange={setTreeQuery} onEnter={openFirst}>
         <IconButton
           data-testid="new-connection"
           aria-label="New connection"
@@ -57,7 +80,7 @@ function WorkspaceSidebarBody() {
         </IconButton>
       </SidebarSearch>
 
-      <ConnectionTree />
+      <ConnectionTree filter={filter} query={query} />
 
       <div className="mx-2 flex shrink-0 items-center gap-1 py-2">
         <IconButton
