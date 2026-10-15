@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
 import { Sidebar } from "../features/sidebar/Sidebar";
-import { useWorkspace } from "../state/workspace";
+import { EMPTY_QUERY, useWorkspace } from "../state/workspace";
 import { AppLayout } from "./AppLayout";
 import { RightPanel } from "./RightPanel";
 import { ResizeEdges, WindowControlButtons } from "./WindowChrome";
@@ -292,4 +292,13 @@ it("drops the right panel and its handle while the panel is closed", () => {
   expect(html).not.toContain('data-testid="right-panel-resize"');
   expect(html).not.toContain('aria-label="Resize right panel"');
   expect(html).not.toContain('data-testid="right-panel"');
+});
+
+it("shows the transaction mode and cursor position on a table tab", () => {
+  const tab = { kind: "table", id: "t2", db: { connectionId: "c", database: "shop" }, schema: "public", table: "orders", page: 0, query: EMPTY_QUERY } as const;
+  Object.assign(useWorkspace.getInitialState(), { tabs: { t2: tab }, active: "t2" });
+  withLayout({ results: true });
+  const html = renderToStaticMarkup(<AppLayout />);
+  expect(html).toMatch(/data-testid="tx-mode"[^>]*>Auto-commit</);
+  expect(html).toMatch(/data-testid="cursor-position"[^>]*>Ln 1, Col 1</);
 });
