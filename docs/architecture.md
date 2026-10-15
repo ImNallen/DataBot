@@ -730,7 +730,7 @@ type WorkspaceData = {
   overlay: Overlay;                                    // none | palette | history | settings-search | connection | cell | confirm
   screen: Screen;                                      // workspace | settings
   toast: { id: number; text: string } | null;
-  cursor: { line: number; col: number };               // status bar Ln/Col
+  cursor: { line: number; col: number };               // results header Ln/Col
 };
 // Editor text lives only in CodeMirror: editorStates: Map<TabId, EditorState> (module-level).
 // workspaceSnapshot() reads SQL tab text from there. No second copy of the text is kept.
@@ -772,7 +772,7 @@ type TableEdits = {
 };
 
 // features/results/tableQuery.ts: useFilterDrafts, filter rows the user is still filling in, per tab
-// state/status.ts: pure derivations (isRunning, hasUncommittedWork, connectionStatus, shownResult, runSummary)
+// state/status.ts: pure derivations (isRunning, hasUncommittedWork, connectionTone, shownResult, runSummary)
 ```
 
 The UI derives its status values instead of storing them:
@@ -780,7 +780,8 @@ The UI derives its status values instead of storing them:
 | Derived status | Source |
 |---|---|
 | Run button: Run or Cancel | `isRunning(consoles[tab])`, from `run.kind` |
-| Status bar | `connectionStatus(connections[id])`, the server version, a "Transaction rolled back: connection lost" chip while `session` is `Lost { txnLost }`, Ln/Col on SQL tabs, and the mode menu on SQL tabs (table tabs show a fixed auto-commit chip) |
+| Transaction mode menu in the TopBar | SQL tabs only. `config.mode`, `txn` in manual mode, and "rolled back" while `session` is `Lost { txnLost }` |
+| Ln/Col in the results header | SQL tabs only. `cursor` in the workspace store |
 | Commit/Rollback visibility | SQL tabs only, while `hasUncommittedWork` (`config.mode === "Manual" && txn !== "Idle"`) |
 | "6 rows · 38 ms" in the results toolbar (`result-status`) | `runSummary(run, picked, now)` from `ResultMeta` |
 | Unsaved dot | Shown only while `txn !== "Idle"` in manual mode ("uncommitted work"). Consoles autosave text to the workspace, so a text-dirty dot would mean nothing. |
@@ -826,7 +827,7 @@ src/                          # frontend
   ipc/bindings.ts             # GENERATED, checked in
   ipc/errors.ts               # typed IPC errors -> user-facing text
   state/{live,workspace,catalog,relationDetail,rowCache,status,tableEdits}.ts
-  shell/{AppLayout,TopBar,StatusBar,TabBar,Overlays,RightPanel,PixelColumn,ResizeHandle,WindowChrome,WindowEdgeActions}.tsx
+  shell/{AppLayout,TopBar,TabBar,Overlays,RightPanel,PixelColumn,ResizeHandle,WindowChrome,WindowEdgeActions}.tsx
   shell/{theme,hostedWindow,commands}.ts
   ui/primitives.tsx           # shared buttons, menus, dialogs, context menus
   features/settings/{sections,SettingsScreen,SettingsSearchPalette,SettingsSidebarBody,AppearanceSection,QueriesSection}.tsx
@@ -1011,6 +1012,7 @@ Frontend phase (PRs #4 and #11 to #13). These PRs built the live store, the edit
 - **Catalogs are addressed by database (PR: address catalogs and consoles by database).** `Live` became `Instance` with a `DbSlot` per database; `ConnStatus::Connected.catalogVersion` and `AppEvent::CatalogChanged` are gone, and `InstanceState` in the connection snapshot is the only source of versions. `ConsoleConfig` and `ConsoleConfigView` carry a required `database`; the persisted `ConsoleConfigSnapshot.database` and `TabSnapshot::Table.database` are `Option<String>` so older workspaces load, and `tabFromSnapshot` resolves a missing one to the connection's configured database. A table tab whose connection no longer exists is dropped at restore. When a saved connection's `database` is edited, SQL tabs on the old configured database move to the new one (`upsertConfig`); table tabs name the database their table lives in and stay. `StmtKind::invalidates()` maps a statement to `Nothing`, `Catalog`, or `DatabaseList`; `CREATE`, `DROP`, and `ALTER DATABASE` re-read `pg_database`, and `CONCURRENTLY` index DDL refreshes the catalog. `NotConnected` became `CatalogError { NotConnected | UnknownDatabase | NotShown | Failed }`. The status bar shows `connection · database` for the active tab, and ⌘P searches only the databases the tree shows, with `database.schema` beside an item when more than one is shown. The TopBar picker still lists connections and targets each one's configured database.
 - **The tree's databases and schemas come from a stored view (PR: choose which databases and schemas the sidebar shows).** Migration 3 adds `connection_views(connection_id, json)`, one row per connection holding `ConnectionView { databases: Selection, showSystemDatabases, schemas: { <db>: { schemas: Selection, showSystemSchemas } } }` with `Selection = All | DefaultOnly | Only { names }`. The row is separate from `ConnectionConfig` so the dialog and the pickers never write the same row, and a row that fails to parse is logged and read as the initial view. No row, which is every pre-existing connection, resolves to the home database shown with all its schemas; any other database defaults to its default schema only. The engine is the single writer: the pickers send `ViewEdit` intents and `view.rs` resolves them as pure functions (`apply`, `resolve_databases`, `resolve_schemas`, `system_schemas_to_load`); a checkbox under `All` or `DefaultOnly` first materializes the current set as `Only`. `Only` stores names, so a dropped object stays in the set and stops counting. `InstanceState` carries `showSystemDatabases` and, per database, `shown`, `showSystemSchemas`, the resolved `shownSchemas`, and a `SchemaCount`; the tree draws only `shownSchemas`, and ⌘P searches only them. The catalog lists every schema with `system` and `tableCount`; `SCHEMA_FILTER` became "not system, or named in the shown system schemas" for relations and columns and "not system" for functions, and `pg_toast` and temp schemas never appear. `connection_probe_databases` counts schemas for databases without a slot through short-lived sessions, cached until `pg_database` is re-read (by the connection menu's Refresh or by database DDL) or the connection drops; a probe that finishes after the re-read is discarded. Showing a database whose catalog is unknown registers a deferred check that resets an empty stored selection to the default schema on the first load; a schema edit or a hide of that database withdraws it, and a disconnect makes it a no-op. The connection menu's "Refresh catalog" calls `connection_refresh`.
 - **The output log is a toggle in the results pane.** #11 removed the `OutputLog` pane. The log came back as `OutputPanel`, which takes the results body behind an **Output** button in the results header, so it adds no chrome. The log is tab-wide: every run, commit, rollback, and `table_apply` on the tab, oldest first, with a hairline where the `runId` changes. Each statement logs a `Statement` line, its notices, and then a `Rows`, `Command`, or `Error` line. `table_apply` logs the SQL it built for each change and its affected-row tag. Every `OutputEntry` has a `runId`, and commit, rollback, and `table_apply` send the run id they take from the shared counter. `resultView` in `state/status.ts` picks the body: an Output pick made on the current run, then the row grid, then the log when the tab has entries, then the old tail. The tail is still needed because `output` is not in `BootSnapshot`, so after a restart the log is empty while the run state is restored. The pick `{ kind: "output", runId }` in `activeResult` lapses on the next run. The button turns amber only while the latest run in the log raised a WARNING. `output[tabId]` is never freed when a tab closes, which holds up to 5,000 entries per closed tab.
+- **There is no status bar.** The transaction mode menu is in the TopBar on SQL tabs. It also carries the lost-transaction notice, "rolled back" in red with a tooltip. Ln/Col is in the results header on SQL tabs. The connection, database, server version, and UTF-8 chips are gone, so the status bar no longer shows `connection · database` as the database-addressing bullet says. The `results` palette token is gone too, so the results pane paints `background`. A saved custom theme that still has a `results` color loads, because `customVariant` in `themes/catalog.ts` and the importers keep only keys that `isToken` accepts.
 
 ## Open questions and risks
 

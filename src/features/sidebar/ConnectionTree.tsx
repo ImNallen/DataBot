@@ -40,7 +40,7 @@ import { connectErrorText } from "../../ipc/errors";
 import { dbKey, sameDb } from "../../state/dbKey";
 import { instanceOf, useLive } from "../../state/live";
 import { detailKey, useRelationDetail } from "../../state/relationDetail";
-import { connectionStatus, type Tone } from "../../state/status";
+import { connectionTone, type Tone } from "../../state/status";
 import { useWorkspace } from "../../state/workspace";
 import {
   ContextMenuArea,
@@ -641,7 +641,7 @@ function ConnectionTrailing({
 function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expanded: Expanded }) {
   const state = useLive((s) => s.connections[config.id]);
   const instance = instanceOf(state);
-  const status = connectionStatus(state);
+  const tone = connectionTone(state);
   const path = config.name;
   const open = expanded.has(path);
   const connected = instance !== null;
@@ -688,12 +688,12 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         active={picking}
         onClick={onClick}
         icon={
-          <span className={cx(status.tone === "off" && "opacity-50 grayscale")}>
+          <span className={cx(tone === "off" && "opacity-50 grayscale")}>
             <PgBadge />
           </span>
         }
-        label={<span className={cx("font-medium", status.tone === "off" && "text-muted")}>{config.name}</span>}
-        trailing={<ConnectionTrailing config={config} tone={status.tone} instance={instance} target={target} active={picking} />}
+        label={<span className={cx("font-medium", tone === "off" && "text-muted")}>{config.name}</span>}
+        trailing={<ConnectionTrailing config={config} tone={tone} instance={instance} target={target} active={picking} />}
         contextMenu={<ConnectionMenu config={config} shown={instance && shown.map((d) => ({ connectionId: config.id, database: d.name }))} />}
       />
       {failure && (

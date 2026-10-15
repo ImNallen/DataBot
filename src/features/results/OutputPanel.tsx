@@ -99,7 +99,7 @@ export function OutputPanel({ entries }: { entries: readonly OutputEntry[] }) {
     <div
       ref={ref}
       data-testid="output-panel"
-      className="selectable min-h-0 flex-1 overflow-auto bg-results py-3 font-mono text-ui-12.5 leading-5"
+      className="selectable min-h-0 flex-1 overflow-auto bg-bg py-3 font-mono text-ui-12.5 leading-5"
       onScroll={(e) => {
         const el = e.currentTarget;
         atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 4;

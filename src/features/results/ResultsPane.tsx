@@ -133,6 +133,15 @@ function SummaryText({ summary }: { summary: Summary }) {
   );
 }
 
+function CursorPosition() {
+  const { line, col } = useWorkspace((s) => s.cursor);
+  return (
+    <span data-testid="cursor-position" className="text-ui-12.5 whitespace-nowrap text-dim tabular-nums">
+      Ln {line}, Col {col}
+    </span>
+  );
+}
+
 async function exportCsv(meta: ResultMeta) {
   const notify = useWorkspace.getState().notify;
   let path: string | null;
@@ -150,29 +159,30 @@ async function exportCsv(meta: ResultMeta) {
 
 function ErrorPanel({ error }: { error: QueryError }) {
   return (
-    <div className="selectable flex-1 overflow-auto bg-results px-5 py-4 text-ui-13 leading-6">
+    <div className="selectable flex-1 overflow-auto bg-bg px-5 py-4 text-ui-13 leading-6">
       <ErrorBlock error={error} />
     </div>
   );
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="grid flex-1 place-items-center bg-results text-ui-13 text-dim">{children}</div>;
+  return <div className="grid flex-1 place-items-center bg-bg text-ui-13 text-dim">{children}</div>;
 }
 
-function EditBar({ tabId, actions }: { tabId: TabId; actions: RefObject<GridActions | null> }) {
-  const edits = useTableEdits((s) => s.byTab[tabId] ?? NO_EDITS);
-  const pending = pendingCount(edits);
-  const busy = useTableEdits((s) => s.submitting[tabId] === true);
+function EditBar({ tabId, editable, actions }: { tabId: TabId | null; editable: boolean; actions: RefObject<GridActions | null> }) {
+  const edits = useTableEdits((s) => (tabId ? s.byTab[tabId] : undefined) ?? NO_EDITS);
+  const pending = editable ? pendingCount(edits) : 0;
+  const busy = useTableEdits((s) => (tabId ? s.submitting[tabId] === true : false));
   return (
     <div data-testid="edit-bar" className="flex items-center gap-0.5">
-      <IconButton data-testid="add-row" aria-label="Add row" title="Add row" onClick={() => actions.current?.addRow()}>
+      <IconButton data-testid="add-row" aria-label="Add row" title="Add row" disabled={!editable} onClick={() => actions.current?.addRow()}>
         <IconPlus size={16} />
       </IconButton>
       <IconButton
         data-testid="delete-rows"
         aria-label="Delete selected rows"
         title="Delete or restore the selected rows (⌘⌫)"
+        disabled={!editable}
         onClick={() => actions.current?.deleteSelectedRows()}
       >
         <IconMinus size={16} />
@@ -182,8 +192,8 @@ function EditBar({ tabId, actions }: { tabId: TabId; actions: RefObject<GridActi
         aria-label="Submit changes"
         title="Submit changes (⌘S)"
         disabled={pending === 0 || busy}
-        className={cx(pending > 0 && "text-green hover:text-green")}
-        onClick={() => void submitEdits(tabId)}
+        className={cx(pending > 0 && "text-green!")}
+        onClick={() => tabId && void submitEdits(tabId)}
       >
         <IconCheck size={16} />
       </IconButton>
@@ -192,7 +202,7 @@ function EditBar({ tabId, actions }: { tabId: TabId; actions: RefObject<GridActi
         aria-label="Revert changes"
         title="Revert changes"
         disabled={pending === 0 || busy}
-        onClick={() => useTableEdits.getState().clear(tabId)}
+        onClick={() => tabId && useTableEdits.getState().clear(tabId)}
       >
         <IconArrowBackUp size={16} />
       </IconButton>
@@ -316,9 +326,9 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
   const actions = useRef<GridActions | null>(null);
 
   return (
-    <section className="flex h-full min-h-0 flex-col border-b border-border bg-results">
+    <section className="flex h-full min-h-0 flex-col bg-bg">
       <div className="flex h-[41px] shrink-0 items-center gap-3 border-b border-grid pr-2 pl-2.5">
-        {editing && tabId && <EditBar tabId={tabId} actions={actions} />}
+        <EditBar tabId={tabId} editable={editing !== null && tabId !== null} actions={actions} />
         {results.length > 1 && (
           <div data-testid="result-selector" className="flex items-center gap-0.5 rounded-md border border-control p-0.5">
             {results.map((r, i) => (
@@ -338,30 +348,11 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
             ))}
           </div>
         )}
-        {output.length > 0 && tabId && (
-          <button
-            type="button"
-            data-testid="output-toggle"
-            data-tone={tone}
-            aria-pressed={view.kind === "output"}
-            onClick={() => {
-              const pick = view.kind === "output" ? (shown?.index ?? 0) : outputPick;
-              if (pick !== undefined) setActiveResult(tabId, pick);
-            }}
-            className={cx(
-              "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-ui-12.5 whitespace-nowrap outline-none",
-              view.kind === "output" ? "bg-pill" : "hover:bg-hover",
-              tone === "warn" ? "text-amber" : view.kind === "output" ? "text-fg" : "text-muted hover:text-fg",
-            )}
-          >
-            <IconTerminal2 size={14} />
-            Output
-          </button>
-        )}
 
         <div className="flex-1" />
 
         {summary && <SummaryText summary={summary} />}
+        {tab?.kind === "sql" && <CursorPosition />}
 
         <div className="flex items-center gap-0.5">
           <Menu.Root modal={false}>
@@ -398,6 +389,21 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
             onClick={() => useWorkspace.getState().notify("Import is coming soon.")}
           >
             <IconUpload size={16} />
+          </IconButton>
+          <IconButton
+            data-testid="output-toggle"
+            data-tone={tone}
+            aria-label="Output"
+            title="Output"
+            aria-pressed={view.kind === "output"}
+            disabled={output.length === 0 || !tabId}
+            onClick={() => {
+              const pick = view.kind === "output" ? (shown?.index ?? 0) : outputPick;
+              if (tabId && pick !== undefined) setActiveResult(tabId, pick);
+            }}
+            className={cx(view.kind === "output" && "bg-pill!", tone === "warn" ? "text-amber!" : view.kind === "output" && "text-fg!")}
+          >
+            <IconTerminal2 size={16} />
           </IconButton>
         </div>
       </div>

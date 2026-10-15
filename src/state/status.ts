@@ -11,19 +11,18 @@ export function isRunning(console: ConsoleState | undefined): boolean {
 
 export type Tone = "live" | "pending" | "off" | "error";
 
-export function connectionStatus(state: ConnectionState | undefined): { tone: Tone; label: string; version: string | null } {
+export function connectionTone(state: ConnectionState | undefined): Tone {
   const status = state?.status ?? { kind: "Disconnected" as const };
   switch (status.kind) {
     case "Connected":
-      return { tone: "live", label: "Connected", version: status.server.version };
+      return "live";
     case "Connecting":
-      return { tone: "pending", label: "Connecting…", version: null };
+      return "pending";
     case "Disconnected":
-      return { tone: "off", label: "Disconnected", version: null };
+      return "off";
     case "Failed":
-      return { tone: "error", label: "Connection failed", version: null };
     case "Lost":
-      return { tone: "error", label: "Connection lost", version: null };
+      return "error";
     default: {
       const unreachable: never = status;
       return unreachable;

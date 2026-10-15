@@ -4,7 +4,6 @@ import { contrast, formatHex, mix, parseHex, type Rgba } from "./color";
 export const TOKENS = {
   background: "--color-bg",
   sidebar: "--color-sidebar",
-  results: "--color-results",
   raised: "--color-raised",
   hover: "--color-hover",
   selected: "--color-selected",
@@ -90,7 +89,6 @@ const RECIPES: Record<Appearance, Record<Token, Recipe>> = {
     accent: seed("accent"),
     foreground: seed("foreground"),
     sidebar: shade(0.3),
-    results: ink(0.018),
     raised: ink(0.04),
     hover: ink(0.058),
     selected: ink(0.093),
@@ -134,7 +132,6 @@ const RECIPES: Record<Appearance, Record<Token, Recipe>> = {
     accent: seed("accent"),
     foreground: seed("foreground"),
     sidebar: ink(0.027),
-    results: ink(0.015),
     raised: ink(0),
     hover: ink(0.055),
     selected: ink(0.083),

@@ -16,7 +16,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 - The connection tree shows each connection's databases, their schemas with their table counts, the tables and views of each schema, and a Functions group. Expand a table to see Columns, with a type glyph, primary and foreign key marks, the type, and `· null` on nullable columns. Defaults, Keys (primary, foreign with its target, unique, and check), Indexes (key list, method, and partial predicate), and Triggers (timing, events, and function) follow when the table has any.
 - A connection row's `shown/total` count opens a picker of the server's databases, and a database row's count opens a picker of its schemas. Check a box to show that database or schema in the tree, or use **All**, **Default only**, or **None**. Adding a database also shows its default schema. System databases and schemas stay out of the pickers until you turn on **Show system databases** or **Show system schemas**. The count turns amber when nothing is shown. Each connection keeps its choices. The picker opens with its filter focused, `Tab` cycles inside it, and `Esc` or **Done** closes it and returns focus to the count.
 - A disconnected connection row shows a **Connect** button in place of its count; a connected row shows only the count, dimmed while it is off.
-- Double-click a table or a view to browse its rows in a tab. Double-click a function to insert a call into the active SQL tab. The status bar names the active tab's connection and database.
+- Double-click a table or a view to browse its rows in a tab. Double-click a function to insert a call into the active SQL tab.
 - `⌘P` searches tables, views, functions, and columns in the schemas the tree shows. A column opens its table.
 - The connection dialog tests a connection and shows the server version before you save. Right-clicking a connection connects, disconnects, opens a SQL tab, refreshes the catalog, edits, and deletes.
 - The OS credential store holds one master key, and saved passwords are sealed under it. macOS asks for keychain access once per launch.
@@ -24,10 +24,10 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 ### SQL tabs
 
 - SQL tabs complete table and column names from the live catalog. `⌘↵` or **Run** runs the statement under the cursor or the selection. `Esc` or **Cancel** stops a running query.
-- Each SQL tab has its own session, so `SET` and temp tables stay with the tab. The status-bar chip switches the tab between auto-commit and manual-transaction mode.
+- Each SQL tab has its own session, so `SET` and temp tables stay with the tab. The **Auto-commit** menu in the top bar switches the tab between auto-commit and manual-transaction mode. It also shows when a lost connection rolled back the open transaction.
 - In manual mode, **Commit** and **Rollback** appear while a transaction is open, and the tab shows a dot. Closing that tab or disconnecting asks before it rolls back.
 - An error shows its detail, hint, and SQLSTATE, and the editor underlines the error position.
-- The **Output** button in the results header opens a timestamped log of everything the tab ran: each statement, its server messages such as `RAISE NOTICE` and warnings, and its result line. **Commit**, **Rollback**, and table edits are logged too. When a statement returns no rows, the log fills the results pane. The button turns amber when the latest run raised a warning.
+- The **Output** button at the right end of the results header opens a timestamped log of everything the tab ran: each statement, its server messages such as `RAISE NOTICE` and warnings, and its result line. **Commit**, **Rollback**, and table edits are logged too. When a statement returns no rows, the log fills the results pane. The button turns amber when the latest run raised a warning.
 - **Query history** groups identical SQL per connection and database. Search SQL, connection names, databases, or errors, then filter by **All**, **Failed**, or **Writes**. Select a query to preview its SQL and paged run timeline. Copy it, open or run it in a new tab on its saved database, or insert it into the active SQL tab.
 
 ### Results and table data
