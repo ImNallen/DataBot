@@ -10,15 +10,26 @@ import {
   IconChevronRight,
   IconChevronRightPipe,
   IconDownload,
+  IconMessage2,
   IconMinus,
   IconPlus,
   IconUpload,
 } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
-import { commands, type QueryError, type ResultMeta, type RunState, type TabId } from "../../ipc/bindings";
+import { commands, type OutputEntry, type QueryError, type ResultMeta, type RunState, type TabId } from "../../ipc/bindings";
 import { exportErrorText } from "../../ipc/errors";
-import { useLive } from "../../state/live";
-import { rowResults, runStatements, runSummary, shownResult, type ResultPick, type Summary } from "../../state/status";
+import { OUTPUT_LIMIT, useLive } from "../../state/live";
+import {
+  messagesLabel,
+  resultView,
+  rowResults,
+  runMessages,
+  runStatements,
+  runSummary,
+  shownResult,
+  type ResultView,
+  type Summary,
+} from "../../state/status";
 import { useCatalog } from "../../state/catalog";
 import { NO_EDITS, pendingCount, useTableEdits } from "../../state/tableEdits";
 import { isFiltered, useWorkspace, type TableTab } from "../../state/workspace";
@@ -36,6 +47,7 @@ import {
 } from "../editor/runActions";
 import { FilterBar } from "./FilterBar";
 import { groupDigits, pageStatus, pluralRows } from "./format";
+import { ErrorBlock, MessagesPanel } from "./MessagesPanel";
 import { ResultGrid, type GridActions, type GridEditing, type GridQuery } from "./ResultGrid";
 import { filterForValue, formatOrderBy, nextSort, parseOrderBy, useFilterDrafts } from "./tableQuery";
 
@@ -138,11 +150,7 @@ async function exportCsv(meta: ResultMeta) {
 function ErrorPanel({ error }: { error: QueryError }) {
   return (
     <div className="selectable flex-1 overflow-auto bg-results px-5 py-4 text-ui-13 leading-6">
-      <div className="text-danger">{error.message}</div>
-      {error.detail && <div className="text-muted">{error.detail}</div>}
-      {error.hint && <div className="text-muted">Hint: {error.hint}</div>}
-      {error.context && <div className="whitespace-pre-wrap text-dim">Context: {error.context}</div>}
-      {error.sqlstate && <div className="font-mono text-ui-11.5 text-faint">SQLSTATE {error.sqlstate}</div>}
+      <ErrorBlock error={error} />
     </div>
   );
 }
@@ -196,50 +204,75 @@ function EditBar({ tabId, actions }: { tabId: TabId; actions: RefObject<GridActi
   );
 }
 
+function failedError(run: RunState): QueryError | undefined {
+  if (run.kind !== "Finished") return undefined;
+  const failed = run.statements.find((s) => s.status.kind === "Failed");
+  return failed?.status.kind === "Failed" ? failed.status.error : undefined;
+}
+
+function RunTail({ run }: { run: RunState }) {
+  if (run.kind === "Idle") return "Run a statement with ⌘↵ to see its result here.";
+  if (run.kind === "Running") {
+    return (
+      <span className="flex items-center gap-2">
+        <Spinner /> Running
+      </span>
+    );
+  }
+  const error = failedError(run);
+  if (error) return <ErrorBlock error={error} />;
+  if (run.outcome === "Cancelled") return "Cancelled.";
+  const commands = runStatements(run).flatMap((s) => (s.status.kind === "Command" ? [s.status.tag] : []));
+  if (commands.length) return commands.join(", ");
+  return rowResults(run).length ? null : "The statement returned no rows.";
+}
+
 function ResultBody({
   run,
-  picked,
+  view,
+  messages,
   bottomInset,
   query,
   editing,
   actions,
 }: {
   run: RunState;
-  picked: ResultPick | undefined;
+  view: ResultView;
+  messages: OutputEntry[];
   bottomInset: number;
   query: GridQuery | null;
   editing: GridEditing | null;
   actions: RefObject<GridActions | null>;
 }) {
-  const shown = shownResult(run, picked);
-  if (shown) {
-    return (
-      <ResultGrid
-        key={`${shown.meta.ref.runId}:${shown.index}`}
-        meta={shown.meta}
-        done={shown.done}
-        bottomInset={bottomInset}
-        query={query}
-        editing={editing}
-        actionsRef={actions}
-      />
-    );
+  switch (view.kind) {
+    case "rows":
+      return (
+        <ResultGrid
+          key={`${view.result.meta.ref.runId}:${view.result.index}`}
+          meta={view.result.meta}
+          done={view.result.done}
+          bottomInset={bottomInset}
+          query={query}
+          editing={editing}
+          actionsRef={actions}
+        />
+      );
+    case "messages":
+      return <MessagesPanel entries={messages} dropped={messages.length === OUTPUT_LIMIT} tail={<RunTail run={run} />} />;
+    case "tail": {
+      const error = failedError(run);
+      if (error) return <ErrorPanel error={error} />;
+      return (
+        <Empty>
+          <RunTail run={run} />
+        </Empty>
+      );
+    }
+    default: {
+      const unreachable: never = view;
+      return unreachable;
+    }
   }
-  if (run.kind === "Idle") return <Empty>Run a statement with ⌘↵ to see its result here.</Empty>;
-  if (run.kind === "Running") {
-    return (
-      <Empty>
-        <span className="flex items-center gap-2">
-          <Spinner /> Running
-        </span>
-      </Empty>
-    );
-  }
-  const failed = run.statements.find((s) => s.status.kind === "Failed");
-  if (failed?.status.kind === "Failed") return <ErrorPanel error={failed.status.error} />;
-  if (run.outcome === "Cancelled") return <Empty>Cancelled.</Empty>;
-  const commands = runStatements(run).flatMap((s) => (s.status.kind === "Command" ? [s.status.tag] : []));
-  return <Empty>{commands.length ? commands.join(", ") : "The statement returned no rows."}</Empty>;
 }
 
 export function ResultsPane({ tabId }: { tabId: TabId | null }) {
@@ -251,12 +284,16 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
   const results = rowResults(run);
   const shown = shownResult(run, picked);
   const summary = runSummary(run, picked, now);
+  const entries = useLive((s) => (tabId ? s.output[tabId] : undefined));
+  const messages = useMemo(() => runMessages(entries, run), [entries, run]);
+  const view = resultView(run, picked, messages.length > 0);
+  const label = messagesLabel(messages);
 
   const isTable = tab?.kind === "table";
   const browsingNow = () => tab?.kind === "table" && isBrowsing(tab);
   const browsing = useSyncExternalStore(onEditorDocChanged, browsingNow, browsingNow);
   const browsingTable = tab?.kind === "table" && browsing ? tab : null;
-  const pager = browsingTable && shown ? browsingTable : null;
+  const pager = browsingTable && view.kind === "rows" ? browsingTable : null;
   const addDraft = useFilterDrafts((s) => s.add);
   const gridQuery: GridQuery | null = browsingTable && {
     sort: parseOrderBy(browsingTable.query.orderBy) ?? [],
@@ -292,13 +329,30 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
                 onClick={() => tabId && setActiveResult(tabId, r.index)}
                 className={cx(
                   "h-5 min-w-6 rounded px-1.5 font-mono text-ui-11.5",
-                  shown?.index === r.index ? "bg-pill text-fg" : "text-dim hover:text-muted",
+                  view.kind === "rows" && view.result.index === r.index ? "bg-pill text-fg" : "text-dim hover:text-muted",
                 )}
               >
                 {i + 1}
               </button>
             ))}
           </div>
+        )}
+        {messages.length > 0 && tabId && run.kind !== "Idle" && (
+          <button
+            type="button"
+            data-testid="messages-toggle"
+            data-tone={label.tone}
+            aria-pressed={view.kind === "messages"}
+            onClick={() => setActiveResult(tabId, view.kind === "messages" ? (shown?.index ?? 0) : { kind: "messages", runId: run.runId })}
+            className={cx(
+              "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-ui-12.5 whitespace-nowrap outline-none",
+              view.kind === "messages" ? "bg-pill" : "hover:bg-hover",
+              label.tone === "warn" ? "text-amber" : view.kind === "messages" ? "text-fg" : "text-muted hover:text-fg",
+            )}
+          >
+            <IconMessage2 size={14} />
+            {label.text}
+          </button>
         )}
 
         <div className="flex-1" />
@@ -347,7 +401,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
       {browsingTable && <FilterBar tab={browsingTable} />}
 
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <ResultBody run={run} picked={picked} bottomInset={pager ? PAGER_INSET : 0} query={gridQuery} editing={editing} actions={actions} />
+        <ResultBody run={run} view={view} messages={messages} bottomInset={pager ? PAGER_INSET : 0} query={gridQuery} editing={editing} actions={actions} />
         {pager && <TablePager tab={pager} rows={shown?.meta.rowCount ?? 0} />}
       </div>
     </section>

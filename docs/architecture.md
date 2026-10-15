@@ -298,16 +298,15 @@ pub struct QueryError {
 }
 
 // ---- output log (append-only) -------------------------------------------------
+// Server messages and failures no statement owns. Statement outcomes live only in ConsoleState.run.
 #[derive(Clone, Serialize, Type)]
-pub struct OutputEntry { pub at_ms: i64, pub run_id: Option<RunId>, pub body: OutputBody }
+pub struct OutputEntry { pub at_ms: i64, pub run_id: RunId, pub body: OutputBody }  // the run, commit, rollback, or apply that held the session
 #[derive(Clone, Serialize, Type)]
 #[serde(tag = "kind")]
 pub enum OutputBody {
     Notice { severity: String, message: String, detail: Option<String> },
-    Command { statement: u16, tag: String, elapsed_ms: u32 },
-    Rows { statement: u16, rows: u64, elapsed_ms: u32, truncated: bool },
-    Error { statement: Option<u16>, error: QueryError },
-    Info { message: String },          // "BEGIN (implicit)", "Session reset: connection was lost"
+    Error { error: QueryError },       // search_path, implicit BEGIN, Commit/Rollback, table_apply
+    Info { message: String },          // "Session reset: connection lost (…)"
 }
 
 // ---- history, workspace, settings -------------------------------------------------
@@ -619,7 +618,7 @@ async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: Sessi
     for (i, stmt) in plan.statements.iter().enumerate() {
         if stop.load() { mark rest Cancelled/Skipped; break }
         let kind = stmt.kind;                            // classified by console_run
-        if needs_implicit_begin(mode, txn, kind) { session.client.batch_execute("BEGIN"); txn = Active; Info("BEGIN (implicit)") }
+        if needs_implicit_begin(mode, txn, kind) { session.client.batch_execute("BEGIN"); txn = Active }
         set_status(i, Preparing);
         let outcome = match session.client.prepare(stmt.sql).await {
             Err(e) => Failed(map_err(e, stmt)),
@@ -634,7 +633,7 @@ async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: Sessi
                 //   every 100ms         => emit ConsoleChanged (row_count grows)
             }
         };
-        drain session.notices -> ConsoleOutput
+        drain session.notices -> one ConsoleOutput per drain
         txn = txn_after(txn, &kind, outcome.ok_or_err());
         shared.record_history(...);                      // single writer: run tasks, via store mutex
         if outcome.failed() && settings.stop_on_error { mark rest Skipped; break }
@@ -670,7 +669,7 @@ Stores (Zustand v5). Each has one owner, and derived data is never stored:
 type LiveData = {
   connections: Record<ConnectionId, ConnectionState>;
   consoles: Record<TabId, ConsoleState>;
-  output: Record<TabId, OutputEntry[]>;                // ring buffer, 5,000 per tab; filled, but no view reads it
+  output: Record<TabId, OutputEntry[]>;                // ring buffer, 5,000 per tab; ResultsPane reads runMessages(output, run)
   catalogVersions: Record<ConnectionId, number>;       // highest version seen; boot.ts calls useCatalog.ensure
   historyTail: HistoryEntry[];                         // last 200 HistoryAppended entries, newest first
 };
@@ -828,7 +827,8 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - catalog of `shop` contains the mockup's tables with PKs and estimates after `ANALYZE`
    - every `lab.type_zoo` cell equals Postgres's own text output: numeric, timestamptz, interval, json/jsonb, int[], text[], bytea, uuid, inet, enum, point, range, NULL
    - mockup query returns 6 rows with `orders: bigint`
-   - multi-statement run yields `UPDATE n` tags and a `RAISE NOTICE` Output entry
+   - multi-statement run yields `UPDATE n` tags and a `RAISE NOTICE` Output entry with the run's id
+   - a notice a deferred trigger raises at `COMMIT` carries the commit's run id, above the run's
    - error position maps to the right UTF-16 offset
    - cancel `pg_sleep(30)` finishes `Cancelled` in under 2 s
    - manual isolation and commit (call site 4); error leads to `Aborted`, then rollback leads to `Idle`
@@ -959,7 +959,7 @@ Frontend phase (PRs #4 and #11 to #13). These PRs built the live store, the edit
 - **Keys.** ⌘W closes the active tab. The macOS menu in `main.rs` mirrors Tauri's default menu with Close Window moved to ⇧⌘W, so ⌘W reaches the webview. Global shortcuts live in `shell/commands.ts`.
 - **History is a palette, and the right panel is a placeholder.** The sidebar's clock button opens `HistoryPalette` (cmdk), which pages `history_list` and puts `historyTail` on top. The right panel draws only an Assistant placeholder.
 - **CSV export needs the desktop app.** `exportCsv` asks for a path with the native save dialog. In the dev-bridge browser that dialog throws, and the app shows a toast. Other export formats are disabled menu items marked "Soon", and Import shows a "coming soon" toast.
-- **The output log is gone.** #11 removed `OutputLog`. The engine still emits `ConsoleOutput`, and `useLive` still keeps `output` per tab, but no view renders it.
+- **Server messages render in the results pane, not an output log.** #11 removed `OutputLog`. `ConsoleOutput` now carries only notices, `Info` lines, and failures that no statement owns. Statement tags, row counts, and statement errors stay in `ConsoleState.run`. Every `OutputEntry` has a `runId`, and commit, rollback, and `table_apply` send the run id they take from the shared counter. `runMessages` in `state/status.ts` keeps the entries whose `runId` is at least the current run's, so a commit-time notice joins the run before it. The store is never cleared, and the scope is derived. `resultView` shows `MessagesPanel` in place of an empty body, or behind the **messages** button when the run has a grid. The pick `{ kind: "messages", runId }` in `activeResult` lapses on the next run. `output[tabId]` is never freed when a tab closes, which holds up to 5,000 entries per closed tab.
 
 ## Open questions and risks
 
@@ -980,7 +980,7 @@ Still open:
 - **Risk:** `prepare` fails for statements the extended protocol can't Describe. The classifier rejects `CopyStdio` up front with `RunError::Unsupported`. Other failures surface as a normal `QueryError`.
 - **Risk:** table pages use `LIMIT n OFFSET m`. Postgres reads and discards every skipped row, so deep pages of a large table get slower.
 - **Risk:** the pager's total is the catalog's `reltuples` estimate (`of ~241,183`) until the user presses Last, which fetches the exact count. A filtered table shows only a lower bound (`of 500+`) until then.
-- **Risk:** server notices are invisible. The engine still sends `RAISE NOTICE` and info entries as `ConsoleOutput`, but no view renders them.
+- **Risk:** notices raised by a table tab's **Submit** are hidden. `submitEdits` reloads the page after `table_apply`, and that reload is a newer run, so `runMessages` drops the apply's entries. They stay in the store.
 - **Risk:** `RightPanel::Schema` and `RightPanel::History` stay in the contract with no UI. `restore` maps them to `Assistant`.
 
 ## Next implementation step
@@ -991,5 +991,4 @@ The engine and the frontend are built and proven against Docker (`cargo test -p 
 - The AI assistant. The right panel is a placeholder.
 - Import. The button shows a "coming soon" toast.
 - Export formats besides CSV. The menu lists them as disabled "Soon" items.
-- A view for server notices. The engine emits `ConsoleOutput`, and nothing renders it since #11 removed `OutputLog`.
 - Removing the dead `RightPanel::Schema` and `RightPanel::History` variants.

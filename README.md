@@ -25,6 +25,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 - Each SQL tab has its own session, so `SET` and temp tables stay with the tab. The status-bar chip switches the tab between auto-commit and manual-transaction mode.
 - In manual mode, **Commit** and **Rollback** appear while a transaction is open, and the tab shows a dot. Closing that tab or disconnecting asks before it rolls back.
 - An error shows its detail, hint, and SQLSTATE, and the editor underlines the error position.
+- Server messages, such as `RAISE NOTICE` output and warnings, show in the results pane. When a statement returns no rows, the messages fill the pane. Otherwise a **messages** button above the grid shows the count and opens them. Messages from a later **Commit** or **Rollback** join the run before it.
 - **Query history** searches past statements and opens one in a new SQL tab.
 
 ### Results and table data
