@@ -4,8 +4,8 @@ import type { ConsoleState, Settings } from "../../ipc/bindings";
 import { useLive } from "../../state/live";
 import { useTableEdits } from "../../state/tableEdits";
 import { useWorkspace } from "../../state/workspace";
-import { dropEditor } from "./editorStates";
-import { browseQuery, openTableTab, saveSettings, setTabMode, setTabTarget } from "./runActions";
+import { dropEditor, seedEditor } from "./editorStates";
+import { browseQuery, loadTableOnce, openTableTab, saveSettings, setTabMode, setTabTarget } from "./runActions";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -124,4 +124,24 @@ it("keeps a tab on its database while it has staged edits", async () => {
   useTableEdits.getState().clear(id);
   await setTabTarget(id, { connectionId: "c1", database: "reporting" });
   expect([calls, useWorkspace.getState().tabs[id]?.console.db]).toEqual([["console_configure"], { connectionId: "c1", database: "reporting" }]);
+});
+
+it("loads a table tab's page on first show, and never runs edited text unasked", async () => {
+  vi.stubGlobal("window", { crypto });
+  const runs: unknown[] = [];
+  mockIPC((cmd, args) => {
+    if (cmd === "console_run") runs.push((args as { request: unknown }).request);
+    if (cmd === "console_run") return { runId: 1, statements: [] };
+    return null;
+  });
+  const table = { schema: "public", table: "orders", page: 2, query: { orderBy: "", filters: [], where: "" } };
+  for (const [id, text] of [["browsing", "SELECT * FROM public.orders;"], ["edited", "delete from orders"]] as const) {
+    seedEditor(id, text);
+    useWorkspace.getState().addTab({ id, title: "orders", console: { db: { connectionId: "c1", database: "shop" }, mode: "AutoCommit" }, table });
+  }
+  loadTableOnce("edited");
+  loadTableOnce("browsing");
+  await vi.waitFor(() => expect(runs).toHaveLength(1));
+  await new Promise((r) => setTimeout(r, 0));
+  expect(runs).toEqual([{ kind: "tablePage", schema: "public", table: "orders", page: 2, query: { orderBy: "", filters: [], where: "" } }]);
 });

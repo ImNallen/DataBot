@@ -205,10 +205,12 @@ export function openTableTab(ref: RelationRef): void {
 
 const loadedTables = new Set<TabId>();
 
+// Loads only as a page, so a restored tab whose saved text is no longer the browse query never runs that text unasked.
 export function loadTableOnce(tabId: TabId): void {
-  if (loadedTables.has(tabId)) return;
+  const tab = ws().tabs[tabId];
+  if (loadedTables.has(tabId) || !isTableTab(tab)) return;
   loadedTables.add(tabId);
-  if (useLive.getState().consoles[tabId]?.run.kind !== "Finished") void runTab(tabId);
+  if (useLive.getState().consoles[tabId]?.run.kind !== "Finished") void runTab(tabId, { page: tab.table.page });
 }
 
 // The store updates before the IPC so a second change made meanwhile builds on this one.
