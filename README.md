@@ -18,7 +18,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 - A disconnected connection row shows a **Connect** button in place of its count; a connected row shows only the count, dimmed while it is off.
 - Double-click a table or a view to browse its rows in a tab. Double-click a function to insert a call into the active SQL tab. The status bar names the active tab's connection and database.
 - `⌘P` searches tables, views, functions, and columns in the schemas the tree shows. A column opens its table.
-- The connection dialog tests a connection and shows the server version before you save. The **…** menu on a connection connects, disconnects, opens a SQL tab, refreshes the catalog, edits, and deletes.
+- The connection dialog tests a connection and shows the server version before you save. Right-clicking a connection connects, disconnects, opens a SQL tab, refreshes the catalog, edits, and deletes.
 - The OS credential store holds one master key, and saved passwords are sealed under it. macOS asks for keychain access once per launch.
 
 ### SQL tabs
