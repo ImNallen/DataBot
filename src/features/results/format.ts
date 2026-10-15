@@ -96,6 +96,10 @@ export function shortType(display: string): string {
   return display;
 }
 
+export function plural(n: number, noun: string): string {
+  return `${groupDigits(String(n))} ${n === 1 ? noun : `${noun}s`}`;
+}
+
 export function pluralRows(n: number): string {
-  return `${groupDigits(String(n))} ${n === 1 ? "row" : "rows"}`;
+  return plural(n, "row");
 }

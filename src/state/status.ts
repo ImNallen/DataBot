@@ -1,5 +1,5 @@
-import type { ConnectionState, ConsoleState, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
-import { formatElapsed, groupDigits, pluralRows } from "../features/results/format";
+import type { ConnectionState, ConsoleState, OutputEntry, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
+import { formatElapsed, groupDigits, plural, pluralRows } from "../features/results/format";
 
 export function hasUncommittedWork(console: ConsoleState | undefined): boolean {
   return console !== undefined && console.config.mode === "Manual" && console.txn !== "Idle";
@@ -45,9 +45,33 @@ export function rowResults(run: RunState): RowResult[] {
   return out;
 }
 
-export function shownResult(run: RunState, picked: number | undefined): RowResult | undefined {
+/** A statement index, or the messages of the run it was picked on, so the pick lapses on the next run. */
+export type ResultPick = number | { kind: "messages"; runId: number };
+
+export function shownResult(run: RunState, picked: ResultPick | undefined): RowResult | undefined {
   const results = rowResults(run);
   return results.find((r) => r.index === picked) ?? results.at(-1);
+}
+
+/** The run's entries plus whatever the session did after it, such as a commit. Run ids share one counter. */
+export function runMessages(entries: readonly OutputEntry[] | undefined, run: RunState): OutputEntry[] {
+  if (run.kind === "Idle" || !entries) return [];
+  return entries.filter((e) => e.runId >= run.runId);
+}
+
+export type ResultView = { kind: "rows"; result: RowResult } | { kind: "messages" } | { kind: "tail" };
+
+export function resultView(run: RunState, picked: ResultPick | undefined, hasMessages: boolean): ResultView {
+  const pickedMessages = typeof picked === "object" && run.kind !== "Idle" && picked.runId === run.runId;
+  if (hasMessages && pickedMessages) return { kind: "messages" };
+  const result = shownResult(run, picked);
+  if (result) return { kind: "rows", result };
+  return hasMessages ? { kind: "messages" } : { kind: "tail" };
+}
+
+export function messagesLabel(entries: readonly OutputEntry[]): { text: string; tone: "muted" | "warn" } {
+  const warn = entries.some((e) => e.body.kind === "Error" || (e.body.kind === "Notice" && e.body.severity === "WARNING"));
+  return { text: plural(entries.length, "message"), tone: warn ? "warn" : "muted" };
 }
 
 export type Summary = { tone: "ok" | "error" | "running" | "muted"; text: string };
@@ -58,7 +82,7 @@ function rowsText(meta: ResultMeta): string {
   return `${groupDigits(String(meta.rowCount))} of ${groupDigits(String(meta.rowsSeen))} rows (${why})`;
 }
 
-export function runSummary(run: RunState, picked: number | undefined, nowMs: number): Summary | null {
+export function runSummary(run: RunState, picked: ResultPick | undefined, nowMs: number): Summary | null {
   switch (run.kind) {
     case "Idle":
       return null;

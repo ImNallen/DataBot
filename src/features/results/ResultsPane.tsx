@@ -18,7 +18,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObj
 import { commands, type QueryError, type ResultMeta, type RunState, type TabId } from "../../ipc/bindings";
 import { exportErrorText } from "../../ipc/errors";
 import { useLive } from "../../state/live";
-import { rowResults, runStatements, runSummary, shownResult, type Summary } from "../../state/status";
+import { rowResults, runStatements, runSummary, shownResult, type ResultPick, type Summary } from "../../state/status";
 import { useCatalog } from "../../state/catalog";
 import { NO_EDITS, pendingCount, useTableEdits } from "../../state/tableEdits";
 import { isFiltered, useWorkspace, type TableTab } from "../../state/workspace";
@@ -205,7 +205,7 @@ function ResultBody({
   actions,
 }: {
   run: RunState;
-  picked: number | undefined;
+  picked: ResultPick | undefined;
   bottomInset: number;
   query: GridQuery | null;
   editing: GridEditing | null;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ConsoleState, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
-import { hasUncommittedWork, rowResults, runSummary, shownResult } from "./status";
+import type { ConsoleState, OutputEntry, QueryError, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
+import { hasUncommittedWork, messagesLabel, resultView, rowResults, runMessages, runSummary, shownResult } from "./status";
 import { nextUntitled, tabFromSnapshot, workspaceSnapshot, type Tab } from "./workspace";
 
 const meta = (index: number, rowCount: number, extra: Partial<ResultMeta> = {}): ResultMeta => ({
@@ -76,6 +76,67 @@ describe("shownResult", () => {
     expect(shownResult(run, undefined)?.index).toBe(2);
     expect(shownResult(run, 0)?.index).toBe(0);
     expect(shownResult(run, 1)?.index).toBe(2);
+  });
+});
+
+const notice = (runId: number, message: string, severity = "NOTICE"): OutputEntry => ({
+  atMs: 0,
+  runId,
+  body: { kind: "Notice", severity, message, detail: null },
+});
+const failure: QueryError = { severity: "ERROR", sqlstate: "40001", message: "could not serialize", detail: null, hint: null, context: null, position: null };
+const finishedRun = (runId: number, statements: StatementRun[] = []): RunState => ({ kind: "Finished", runId, elapsedMs: 5, statements, outcome: "Ok" });
+const rowsAt = (index: number) => stmt(index, { kind: "Rows", result: meta(index, 1), done: true });
+
+describe("runMessages", () => {
+  const entries = [notice(5, "older run"), notice(7, "this run"), { atMs: 0, runId: 9, body: { kind: "Info", message: "after it" } } satisfies OutputEntry];
+
+  it("keeps the run's entries and anything the session did after it", () => {
+    expect(runMessages(entries, finishedRun(7)).map((e) => e.runId)).toEqual([7, 9]);
+  });
+
+  it("is empty before anything ran or when the run raised nothing", () => {
+    expect(runMessages(entries, { kind: "Idle" })).toEqual([]);
+    expect(runMessages(undefined, finishedRun(7))).toEqual([]);
+    expect(runMessages(entries, finishedRun(10))).toEqual([]);
+  });
+});
+
+describe("resultView", () => {
+  const withRows = finishedRun(7, [rowsAt(0), rowsAt(1)]);
+
+  it("shows messages in place of an empty body without a click", () => {
+    expect(resultView(finishedRun(7, [stmt(0, { kind: "Command", tag: "DO", elapsedMs: 1 })]), undefined, true)).toEqual({ kind: "messages" });
+  });
+
+  it("keeps the grid until messages are picked for this run", () => {
+    expect(resultView(withRows, undefined, true)).toMatchObject({ kind: "rows", result: { index: 1 } });
+    expect(resultView(withRows, 0, true)).toMatchObject({ kind: "rows", result: { index: 0 } });
+    expect(resultView(withRows, { kind: "messages", runId: 7 }, true)).toEqual({ kind: "messages" });
+  });
+
+  it("drops a messages pick made on an earlier run", () => {
+    expect(resultView(finishedRun(8, [rowsAt(0)]), { kind: "messages", runId: 7 }, true)).toMatchObject({ kind: "rows", result: { index: 0 } });
+  });
+
+  it("falls back to the tail when there is nothing to show", () => {
+    expect(resultView(finishedRun(7), undefined, false)).toEqual({ kind: "tail" });
+    expect(resultView({ kind: "Idle" }, undefined, false)).toEqual({ kind: "tail" });
+  });
+});
+
+describe("messagesLabel", () => {
+  it("counts every entry and stays muted for plain notices", () => {
+    expect(messagesLabel([notice(1, "a")])).toEqual({ text: "1 message", tone: "muted" });
+    expect(messagesLabel([notice(1, "a"), notice(1, "b", "INFO"), { atMs: 0, runId: 1, body: { kind: "Info", message: "c" } }])).toEqual({
+      text: "3 messages",
+      tone: "muted",
+    });
+  });
+
+  it("warns on a WARNING notice or a run-level error", () => {
+    expect(messagesLabel([notice(1, "a"), notice(1, "careful", "WARNING")])).toEqual({ text: "2 messages", tone: "warn" });
+    expect(messagesLabel([{ atMs: 0, runId: 1, body: { kind: "Error", error: failure } }])).toEqual({ text: "1 message", tone: "warn" });
   });
 });
 
