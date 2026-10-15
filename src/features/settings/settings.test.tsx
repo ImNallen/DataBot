@@ -11,7 +11,8 @@ import { fakeRoot } from "../../testing/fakeRoot";
 import { BUILT_IN_FAMILIES, customFamily, familyPicks } from "../../themes/catalog";
 import { chooseDensity, chooseFont, previewPanelMotion, savePanelMotion } from "./appearanceActions";
 import { addCustomThemes, chooseColorScheme, chooseThemes, deleteCustomTheme } from "./themeActions";
-import { searchSettings } from "./settingsIndex";
+import { parseQuery } from "../../ui/textMatch";
+import { filterSettings } from "./settingsIndex";
 
 const initial = { ...useWorkspace.getInitialState() };
 
@@ -92,34 +93,29 @@ it("returns to the workspace layout once settings close", () => {
   expect(html).toContain('data-testid="no-tabs"');
 });
 
+const matching = (query: string) => filterSettings(parseQuery(query)).map((s) => s.id);
+
 it.each([
-  ["dark", "colorScheme"],
-  ["dracula", "themes"],
-  ["theme", "themes"],
-  ["page", "tablePageSize"],
-  ["error", "stopOnError"],
-  ["row limit", "maxRows"],
-  ["compact", "density"],
-  ["animation", "panelMotion"],
-  ["sf pro", "interfaceFont"],
-  ["jetbrains", "codeFont"],
-])("ranks %s to the %s setting first", (query, id) => {
-  expect(searchSettings(query)[0]?.id).toBe(id);
+  ["font", ["interfaceFont", "codeFont"]],
+  ["row limit", ["maxRows"]],
+  ["results", ["codeFont", "maxRows", "tablePageSize"]],
+  ["typography", ["interfaceFont", "codeFont"]],
+  ["dark", ["colorScheme"]],
+  ["dracula", ["themes"]],
+  ["theme", ["themes"]],
+  ["page", ["tablePageSize"]],
+  ["error", ["stopOnError"]],
+  ["compact", ["density"]],
+  ["animation", ["panelMotion"]],
+  ["SF Pro", ["interfaceFont"]],
+  ["jetbrains", ["codeFont"]],
+  ["zzqx", []],
+])("filters %j to %j by label, section, group, and keywords", (query, ids) => {
+  expect(matching(query)).toEqual(ids);
 });
 
-it("lists every setting in registry order for an empty query, and nothing for a miss", () => {
-  expect(searchSettings(" ").map((s) => s.id)).toEqual([
-    "colorScheme",
-    "themes",
-    "density",
-    "panelMotion",
-    "interfaceFont",
-    "codeFont",
-    "maxRows",
-    "tablePageSize",
-    "stopOnError",
-  ]);
-  expect(searchSettings("zzqx")).toEqual([]);
+it("lists every setting in registry order for an empty query", () => {
+  expect(matching(" ")).toEqual(["colorScheme", "themes", "density", "panelMotion", "interfaceFont", "codeFont", "maxRows", "tablePageSize", "stopOnError"]);
 });
 
 const radioTags = (html: string, name: string) => (html.match(/<input type="radio"[^>]*>/g) ?? []).filter((tag) => tag.includes(`name="${name}"`));

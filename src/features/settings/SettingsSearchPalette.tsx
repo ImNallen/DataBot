@@ -5,14 +5,15 @@ import { useMemo, useState } from "react";
 import { useWorkspace } from "../../state/workspace";
 import { DialogBackdrop } from "../../ui/primitives";
 import { SECTION_ICONS } from "./sections";
-import { searchSettings } from "./settingsIndex";
+import { parseQuery } from "../../ui/textMatch";
+import { filterSettings } from "./settingsIndex";
 
 export function SettingsSearchPalette() {
   const open = useWorkspace((s) => s.overlay.kind === "settings-search");
   const close = useWorkspace((s) => s.close);
   const openSettings = useWorkspace((s) => s.openSettings);
   const [query, setQuery] = useState("");
-  const results = useMemo(() => searchSettings(query), [query]);
+  const results = useMemo(() => filterSettings(parseQuery(query)), [query]);
 
   return (
     <Dialog.Root

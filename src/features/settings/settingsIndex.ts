@@ -1,4 +1,4 @@
-import { fuzzyRank } from "../sidebar/fuzzy";
+import { matchRanges } from "../../ui/textMatch";
 
 // Plain data, so a setting's component can read its own label without importing the registry that imports it.
 
@@ -77,6 +77,7 @@ export function settingRuns(settings: readonly SettingEntry[]): { section: Setti
   return runs;
 }
 
-export function searchSettings(query: string): readonly SettingEntry[] {
-  return query.trim() ? fuzzyRank(query, SETTINGS, (s) => `${s.label} ${s.sectionLabel} ${s.keywords}`) : SETTINGS;
+/** The settings whose label, section, group, and keywords hold every token, in registry order. */
+export function filterSettings(tokens: readonly string[]): readonly SettingEntry[] {
+  return SETTINGS.filter((s) => matchRanges(tokens, `${s.label} ${s.sectionLabel} ${s.group ?? ""} ${s.keywords}`) !== null);
 }
