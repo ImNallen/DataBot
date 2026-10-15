@@ -352,12 +352,12 @@ pub struct HistoryQuery { pub text: Option<String>, pub connection_id: Option<Co
 /// Owned by the frontend, stored verbatim by the engine (single writer: the UI).
 #[derive(Clone, Serialize, Deserialize, Type)]
 pub struct Workspace { pub tabs: Vec<TabSnapshot>, pub active: Option<TabId>, pub layout: Layout }
+#[derive(Clone, Serialize, Type)]
+pub struct TabSnapshot { pub id: TabId, pub title: String, pub text: Option<String>, pub console: ConsoleConfigSnapshot, pub table: Option<TableSnapshot> }
 #[derive(Clone, Serialize, Deserialize, Type)]
-#[serde(tag = "kind")]
-pub enum TabSnapshot {
-    Sql   { id: TabId, title: String, text: String, console: ConsoleConfigSnapshot },
-    Table { id: TabId, connection_id: ConnectionId, database: Option<String>, schema: String, table: String, page: u32, #[serde(default)] query: TableQuery },
-}
+pub struct TableSnapshot { pub schema: String, pub table: String, pub page: u32, pub query: TableQuery }
+// TabSnapshot has a hand-written Deserialize. It also loads the older `{"kind":"Sql"}` and `{"kind":"Table"}` shapes.
+// An old table tab loads as an AutoCommit tab titled with its table, with `text: None`. Boot seeds that editor with `browseQuery`.
 #[derive(Clone, Serialize, Deserialize, Type)]
 pub struct ConsoleConfigSnapshot { pub connection_id: Option<ConnectionId>, pub database: Option<String>, pub schema: Option<String>, pub mode: TxnMode }
 // `database` is `None` only in workspaces saved before tabs carried one; `tabFromSnapshot` resolves it to the connection's configured database.
