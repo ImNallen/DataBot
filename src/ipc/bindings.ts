@@ -288,11 +288,16 @@ export type OpenTxn = {
 	hasWrites: boolean,
 };
 
-export type OutputBody = { kind: "Notice"; severity: string; message: string; detail: string | null } | { kind: "Command"; statement: number; tag: string; elapsedMs: number } | { kind: "Rows"; statement: number; rows: number; elapsedMs: number; truncated: boolean } | { kind: "Error"; statement: number | null; error: QueryError } | { kind: "Info"; message: string };
+export type OutputBody = { kind: "Notice"; severity: string; message: string; detail: string | null } | { kind: "Error"; error: QueryError } | { kind: "Info"; message: string };
 
+/**
+ *  A server message or a failure that no statement owns. Statement outcomes live in
+ *  `ConsoleState.run`, not here. `run_id` is the run, commit, rollback, or apply that held the
+ *  session; run ids share one counter, so `run_id >= run.run_id` means "this run or later".
+ */
 export type OutputEntry = {
 	atMs: number,
-	runId: RunId | null,
+	runId: RunId,
 	body: OutputBody,
 };
 

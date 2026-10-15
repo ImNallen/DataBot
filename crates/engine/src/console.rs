@@ -113,13 +113,18 @@ impl Console {
         state
     }
 
-    pub fn output(&self, shared: &Shared, run_id: Option<RunId>, body: OutputBody) {
-        if self.closed.load(Ordering::Relaxed) {
+    pub fn output(&self, shared: &Shared, run_id: RunId, body: OutputBody) {
+        self.output_all(shared, run_id, vec![body]);
+    }
+
+    pub fn output_all(&self, shared: &Shared, run_id: RunId, bodies: Vec<OutputBody>) {
+        if bodies.is_empty() || self.closed.load(Ordering::Relaxed) {
             return;
         }
+        let at_ms = now_ms();
         shared.emit(AppEvent::ConsoleOutput {
             tab_id: self.tab,
-            entries: vec![OutputEntry { at_ms: now_ms(), run_id, body }],
+            entries: bodies.into_iter().map(|body| OutputEntry { at_ms, run_id, body }).collect(),
         });
     }
 
@@ -247,7 +252,7 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
         && let Err(e) = session.set_search_path(plan.schema.as_deref()).await
     {
         let error = e.as_db_error().map_or_else(|| transport_error(&e), |db| query_error(db, None));
-        console.output(&shared, Some(run_id), OutputBody::Error { statement: None, error });
+        console.output(&shared, run_id, OutputBody::Error { error });
     }
 
     let mut index = 0;
@@ -266,11 +271,10 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
                 Ok(()) => {
                     txn = TxnState::Active;
                     console.edit(&shared, run_id, |inner| inner.txn = txn).await?;
-                    console.output(&shared, Some(run_id), OutputBody::Info { message: "BEGIN (implicit)".into() });
                 }
                 Err(e) => {
                     let error = e.as_db_error().map_or_else(|| transport_error(&e), |db| query_error(db, None));
-                    console.output(&shared, Some(run_id), OutputBody::Error { statement: Some(i), error });
+                    console.output(&shared, run_id, OutputBody::Error { error });
                     outcome = RunOutcome::Failed;
                     break;
                 }
@@ -322,30 +326,17 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
         }
         txn = txn_after(txn, &stmt.kind, if result.is_ok() { StmtOutcome::Ok } else { StmtOutcome::Err });
 
-        let (status, body, history) = match &result {
+        let (status, history) = match &result {
             Ok(StmtOk::Rows(set)) => {
                 let meta = set.meta();
-                (
-                    StmtStatus::Rows { result: meta.clone(), done: true },
-                    OutputBody::Rows { statement: i, rows: meta.rows_seen, elapsed_ms: meta.elapsed_ms, truncated: meta.truncated.is_some() },
-                    (HistoryOutcome::Rows { rows: meta.rows_seen }, meta.elapsed_ms),
-                )
+                let history = (HistoryOutcome::Rows { rows: meta.rows_seen }, meta.elapsed_ms);
+                (StmtStatus::Rows { result: meta, done: true }, history)
             }
-            Ok(StmtOk::Command { tag, elapsed_ms }) => (
-                StmtStatus::Command { tag: tag.clone(), elapsed_ms: *elapsed_ms },
-                OutputBody::Command { statement: i, tag: tag.clone(), elapsed_ms: *elapsed_ms },
-                (HistoryOutcome::Command { tag: tag.clone() }, *elapsed_ms),
-            ),
-            Err(error) if cancelled => (
-                StmtStatus::Cancelled,
-                OutputBody::Error { statement: Some(i), error: error.clone() },
-                (HistoryOutcome::Cancelled, 0),
-            ),
-            Err(error) => (
-                StmtStatus::Failed { error: error.clone() },
-                OutputBody::Error { statement: Some(i), error: error.clone() },
-                (HistoryOutcome::Error { message: error.message.clone() }, 0),
-            ),
+            Ok(StmtOk::Command { tag, elapsed_ms }) => {
+                (StmtStatus::Command { tag: tag.clone(), elapsed_ms: *elapsed_ms }, (HistoryOutcome::Command { tag: tag.clone() }, *elapsed_ms))
+            }
+            Err(_) if cancelled => (StmtStatus::Cancelled, (HistoryOutcome::Cancelled, 0)),
+            Err(error) => (StmtStatus::Failed { error: error.clone() }, (HistoryOutcome::Error { message: error.message.clone() }, 0)),
         };
         console
             .edit(&shared, run_id, |inner| {
@@ -361,7 +352,6 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
             })
             .await?;
         publish_notices(&console, &shared, &mut session, run_id);
-        console.output(&shared, Some(run_id), body);
         shared.record_history(HistoryInsert {
             at_ms: now_ms(),
             connection_id: plan.connection.id,
@@ -404,7 +394,7 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
                 } else {
                     format!("Session reset: connection lost ({reason})")
                 };
-                console.output(&shared, Some(run_id), OutputBody::Info { message });
+                console.output(&shared, run_id, OutputBody::Info { message });
             }
             Console::return_session(inner, session, txn, lost);
             inner.run = RunState::Finished { run_id, elapsed_ms: elapsed_ms(started), statements, outcome };
@@ -416,13 +406,11 @@ async fn set_status(console: &Console, shared: &Shared, run_id: RunId, index: u1
     console.edit(shared, run_id, |inner| Console::statements_mut(inner)[index as usize].status = status).await
 }
 
-fn publish_notices(console: &Console, shared: &Shared, session: &mut Session, run_id: RunId) {
-    for n in session.drain_notices() {
-        console.output(shared, Some(run_id), notice_body(&n));
-    }
+pub fn publish_notices(console: &Console, shared: &Shared, session: &mut Session, run_id: RunId) {
+    console.output_all(shared, run_id, session.drain_notices().iter().map(notice_body).collect());
 }
 
-pub fn notice_body(n: &DbError) -> OutputBody {
+fn notice_body(n: &DbError) -> OutputBody {
     OutputBody::Notice {
         severity: n.severity().to_owned(),
         message: n.message().to_owned(),

@@ -116,15 +116,19 @@ impl Harness {
         self.engine.boot().consoles.into_iter().find(|c| c.tab_id == tab).expect("console")
     }
 
-    fn outputs(&self, tab: TabId) -> Vec<OutputBody> {
+    fn entries(&self, tab: TabId) -> Vec<OutputEntry> {
         self.seen
             .iter()
             .filter_map(|e| match e {
-                AppEvent::ConsoleOutput { tab_id, entries } if *tab_id == tab => Some(entries.iter().map(|e| e.body.clone())),
+                AppEvent::ConsoleOutput { tab_id, entries } if *tab_id == tab => Some(entries.iter().cloned()),
                 _ => None,
             })
             .flatten()
             .collect()
+    }
+
+    fn outputs(&self, tab: TabId) -> Vec<OutputBody> {
+        self.entries(tab).into_iter().map(|e| e.body).collect()
     }
 
     async fn oracle(&self) -> tokio_postgres::Client {
@@ -214,7 +218,7 @@ async fn mockup_query_returns_six_regions_with_bigint_orders() {
     assert!(regions.contains(&"EU-West") && regions.contains(&"APAC"));
     assert!(rows[0][2].as_deref().unwrap().contains('.'), "numeric text keeps its scale");
     assert!(matches!(h.engine.result_page(meta.r#ref, 7, 10), Err(ResultError::OutOfRange)));
-    assert!(matches!(h.outputs(tab).last(), Some(OutputBody::Rows { statement: 0, rows: 6, .. })));
+    assert!(h.outputs(tab).is_empty(), "statement outcomes stay in the snapshot: {:?}", h.outputs(tab));
     assert!(matches!(state.session, SessionState::Open { backend_pid } if backend_pid > 0));
 }
 
@@ -276,12 +280,12 @@ async fn multi_statement_run_tags_notices_and_history() {
         })
         .collect();
     assert_eq!(tags, ["CREATE TABLE", "INSERT 0 5", "UPDATE 3", "rows:1", "rows:1"]);
-    let outputs = h.outputs(tab);
+    let entries = h.entries(tab);
     assert!(
-        outputs.iter().any(|o| matches!(o, OutputBody::Notice { severity, message, .. } if severity == "NOTICE" && message == "slept 0.01 seconds")),
-        "{outputs:?}"
+        matches!(&entries[..], [OutputEntry { body: OutputBody::Notice { severity, message, .. }, .. }] if severity == "NOTICE" && message == "slept 0.01 seconds"),
+        "{entries:?}"
     );
-    assert!(outputs.iter().any(|o| matches!(o, OutputBody::Command { statement: 2, tag, .. } if tag == "UPDATE 3")));
+    assert_eq!(entries[0].run_id, accepted.run_id);
     assert_eq!(h.scalar(tab, "select count(*) from t_multi where v = 'x'").await, "3", "temp table sticks to the tab's session");
 
     let history = h.engine.history(HistoryQuery { text: None, connection_id: Some(h.conn), before_id: None, limit: 10 });
@@ -311,7 +315,6 @@ async fn error_position_maps_to_utf16_past_an_emoji() {
     assert_eq!(error.position, Some(DocOffset(expected)));
     assert!(matches!(state.run, RunState::Finished { outcome: RunOutcome::Failed, .. }));
     assert_eq!(state.txn, TxnState::Idle);
-    assert!(h.outputs(tab).iter().any(|o| matches!(o, OutputBody::Error { statement: Some(0), .. })));
 }
 
 #[tokio::test]
@@ -328,7 +331,6 @@ async fn cancel_finishes_cancelled_quickly() {
     assert!(started.elapsed() < Duration::from_secs(2), "cancel took {:?}", started.elapsed());
     assert!(matches!(state.run, RunState::Finished { outcome: RunOutcome::Cancelled, .. }));
     assert!(matches!(statuses(&state)[..], [StmtStatus::Cancelled, StmtStatus::Skipped]));
-    assert!(h.outputs(tab).iter().any(|o| matches!(o, OutputBody::Error { error, .. } if error.message.contains("canceling statement"))));
     assert_eq!(h.scalar(tab, "select 7").await, "7", "the session is usable afterwards");
     h.engine.console_cancel(tab).await;
 }
@@ -343,7 +345,6 @@ async fn manual_tab_isolated_until_commit_and_abort_rolls_back() {
 
     let state = h.run_ok(a, &format!("insert into {table} values (1)")).await;
     assert_eq!(state.txn, TxnState::Active);
-    assert!(h.outputs(a).iter().any(|o| matches!(o, OutputBody::Info { message } if message == "BEGIN (implicit)")));
     assert_eq!(h.scalar(b, &format!("select count(*) from {table}")).await, "0");
     let err = h.engine.disconnect(h.conn, false).await.unwrap_err();
     assert!(matches!(err, DisconnectError::OpenTransactions { ref tabs } if tabs.len() == 1 && tabs[0].tab_id == a && tabs[0].has_writes));
@@ -370,6 +371,31 @@ async fn manual_tab_isolated_until_commit_and_abort_rolls_back() {
     h.run_ok(a, "begin; savepoint s; select 1; rollback to s; commit").await;
     assert_eq!(h.console(a).txn, TxnState::Idle);
     h.run_ok(b, &format!("drop table {table}")).await;
+}
+
+#[tokio::test]
+async fn a_notice_raised_at_commit_carries_the_commit_run_id() {
+    let mut h = Harness::start().await;
+    let tab = h.sql_tab(TxnMode::Manual).await;
+    let script = "create temp table t_deferred (id int);\n\
+                  create function pg_temp.notice_deferred() returns trigger language plpgsql as $$ begin raise notice 'deferred'; return null; end $$;\n\
+                  create constraint trigger t_deferred_notice after insert on t_deferred deferrable initially deferred for each row execute function pg_temp.notice_deferred();\n\
+                  insert into t_deferred values (1)";
+    let accepted = h.start_run(tab, script).await;
+    let state = h.wait_finished(tab, accepted.run_id).await;
+    assert!(matches!(state.run, RunState::Finished { outcome: RunOutcome::Ok, .. }), "{:?}", state.run);
+    assert!(h.entries(tab).is_empty(), "the trigger is deferred to COMMIT: {:?}", h.entries(tab));
+
+    h.engine.console_commit(tab).await.unwrap();
+    let entry = loop {
+        if let AppEvent::ConsoleOutput { tab_id, entries } = h.next_event().await
+            && tab_id == tab
+        {
+            break entries.into_iter().next().unwrap();
+        }
+    };
+    assert!(matches!(&entry.body, OutputBody::Notice { message, .. } if message == "deferred"), "{entry:?}");
+    assert!(entry.run_id > accepted.run_id, "commit run {:?} is not after run {:?}", entry.run_id, accepted.run_id);
 }
 
 #[tokio::test]
@@ -428,7 +454,6 @@ async fn forced_disconnect_during_a_manual_run_leaves_the_tab_idle() {
     let second = h.scalar(tab, "select pg_current_xact_id()::text").await;
     assert_eq!(h.console(tab).txn, TxnState::Active, "manual mode opened a block again");
     assert_eq!(first, second, "both statements ran inside one transaction");
-    assert!(h.outputs(tab).iter().any(|o| matches!(o, OutputBody::Info { message } if message == "BEGIN (implicit)")));
     h.engine.console_rollback(tab).await.unwrap();
 }
 
@@ -484,7 +509,6 @@ async fn big_result_truncates_at_max_rows_and_keeps_counting() {
         .filter(|e| matches!(e, AppEvent::ConsoleChanged(s) if s.tab_id == tab && matches!(s.run, RunState::Running { .. })))
         .count();
     assert!(streaming >= 2, "progress snapshots while streaming: {streaming}");
-    assert!(matches!(h.outputs(tab).last(), Some(OutputBody::Rows { rows: 300_000, truncated: true, .. })));
     assert_eq!(h.scalar(tab, "select 1").await, "1");
     assert!(matches!(h.engine.result_page(meta.r#ref, 0, 1), Err(ResultError::Gone)), "results die on re-run");
 }

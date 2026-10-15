@@ -12,7 +12,7 @@ pub struct ConnectionId(pub Uuid);
 pub struct TabId(pub Uuid);
 
 /// Engine-wide monotonic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 pub struct RunId(pub u64);
 
 /// UTF-16 code-unit offset into the editor document as sent in `RunRequest::Script.text`.
@@ -446,11 +446,14 @@ pub struct ExportSummary {
     pub truncated: bool,
 }
 
+/// A server message or a failure that no statement owns. Statement outcomes live in
+/// `ConsoleState.run`, not here. `run_id` is the run, commit, rollback, or apply that held the
+/// session; run ids share one counter, so `run_id >= run.run_id` means "this run or later".
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputEntry {
     pub at_ms: i64,
-    pub run_id: Option<RunId>,
+    pub run_id: RunId,
     pub body: OutputBody,
 }
 
@@ -462,21 +465,7 @@ pub enum OutputBody {
         message: String,
         detail: Option<String>,
     },
-    Command {
-        statement: u16,
-        tag: String,
-        elapsed_ms: u32,
-    },
-    Rows {
-        statement: u16,
-        rows: u64,
-        elapsed_ms: u32,
-        truncated: bool,
-    },
-    Error {
-        statement: Option<u16>,
-        error: QueryError,
-    },
+    Error { error: QueryError },
     Info { message: String },
 }
 
