@@ -11,7 +11,7 @@ import { fakeRoot } from "../../testing/fakeRoot";
 import { BUILT_IN_FAMILIES, customFamily, familyPicks } from "../../themes/catalog";
 import { chooseDensity, chooseFont, previewPanelMotion, savePanelMotion } from "./appearanceActions";
 import { addCustomThemes, chooseColorScheme, chooseThemes, deleteCustomTheme } from "./themeActions";
-import { searchSettings } from "./sections";
+import { searchSettings } from "./settingsIndex";
 
 const initial = { ...useWorkspace.getInitialState() };
 
@@ -183,6 +183,15 @@ it("shows the query settings with their saved values", () => {
   expect(html).toMatch(/data-testid="setting-maxRows"[^>]*value="1234"/);
   expect(html).toMatch(/data-testid="setting-tablePageSize"[^>]*value="77"/);
   expect(html).toMatch(/data-testid="setting-stopOnError"(?![^>]*checked)[^>]*>/);
+});
+
+/** The page's settings in order, each card's title as "# Title" before its settings. */
+const layout = (html: string) =>
+  [...html.matchAll(/data-setting="(\w+)"|<h2 id="[^"]*" class="mb-2[^"]*">([^<]+)</g)].map(([, setting, card]) => setting ?? `# ${card}`);
+
+it("draws each section's settings in registry order, a run of one group in one card", () => {
+  expect(layout(render(settingsOpen()))).toEqual(["colorScheme", "themes", "# Layout", "density", "# Motion", "panelMotion", "# Typography", "interfaceFont", "codeFont"]);
+  expect(layout(render(settingsOpen("queries")))).toEqual(["# Results", "maxRows", "tablePageSize", "# Scripts", "stopOnError"]);
 });
 
 function paintAndRecordSaves() {

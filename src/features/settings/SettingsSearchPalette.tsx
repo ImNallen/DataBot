@@ -4,7 +4,8 @@ import { IconSearch } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { useWorkspace } from "../../state/workspace";
 import { DialogBackdrop } from "../../ui/primitives";
-import { searchSettings } from "./sections";
+import { SECTION_ICONS } from "./sections";
+import { searchSettings } from "./settingsIndex";
 
 export function SettingsSearchPalette() {
   const open = useWorkspace((s) => s.overlay.kind === "settings-search");
@@ -42,7 +43,9 @@ export function SettingsSearchPalette() {
             </div>
             <Command.List className="max-h-[360px] overflow-y-auto p-1.5">
               <Command.Empty className="px-3 py-6 text-center text-ui-13 text-dim">{`Nothing matches "${query}".`}</Command.Empty>
-              {results.map(({ id, label, section, sectionLabel, icon: Icon }) => (
+              {results.map(({ id, label, section, sectionLabel }) => {
+                const Icon = SECTION_ICONS[section];
+                return (
                 <Command.Item
                   key={id}
                   value={id}
@@ -60,7 +63,8 @@ export function SettingsSearchPalette() {
                   <span className="truncate">{label}</span>
                   <span className="ml-auto truncate pl-4 font-mono text-ui-11.5 text-dim">{sectionLabel}</span>
                 </Command.Item>
-              ))}
+                );
+              })}
             </Command.List>
           </Command>
         </Dialog.Content>

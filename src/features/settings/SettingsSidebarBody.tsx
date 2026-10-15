@@ -2,7 +2,8 @@ import { IconArrowLeft } from "@tabler/icons-react";
 import { useWorkspace } from "../../state/workspace";
 import { cx } from "../../ui/primitives";
 import { SidebarSearch } from "../sidebar/SidebarSearch";
-import { SETTINGS_SECTIONS, type SettingsSectionId } from "./sections";
+import { SECTION_ICONS } from "./sections";
+import { SETTINGS_INDEX, type SettingsSectionId } from "./settingsIndex";
 
 export function SettingsSidebarBody({ section }: { section: SettingsSectionId }) {
   const openSettings = useWorkspace((s) => s.openSettings);
@@ -13,23 +14,26 @@ export function SettingsSidebarBody({ section }: { section: SettingsSectionId })
       <SidebarSearch testId="settings-search-open" label="Search" onOpen={() => open({ kind: "settings-search" })} />
       <nav data-testid="settings-nav" aria-label="Settings" className="min-h-0 flex-1 overflow-auto pt-1">
         <ul className="flex flex-col gap-0.5">
-          {SETTINGS_SECTIONS.map(({ id, label, icon: Icon }) => (
-            <li key={id}>
-              <button
-                type="button"
-                data-testid={`settings-section-${id}`}
-                aria-current={id === section ? "page" : undefined}
-                onClick={() => openSettings(id)}
-                className={cx(
-                  "mx-2 flex h-7 w-[calc(100%-16px)] items-center gap-2 rounded-md px-2 text-left text-ui-14 text-tree",
-                  id === section ? "bg-selected" : "hover:bg-hover",
-                )}
-              >
-                <Icon size={15} className="shrink-0 text-muted" />
-                <span className="min-w-0 flex-1 truncate">{label}</span>
-              </button>
-            </li>
-          ))}
+          {SETTINGS_INDEX.map(({ id, label }) => {
+            const Icon = SECTION_ICONS[id];
+            return (
+              <li key={id}>
+                <button
+                  type="button"
+                  data-testid={`settings-section-${id}`}
+                  aria-current={id === section ? "page" : undefined}
+                  onClick={() => openSettings(id)}
+                  className={cx(
+                    "mx-2 flex h-7 w-[calc(100%-16px)] items-center gap-2 rounded-md px-2 text-left text-ui-14 text-tree",
+                    id === section ? "bg-selected" : "hover:bg-hover",
+                  )}
+                >
+                  <Icon size={15} className="shrink-0 text-muted" />
+                  <span className="min-w-0 flex-1 truncate">{label}</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       </nav>
       <div className="mx-2 shrink-0 py-2">

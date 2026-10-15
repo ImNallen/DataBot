@@ -17,8 +17,8 @@ import {
 import { completePalette } from "../../themes/palette";
 import { Button, cx, IconButton } from "../../ui/primitives";
 import { AddThemeDialog } from "./AddThemeDialog";
-import { AppearanceCards } from "./AppearanceControls";
 import { CreateThemePanel } from "./CreateThemePanel";
+import { SettingLabel } from "./SettingLayout";
 import { chooseColorScheme, chooseThemes, confirmDeleteTheme } from "./themeActions";
 
 function Swatch({ variant }: { variant: ThemeVariant }) {
@@ -145,7 +145,38 @@ const subscribeSystem = (onChange: () => void) => {
   return () => media.removeEventListener("change", onChange);
 };
 
-export function AppearanceSection() {
+export function ColorSchemeSetting() {
+  const settings = useWorkspace((s) => s.settings);
+  const variants = { light: pickedVariant(settings, "light"), dark: pickedVariant(settings, "dark") };
+  return (
+    <fieldset data-setting="colorScheme">
+      <legend className="text-ui-13 font-medium text-fg">
+        <SettingLabel id="colorScheme" />
+      </legend>
+      <p className="mt-0.5 text-ui-12 text-dim">System follows the appearance of your operating system.</p>
+      <div className="mt-4 grid grid-cols-3 gap-3">
+        {SCHEMES.map((scheme) => (
+          <label key={scheme} data-testid={`scheme-${scheme}`} className="group flex flex-col gap-2">
+            <input
+              type="radio"
+              name="colorScheme"
+              value={scheme}
+              checked={scheme === settings.colorScheme}
+              onChange={() => void chooseColorScheme(scheme)}
+              className="peer sr-only"
+            />
+            <span className="relative h-[88px] overflow-hidden rounded-lg border border-control transition-colors group-hover:border-handle-hover peer-checked:border-run peer-checked:ring-1 peer-checked:ring-run peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus peer-focus-visible:outline-solid">
+              <SchemePreview scheme={scheme} picks={variants} />
+            </span>
+            <span className="text-ui-13 text-muted peer-checked:text-fg">{scheme}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+export function ThemesSetting() {
   const settings = useWorkspace((s) => s.settings);
   const systemDark = useSyncExternalStore(subscribeSystem, () => window.matchMedia(DARK_QUERY).matches, () => true);
   const current = resolveTheme(settings, systemDark);
@@ -154,63 +185,37 @@ export function AppearanceSection() {
   const edit = (next: ThemeDraft) => setDraft((d) => ({ key: (d?.key ?? 0) + 1, draft: next }));
   const families = themeFamilies(settings.customThemes);
   const picks = { light: settings.lightTheme, dark: settings.darkTheme };
-  const variants = { light: pickedVariant(settings, "light"), dark: pickedVariant(settings, "dark") };
   return (
-    <div className="flex flex-col gap-8">
-      <fieldset data-setting="colorScheme">
-        <legend className="text-ui-13 font-medium text-fg">Color scheme</legend>
-        <p className="mt-0.5 text-ui-12 text-dim">System follows the appearance of your operating system.</p>
-        <div className="mt-4 grid grid-cols-3 gap-3">
-          {SCHEMES.map((scheme) => (
-            <label key={scheme} data-testid={`scheme-${scheme}`} className="group flex flex-col gap-2">
-              <input
-                type="radio"
-                name="colorScheme"
-                value={scheme}
-                checked={scheme === settings.colorScheme}
-                onChange={() => void chooseColorScheme(scheme)}
-                className="peer sr-only"
-              />
-              <span className="relative h-[88px] overflow-hidden rounded-lg border border-control transition-colors group-hover:border-handle-hover peer-checked:border-run peer-checked:ring-1 peer-checked:ring-run peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus peer-focus-visible:outline-solid">
-                <SchemePreview scheme={scheme} picks={variants} />
-              </span>
-              <span className="text-ui-13 text-muted peer-checked:text-fg">{scheme}</span>
-            </label>
-          ))}
+    <section data-setting="themes" aria-labelledby="themes-heading">
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <h2 id="themes-heading" className="text-ui-13 font-medium text-fg">
+            <SettingLabel id="themes" />
+          </h2>
+          <p className="mt-0.5 text-ui-12 text-dim">Pick one theme for light mode and one for dark.</p>
         </div>
-      </fieldset>
-      <section data-setting="themes" aria-labelledby="themes-heading">
-        <div className="flex items-end justify-between gap-4">
-          <div>
-            <h2 id="themes-heading" className="text-ui-13 font-medium text-fg">
-              Themes
-            </h2>
-            <p className="mt-0.5 text-ui-12 text-dim">Pick one theme for light mode and one for dark.</p>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              data-testid="create-theme"
-              className="h-7 px-2.5 text-ui-12.5"
-              onClick={() => edit(draftOf(current, ""))}
-            >
-              <IconColorSwatch size={14} />
-              Create theme
-            </Button>
-            <Button data-testid="add-theme" className="h-7 px-2.5 text-ui-12.5" onClick={() => setAdding(true)}>
-              <IconPlus size={14} />
-              Add theme
-            </Button>
-          </div>
+        <div className="flex gap-2">
+          <Button
+            data-testid="create-theme"
+            className="h-7 px-2.5 text-ui-12.5"
+            onClick={() => edit(draftOf(current, ""))}
+          >
+            <IconColorSwatch size={14} />
+            Create theme
+          </Button>
+          <Button data-testid="add-theme" className="h-7 px-2.5 text-ui-12.5" onClick={() => setAdding(true)}>
+            <IconPlus size={14} />
+            Add theme
+          </Button>
         </div>
-        <div className="mt-4 grid grid-cols-3 gap-3">
-          {families.map((family) => (
-            <ThemeCard key={family.id} family={family} picks={picks} appearance={current.appearance} onDuplicate={edit} />
-          ))}
-        </div>
-      </section>
-      <AppearanceCards />
+      </div>
+      <div className="mt-4 grid grid-cols-3 gap-3">
+        {families.map((family) => (
+          <ThemeCard key={family.id} family={family} picks={picks} appearance={current.appearance} onDuplicate={edit} />
+        ))}
+      </div>
       <AddThemeDialog open={adding} onOpenChange={setAdding} />
       {draft && <CreateThemePanel key={draft.key} initial={draft.draft} onClose={() => setDraft(null)} />}
-    </div>
+    </section>
   );
 }

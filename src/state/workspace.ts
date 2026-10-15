@@ -11,7 +11,7 @@ import type {
   TxnMode,
   Workspace,
 } from "../ipc/bindings";
-import type { SettingId, SettingsSectionId } from "../features/settings/sections";
+import type { SettingId, SettingsSectionId } from "../features/settings/settingsIndex";
 import { homeDb, sameDb } from "./dbKey";
 import type { ResultPick } from "./status";
 

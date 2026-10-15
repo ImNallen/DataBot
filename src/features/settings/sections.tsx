@@ -1,62 +1,44 @@
 import { IconPalette, IconSql, type Icon } from "@tabler/icons-react";
 import type { ComponentType } from "react";
-import { fuzzyRank } from "../sidebar/fuzzy";
-import { AppearanceSection } from "./AppearanceSection";
-import { QueriesSection } from "./QueriesSection";
+import { CodeFontSetting, DensitySetting, InterfaceFontSetting, PanelMotionSetting } from "./AppearanceControls";
+import { ColorSchemeSetting, ThemesSetting } from "./AppearanceSection";
+import { MaxRowsSetting, StopOnErrorSetting, TablePageSizeSetting } from "./QueriesSection";
+import { Card } from "./SettingLayout";
+import { sectionSettings, settingRuns, type SettingEntry, type SettingId, type SettingsSectionId } from "./settingsIndex";
 
-type SettingsSection = {
-  id: string;
-  label: string;
-  icon: Icon;
-  Body: ComponentType;
-  settings: readonly { id: string; label: string; keywords: string }[];
-};
+export const SECTION_ICONS = { appearance: IconPalette, queries: IconSql } satisfies Record<SettingsSectionId, Icon>;
 
-export const SETTINGS_SECTIONS = [
-  {
-    id: "appearance",
-    label: "Appearance",
-    icon: IconPalette,
-    Body: AppearanceSection,
-    settings: [
-      { id: "colorScheme", label: "Color scheme", keywords: "appearance dark light system mode colour color" },
-      {
-        id: "themes",
-        label: "Themes",
-        keywords: "theme palette colours colors accent custom create import vs code open vsx dracula catppuccin nord tokyo night",
-      },
-      { id: "density", label: "Density", keywords: "compact standard spacious spacing padding row height comfortable dense layout" },
-      { id: "panelMotion", label: "Panel animations", keywords: "motion animation speed duration reduce transitions sidebar panels open close" },
-      { id: "interfaceFont", label: "Interface font", keywords: "typography font family size text ui system sf pro inter zoom" },
-      { id: "codeFont", label: "Monospace font", keywords: "typography font family size code editor table grid results mono jetbrains sf mono menlo" },
-    ],
-  },
-  {
-    id: "queries",
-    label: "Queries",
-    icon: IconSql,
-    Body: QueriesSection,
-    settings: [
-      { id: "maxRows", label: "Row limit per result", keywords: "max rows limit results" },
-      { id: "tablePageSize", label: "Table page size", keywords: "rows per page paging browse" },
-      { id: "stopOnError", label: "Stop a script at the first error", keywords: "errors script abort fail skip" },
-    ],
-  },
-] as const satisfies readonly SettingsSection[];
+const SETTING_VIEWS = {
+  colorScheme: ColorSchemeSetting,
+  themes: ThemesSetting,
+  density: DensitySetting,
+  panelMotion: PanelMotionSetting,
+  interfaceFont: InterfaceFontSetting,
+  codeFont: CodeFontSetting,
+  maxRows: MaxRowsSetting,
+  tablePageSize: TablePageSizeSetting,
+  stopOnError: StopOnErrorSetting,
+} satisfies Record<SettingId, ComponentType>;
 
-export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
-export type SettingId = (typeof SETTINGS_SECTIONS)[number]["settings"][number]["id"];
-
-export function settingsSection(id: SettingsSectionId): SettingsSection {
-  return SETTINGS_SECTIONS.find((s) => s.id === id) ?? SETTINGS_SECTIONS[0];
+export function SettingViews({ settings }: { settings: readonly SettingEntry[] }) {
+  return settings.map(({ id }) => {
+    const View = SETTING_VIEWS[id];
+    return <View key={id} />;
+  });
 }
 
-export type SettingEntry = { id: SettingId; label: string; keywords: string; section: SettingsSectionId; sectionLabel: string; icon: Icon };
-
-const SETTINGS: readonly SettingEntry[] = SETTINGS_SECTIONS.flatMap(({ id: section, label: sectionLabel, icon, settings }) =>
-  settings.map((s) => ({ ...s, section, sectionLabel, icon })),
-);
-
-export function searchSettings(query: string): readonly SettingEntry[] {
-  return query.trim() ? fuzzyRank(query, SETTINGS, (s) => `${s.label} ${s.sectionLabel} ${s.keywords}`) : SETTINGS;
+export function SectionBody({ section }: { section: SettingsSectionId }) {
+  return (
+    <div className="flex flex-col gap-8">
+      {settingRuns(sectionSettings(section)).map((run) =>
+        run.group === null ? (
+          <SettingViews key={run.settings[0]?.id} settings={run.settings} />
+        ) : (
+          <Card key={run.group} title={run.group}>
+            <SettingViews settings={run.settings} />
+          </Card>
+        ),
+      )}
+    </div>
+  );
 }
