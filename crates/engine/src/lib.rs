@@ -2,6 +2,7 @@ mod catalog;
 mod connection;
 mod console;
 mod detail;
+mod history;
 pub mod model;
 mod results;
 mod secrets;
@@ -1166,6 +1167,14 @@ impl Engine {
             eprintln!("history query failed: {e}");
             HistoryPage { entries: Vec::new(), has_more: false }
         })
+    }
+
+    pub fn history_browse(&self, q: HistoryBrowseQuery) -> Result<HistoryBrowsePage, HistoryError> {
+        self.shared.store.history_browse(&q)
+    }
+
+    pub fn history_group(&self, q: HistoryGroupQuery) -> Result<HistoryGroupPage, HistoryError> {
+        self.shared.store.history_group(&q)
     }
 
     pub fn clear_history(&self) {

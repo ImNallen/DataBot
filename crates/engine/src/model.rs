@@ -747,6 +747,92 @@ pub struct HistoryPage {
     pub has_more: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum HistoryFilter {
+    All,
+    Failed,
+    Writes,
+}
+
+#[derive(Debug, Clone, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryBrowseQuery {
+    pub text: Option<String>,
+    pub filter: HistoryFilter,
+    pub before_id: Option<i64>,
+    pub limit: u16,
+    pub revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCounts {
+    pub all: u32,
+    pub failed: u32,
+    pub writes: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRun {
+    pub id: i64,
+    pub at_ms: i64,
+    pub connection_name: String,
+    pub elapsed_ms: u32,
+    pub outcome: HistoryOutcome,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryGroupSummary {
+    pub id: i64,
+    pub latest_id: i64,
+    pub latest_at_ms: i64,
+    pub connection_id: ConnectionId,
+    pub database: String,
+    pub title: String,
+    pub excerpt: String,
+    pub run_count: u32,
+    pub failed_count: u32,
+    pub is_write: bool,
+    pub representative: HistoryRun,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryBrowsePage {
+    pub groups: Vec<HistoryGroupSummary>,
+    pub counts: HistoryCounts,
+    pub has_more: bool,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryGroupQuery {
+    pub id: i64,
+    pub before_id: Option<i64>,
+    pub limit: u16,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryGroupPage {
+    pub sql: String,
+    pub runs: Vec<HistoryRun>,
+    pub has_more: bool,
+    pub max_elapsed_ms: u32,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum HistoryError {
+    Stale,
+    Unavailable { message: String },
+}
+
 /// Owned by the frontend, stored verbatim by the engine (single writer: the UI).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

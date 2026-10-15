@@ -14,7 +14,7 @@ iana-time-zone = "0.1"
 keyring = "4.2"
 native-tls = "0.2"
 postgres-native-tls = "0.5"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "functions"] }
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true

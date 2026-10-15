@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::functions::FunctionFlags;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -21,7 +22,7 @@ pub enum StoreError {
 
 pub const HISTORY_KEEP: i64 = 10_000;
 
-const MIGRATIONS: [&str; 3] = [
+const MIGRATIONS: [&str; 4] = [
     "
     CREATE TABLE connections (id TEXT PRIMARY KEY, json TEXT NOT NULL);
     CREATE TABLE history (
@@ -39,10 +40,16 @@ const MIGRATIONS: [&str; 3] = [
 ",
     "CREATE TABLE secrets (connection_id TEXT PRIMARY KEY, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL);",
     "CREATE TABLE connection_views (connection_id TEXT PRIMARY KEY, json TEXT NOT NULL);",
+    "ALTER TABLE history ADD COLUMN is_write INTEGER NOT NULL DEFAULT 0;",
 ];
 
 pub struct Store {
-    conn: Mutex<Connection>,
+    state: Mutex<StoreState>,
+}
+
+struct StoreState {
+    conn: Connection,
+    history_revision: u64,
 }
 
 pub struct HistoryInsert {
@@ -58,17 +65,40 @@ pub struct HistoryInsert {
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
+        conn.create_scalar_function("history_lower", 1, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
+            Ok(ctx.get::<Option<String>>(0)?.map(|text| text.to_lowercase()))
+        })?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
-            conn.execute_batch(&format!("BEGIN; {sql} PRAGMA user_version = {}; COMMIT;", i + 1))?;
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(sql)?;
+            if i == 3 {
+                let mut stmt = tx.prepare("SELECT id, sql FROM history")?;
+                let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+                for row in rows {
+                    let (id, sql) = row?;
+                    tx.execute(
+                        "UPDATE history SET is_write = ?1 WHERE id = ?2",
+                        params![crate::sql::history_is_write(&sql), id],
+                    )?;
+                }
+            }
+            tx.pragma_update(None, "user_version", (i + 1) as i64)?;
+            tx.commit()?;
         }
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { state: Mutex::new(StoreState { conn, history_revision: 0 }) })
     }
 
     fn with<T>(&self, f: impl FnOnce(&Connection) -> Result<T, StoreError>) -> Result<T, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        f(&conn)
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        f(&state.conn)
+    }
+
+    pub(crate) fn with_history<T>(&self, f: impl FnOnce(&Connection, &mut u64) -> Result<T, StoreError>) -> Result<T, StoreError> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let StoreState { conn, history_revision } = &mut *state;
+        f(conn, history_revision)
     }
 
     pub fn connections(&self) -> Result<Vec<ConnectionConfig>, StoreError> {
@@ -154,10 +184,12 @@ impl Store {
     }
 
     pub fn insert_history_and_prune(&self, h: HistoryInsert) -> Result<HistoryEntry, StoreError> {
-        self.with(|c| {
+        self.with_history(|conn, revision| {
+            let tx = conn.unchecked_transaction()?;
+            let c = &tx;
             c.execute(
-                "INSERT INTO history (at_ms, connection_id, connection_name, database, sql, elapsed_ms, outcome_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO history (at_ms, connection_id, connection_name, database, sql, elapsed_ms, outcome_json, is_write)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     h.at_ms,
                     h.connection_id.0.to_string(),
@@ -165,7 +197,8 @@ impl Store {
                     h.database,
                     h.sql,
                     h.elapsed_ms,
-                    serde_json::to_string(&h.outcome)?
+                    serde_json::to_string(&h.outcome)?,
+                    crate::sql::history_is_write(&h.sql)
                 ],
             )?;
             let id = c.last_insert_rowid();
@@ -173,6 +206,8 @@ impl Store {
                 "DELETE FROM history WHERE id <= (SELECT id FROM history ORDER BY id DESC LIMIT 1 OFFSET ?1)",
                 [HISTORY_KEEP],
             )?;
+            tx.commit()?;
+            *revision += 1;
             Ok(HistoryEntry {
                 id,
                 at_ms: h.at_ms,
@@ -236,8 +271,9 @@ impl Store {
     }
 
     pub fn clear_history(&self) -> Result<(), StoreError> {
-        self.with(|c| {
+        self.with_history(|c, revision| {
             c.execute("DELETE FROM history", [])?;
+            *revision += 1;
             Ok(())
         })
     }

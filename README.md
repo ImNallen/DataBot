@@ -28,7 +28,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 - In manual mode, **Commit** and **Rollback** appear while a transaction is open, and the tab shows a dot. Closing that tab or disconnecting asks before it rolls back.
 - An error shows its detail, hint, and SQLSTATE, and the editor underlines the error position.
 - The **Output** button in the results header opens a timestamped log of everything the tab ran: each statement, its server messages such as `RAISE NOTICE` and warnings, and its result line. **Commit**, **Rollback**, and table edits are logged too. When a statement returns no rows, the log fills the results pane. The button turns amber when the latest run raised a warning.
-- **Query history** searches past statements and opens one in a new SQL tab.
+- **Query history** groups identical SQL per connection and database. Search SQL, connection names, databases, or errors, then filter by **All**, **Failed**, or **Writes**. Select a query to preview its SQL and paged run timeline. Copy it, open or run it in a new tab on its saved database, or insert it into the active SQL tab.
 
 ### Results and table data
 
@@ -63,6 +63,8 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 | `⌘⌫` | Delete or restore the selected rows |
 | `⌘C` | Copy the selected cells as TSV |
 | `⌘A` | Select all cells |
+
+In query history, `↑` and `↓` select a query, `Enter` opens it in a new tab, `⌘↵` runs it in a new tab, and `Alt+Enter` inserts it at the active SQL cursor. `⌘C` copies the query unless text is selected in the search field. `Esc` closes history. **Clear history** asks for confirmation.
 
 On macOS, **Close Window** moves to `⇧⌘W` so that `⌘W` closes a tab.
 

@@ -41,6 +41,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ipc::result_cell,
             ipc::result_export_csv,
             ipc::history_list,
+            ipc::history_browse,
+            ipc::history_group,
             ipc::history_clear,
             ipc::workspace_save,
             ipc::settings_set,
@@ -347,7 +349,7 @@ mod tests {
             }
             checked += 1;
         }
-        assert_eq!(checked, 8, "the sync commands in ipc.rs");
+        assert_eq!(checked, 10, "the sync commands in ipc.rs");
     }
 
     #[test]

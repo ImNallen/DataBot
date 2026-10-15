@@ -152,6 +152,24 @@ pub fn history_list(engine: State<'_, Arc<Engine>>, query: HistoryQuery) -> Hist
 
 #[tauri::command]
 #[specta::specta]
+pub fn history_browse(
+    engine: State<'_, Arc<Engine>>,
+    query: HistoryBrowseQuery,
+) -> Result<HistoryBrowsePage, HistoryError> {
+    engine.history_browse(query)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn history_group(
+    engine: State<'_, Arc<Engine>>,
+    query: HistoryGroupQuery,
+) -> Result<HistoryGroupPage, HistoryError> {
+    engine.history_group(query)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn history_clear(engine: State<'_, Arc<Engine>>) {
     engine.clear_history()
 }

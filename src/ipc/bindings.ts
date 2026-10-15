@@ -28,6 +28,8 @@ export const commands = {
 	resultCell: (resultRef: ResultRef, row: number, col: number) => typedError<string | null, ResultError>(__TAURI_INVOKE("result_cell", { resultRef, row, col })),
 	resultExportCsv: (resultRef: ResultRef, path: string) => typedError<ExportSummary, ExportError>(__TAURI_INVOKE("result_export_csv", { resultRef, path })),
 	historyList: (query: HistoryQuery) => __TAURI_INVOKE<HistoryPage>("history_list", { query }),
+	historyBrowse: (query: HistoryBrowseQuery) => typedError<HistoryBrowsePage, HistoryError>(__TAURI_INVOKE("history_browse", { query })),
+	historyGroup: (query: HistoryGroupQuery) => typedError<HistoryGroupPage, HistoryError>(__TAURI_INVOKE("history_group", { query })),
 	historyClear: () => __TAURI_INVOKE<void>("history_clear"),
 	workspaceSave: (workspace: Workspace) => __TAURI_INVOKE<void>("workspace_save", { workspace }),
 	settingsSet: (settings: Settings) => __TAURI_INVOKE<void>("settings_set", { settings }),
@@ -357,6 +359,27 @@ export type FunctionInfo = {
 	kind: FnKind,
 };
 
+export type HistoryBrowsePage = {
+	groups: HistoryGroupSummary[],
+	counts: HistoryCounts,
+	hasMore: boolean,
+	revision: number,
+};
+
+export type HistoryBrowseQuery = {
+	text: string | null,
+	filter: HistoryFilter,
+	beforeId: number | null,
+	limit: number,
+	revision: number | null,
+};
+
+export type HistoryCounts = {
+	all: number,
+	failed: number,
+	writes: number,
+};
+
 export type HistoryEntry = {
 	id: number,
 	atMs: number,
@@ -366,6 +389,39 @@ export type HistoryEntry = {
 	sql: string,
 	elapsedMs: number,
 	outcome: HistoryOutcome,
+};
+
+export type HistoryError = { kind: "Stale" } | { kind: "Unavailable"; message: string };
+
+export type HistoryFilter = "All" | "Failed" | "Writes";
+
+export type HistoryGroupPage = {
+	sql: string,
+	runs: HistoryRun[],
+	hasMore: boolean,
+	maxElapsedMs: number,
+	revision: number,
+};
+
+export type HistoryGroupQuery = {
+	id: number,
+	beforeId: number | null,
+	limit: number,
+	revision: number,
+};
+
+export type HistoryGroupSummary = {
+	id: number,
+	latestId: number,
+	latestAtMs: number,
+	connectionId: ConnectionId,
+	database: string,
+	title: string,
+	excerpt: string,
+	runCount: number,
+	failedCount: number,
+	isWrite: boolean,
+	representative: HistoryRun,
 };
 
 export type HistoryOutcome = { kind: "Rows"; rows: number } | { kind: "Command"; tag: string } | { kind: "Error"; message: string } | { kind: "Cancelled" };
@@ -380,6 +436,14 @@ export type HistoryQuery = {
 	connectionId: ConnectionId | null,
 	beforeId: number | null,
 	limit: number,
+};
+
+export type HistoryRun = {
+	id: number,
+	atMs: number,
+	connectionName: string,
+	elapsedMs: number,
+	outcome: HistoryOutcome,
 };
 
 export type IndexInfo = {

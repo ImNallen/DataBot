@@ -126,7 +126,7 @@ fn word_end(bytes: &[u8], start: usize) -> usize {
     i
 }
 
-fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
+pub(super) fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
     let mut depth = 0usize;
     while i < bytes.len() {
         if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
@@ -145,7 +145,7 @@ fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
     bytes.len()
 }
 
-fn skip_quoted(bytes: &[u8], i: usize, quote: u8) -> usize {
+pub(super) fn skip_quoted(bytes: &[u8], i: usize, quote: u8) -> usize {
     let escapes = quote == b'\'' && i > 0 && (bytes[i - 1] == b'E' || bytes[i - 1] == b'e')
         && (i < 2 || !(bytes[i - 2].is_ascii_alphanumeric() || bytes[i - 2] == b'_'));
     let mut j = i + 1;
@@ -165,7 +165,7 @@ fn skip_quoted(bytes: &[u8], i: usize, quote: u8) -> usize {
     bytes.len()
 }
 
-fn dollar_tag(bytes: &[u8], i: usize) -> Option<usize> {
+pub(super) fn dollar_tag(bytes: &[u8], i: usize) -> Option<usize> {
     let mut j = i + 1;
     if j < bytes.len() && bytes[j].is_ascii_digit() {
         return None; // a positional parameter such as `$1`
@@ -176,7 +176,7 @@ fn dollar_tag(bytes: &[u8], i: usize) -> Option<usize> {
     (bytes.get(j) == Some(&b'$')).then_some(j + 1 - i)
 }
 
-fn skip_dollar_quoted(bytes: &[u8], i: usize, tag_len: usize) -> usize {
+pub(super) fn skip_dollar_quoted(bytes: &[u8], i: usize, tag_len: usize) -> usize {
     let tag = &bytes[i..i + tag_len];
     let mut j = i + tag_len;
     while j + tag_len <= bytes.len() {

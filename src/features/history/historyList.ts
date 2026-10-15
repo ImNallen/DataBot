@@ -1,29 +1,40 @@
-import type { HistoryEntry, HistoryPage, HistoryQuery } from "../../ipc/bindings";
+import type { HistoryBrowsePage, HistoryBrowseQuery, HistoryFilter, HistoryGroupPage, HistoryGroupSummary } from "../../ipc/bindings";
 
-const PAGE = 100;
+const PAGE = 50;
+export type HistoryList = HistoryBrowsePage & { text: string; filter: HistoryFilter };
+export type HistoryDetail = HistoryGroupPage & { id: number };
 
-/** The pages loaded so far for one search. A new search replaces the whole list. */
-export type HistoryList = { text: string; entries: HistoryEntry[]; hasMore: boolean };
-
-export function firstPageQuery(text: string): HistoryQuery {
-  return { text: text || null, connectionId: null, beforeId: null, limit: PAGE };
+export function firstPageQuery(text: string, filter: HistoryFilter): HistoryBrowseQuery {
+  return { text: text.trim() || null, filter, beforeId: null, limit: PAGE, revision: null };
 }
 
-export function olderPageQuery(list: HistoryList): HistoryQuery | null {
-  if (!list.hasMore) return null;
-  return { text: list.text || null, connectionId: null, beforeId: list.entries.at(-1)?.id ?? null, limit: PAGE };
+export function olderPageQuery(list: HistoryList): HistoryBrowseQuery | null {
+  const last = list.groups.at(-1);
+  if (!list.hasMore || !last) return null;
+  return { text: list.text || null, filter: list.filter, beforeId: last.latestId, limit: PAGE, revision: list.revision };
 }
 
-// `requested` is the list the older page was fetched for. If a search or another page replaced it meanwhile, the page is stale.
-export function appendOlder(current: HistoryList, requested: HistoryList, page: HistoryPage): HistoryList {
-  if (current !== requested) return current;
-  return { text: current.text, entries: [...current.entries, ...page.entries], hasMore: page.hasMore };
+export function appendOlder(current: HistoryList, requested: HistoryList, page: HistoryBrowsePage): HistoryList {
+  if (current !== requested || current.revision !== page.revision) return current;
+  return { ...current, groups: [...current.groups, ...page.groups], hasMore: page.hasMore };
 }
 
-// Queries run after the list was fetched arrive on the live tail, newer than anything in the list.
-export function withTail(list: HistoryList, tail: HistoryEntry[]): HistoryEntry[] {
-  const newest = list.entries[0]?.id ?? 0;
-  const needle = list.text.toLowerCase();
-  const fresh = tail.filter((h) => h.id > newest && (!needle || h.sql.toLowerCase().includes(needle)));
-  return [...fresh, ...list.entries];
+export function keepSelection(groups: HistoryGroupSummary[], selected: number | null): number | null {
+  return groups.find((g) => g.id === selected)?.id ?? groups[0]?.id ?? null;
+}
+
+export function appendRuns(current: HistoryDetail, requested: HistoryDetail, page: HistoryGroupPage): HistoryDetail {
+  if (current !== requested || current.revision !== page.revision) return current;
+  return { ...current, runs: [...current.runs, ...page.runs], hasMore: page.hasMore };
+}
+
+export type HistoryAction = "open" | "run" | "insert" | "copy" | "next" | "previous";
+export function historyKey(e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing">, searchHasSelection: boolean): HistoryAction | null {
+  if (e.isComposing || e.shiftKey) return null;
+  const mod = e.metaKey || e.ctrlKey;
+  if (e.key === "Enter") return mod ? "run" : e.altKey ? "insert" : "open";
+  if (mod && e.key.toLowerCase() === "c" && !searchHasSelection) return "copy";
+  if (!mod && !e.altKey && e.key === "ArrowDown") return "next";
+  if (!mod && !e.altKey && e.key === "ArrowUp") return "previous";
+  return null;
 }

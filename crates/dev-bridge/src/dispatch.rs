@@ -122,6 +122,8 @@ routes! { e;
     result_cell(result_ref: ResultRef, row: u32, col: u16) => e.result_cell(result_ref, row, col);
     result_export_csv(result_ref: ResultRef, path: String) => e.export_csv(result_ref, PathBuf::from(path)).await;
     history_list(query: HistoryQuery) => ok(e.history(query));
+    history_browse(query: HistoryBrowseQuery) => e.history_browse(query);
+    history_group(query: HistoryGroupQuery) => e.history_group(query);
     history_clear() => { e.clear_history(); ok(()) };
     workspace_save(workspace: Workspace) => { e.save_workspace(workspace); ok(()) };
     settings_set(settings: Settings) => { e.set_settings(settings); ok(()) };
