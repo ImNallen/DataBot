@@ -381,7 +381,7 @@ async fn manual_tab_isolated_until_commit_and_abort_rolls_back() {
 
     let state = h.run_ok(a, &format!("insert into {table} values (1)")).await;
     assert_eq!(state.txn, TxnState::Active);
-    assert_eq!(h.log(a), [format!("0> insert into {table} values (1)"), "BEGIN (implicit)".into(), "0 INSERT 0 1".into()]);
+    assert_eq!(h.log(a), ["BEGIN (implicit)".into(), format!("0> insert into {table} values (1)"), "0 INSERT 0 1".into()]);
     assert_eq!(h.scalar(b, &format!("select count(*) from {table}")).await, "0");
     let err = h.engine.disconnect(h.conn, false).await.unwrap_err();
     assert!(matches!(err, DisconnectError::OpenTransactions { ref tabs } if tabs.len() == 1 && tabs[0].tab_id == a && tabs[0].has_writes));

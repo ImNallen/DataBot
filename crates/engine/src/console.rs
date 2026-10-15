@@ -265,7 +265,6 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
             break;
         }
         let sql = stmt.span.text(&plan.text);
-        console.output(&shared, run_id, statement_line(i, sql));
 
         if needs_implicit_begin(plan.mode, txn, &stmt.kind) {
             match session.client.batch_execute("BEGIN").await {
@@ -283,6 +282,7 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
             }
         }
 
+        console.output(&shared, run_id, statement_line(i, sql));
         set_status(&console, &shared, run_id, i, StmtStatus::Preparing).await?;
         let prepared = session.client.prepare(sql).await;
         // A cancel that reached the backend while it was idle between prepare and execute is lost.
