@@ -19,7 +19,7 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 
 use connection::{CatalogSlot, ConnEntry, ConnSlot, ConnectParams, DbSlot, Instance};
-use console::{Console, PlannedStmt, RunPlan, SessionSlot};
+use console::{Console, Owed, PlannedStmt, RunPlan, SessionSlot};
 use model::*;
 use secrets::Vault;
 use session::Session;
@@ -296,7 +296,16 @@ impl Shared {
         });
     }
 
-    pub(crate) fn schedule_catalog_refresh(self: &Arc<Self>, db: DatabaseRef) {
+    pub(crate) fn schedule_refreshes(self: &Arc<Self>, db: DatabaseRef, owed: Owed) {
+        if owed.catalog {
+            self.schedule_catalog_refresh(db.clone());
+        }
+        if owed.databases {
+            self.schedule_database_list_refresh(db.connection_id);
+        }
+    }
+
+    fn schedule_catalog_refresh(self: &Arc<Self>, db: DatabaseRef) {
         let Ok((instance, slot)) = self.slot(&db) else { return };
         if !slot.refresh.request() {
             return;
@@ -314,7 +323,7 @@ impl Shared {
         });
     }
 
-    pub(crate) fn schedule_database_list_refresh(self: &Arc<Self>, id: ConnectionId) {
+    fn schedule_database_list_refresh(self: &Arc<Self>, id: ConnectionId) {
         let shared = self.clone();
         tokio::spawn(async move {
             let Some(instance) = shared.instance(id) else { return };
@@ -442,15 +451,13 @@ impl Shared {
             .edit(self, run_id, |inner| {
                 let txn = txn::txn_after(inner.txn, &kind, outcome);
                 Console::return_session(inner, session, txn, lost);
-                let refresh = inner.ddl_pending && inner.txn == TxnState::Idle && commit && !aborted && result.is_ok();
-                if inner.txn == TxnState::Idle {
-                    inner.ddl_pending = false;
-                }
-                refresh.then(|| inner.config.db())
+                let owed = if inner.txn == TxnState::Idle { inner.owed.take() } else { Owed::default() };
+                let committed = commit && !aborted && result.is_ok();
+                committed.then(|| (inner.config.db(), owed))
             })
             .await;
-        if let Ok(Some(db)) = edited {
-            self.schedule_catalog_refresh(db);
+        if let Ok(Some((db, owed))) = edited {
+            self.schedule_refreshes(db, owed);
         }
         match result {
             Ok(()) if commit && aborted => Err(TxnError::RolledBack),

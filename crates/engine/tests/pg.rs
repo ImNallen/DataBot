@@ -68,6 +68,26 @@ impl Harness {
         Self { engine, events, seen: Vec::new(), conn: config.id, database: config.database, dir }
     }
 
+    /// Names in the instance's `pg_database` list as the snapshot reports it.
+    fn database_names(&self) -> Vec<String> {
+        match self.status() {
+            ConnStatus::Connected { instance, .. } => instance.databases.into_iter().map(|d| d.name).collect(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    async fn wait_database_names(&self, done: impl Fn(&[String]) -> bool) -> Vec<String> {
+        let started = Instant::now();
+        loop {
+            let names = self.database_names();
+            if done(&names) {
+                return names;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "database list never reached the expected state: {names:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     fn status(&self) -> ConnStatus {
         self.engine.boot().live.into_iter().find(|c| c.id == self.conn).expect("connection entry").status
     }
@@ -1063,7 +1083,9 @@ async fn a_database_no_tab_or_tree_uses_gets_no_catalog() {
     let live = h.engine.boot().live;
     let ConnStatus::Connected { instance, .. } = &live[0].status else { panic!("{:?}", live[0].status) };
     assert_eq!(instance.home, "shop");
-    let rows: Vec<(&str, bool, DbAccess, bool)> = instance.databases.iter().map(|d| (d.name.as_str(), d.system, d.access, d.shown)).collect();
+    // Databases other tests create and drop while this one runs are not part of the seed.
+    let rows: Vec<(&str, bool, DbAccess, bool)> =
+        instance.databases.iter().filter(|d| !d.name.starts_with("t_db_")).map(|d| (d.name.as_str(), d.system, d.access, d.shown)).collect();
     assert_eq!(
         rows,
         [
@@ -1113,4 +1135,28 @@ async fn a_lost_home_session_closes_the_other_metadata_sessions() {
     let left = role.backends_when(|b| b.len() == 1).await;
     assert_eq!(left, [("reporting".to_owned(), console_pid)], "only the console's session survives a loss");
     role.drop().await;
+}
+
+/// `ALTER DATABASE` inside a Manual-mode transaction is invisible to the home session until it
+/// commits, so the list is re-read at commit, as the catalog is after transactional DDL.
+#[tokio::test]
+async fn alter_database_in_a_manual_transaction_refreshes_the_list_on_commit() {
+    let mut h = Harness::start().await;
+    let auto = h.sql_tab(TxnMode::AutoCommit).await;
+    let (old, new) = (unique("t_db"), unique("t_db"));
+    h.run_ok(auto, &format!("create database {old}")).await;
+    h.wait_database_names(|names| names.contains(&old)).await;
+
+    let manual = h.sql_tab(TxnMode::Manual).await;
+    let state = h.run_ok(manual, &format!("alter database {old} rename to {new}")).await;
+    assert_eq!(state.txn, TxnState::Active);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let names = h.database_names();
+    assert!(names.contains(&old) && !names.contains(&new), "an uncommitted rename changes nothing: {names:?}");
+
+    h.engine.console_commit(manual).await.unwrap();
+    let names = h.wait_database_names(|names| names.contains(&new)).await;
+    assert!(!names.contains(&old), "the committed rename replaced the old name: {names:?}");
+    h.run_ok(auto, &format!("drop database {new}")).await;
+    h.wait_database_names(|names| !names.contains(&new)).await;
 }

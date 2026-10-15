@@ -34,7 +34,30 @@ pub struct ConsoleInner {
     pub txn: TxnState,
     pub run: RunState,
     pub rev: u64,
-    pub ddl_pending: bool,
+    /// Refreshes owed by statements whose transaction has not committed yet.
+    pub owed: Owed,
+}
+
+/// What successful statements have made stale, due once their transaction commits: the
+/// console's catalog, the instance's database list, or both.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Owed {
+    pub catalog: bool,
+    pub databases: bool,
+}
+
+impl Owed {
+    pub fn add(&mut self, invalidates: Invalidates) {
+        match invalidates {
+            Invalidates::Nothing => {}
+            Invalidates::Catalog => self.catalog = true,
+            Invalidates::DatabaseList => self.databases = true,
+        }
+    }
+
+    pub fn take(&mut self) -> Owed {
+        std::mem::take(self)
+    }
 }
 
 pub enum SessionSlot {
@@ -64,7 +87,7 @@ impl Console {
             txn: TxnState::Idle,
             run: RunState::Idle,
             rev: 0,
-            ddl_pending: false,
+            owed: Owed::default(),
         };
         let latest = ConsoleState {
             tab_id: tab,
@@ -160,7 +183,7 @@ impl Console {
             Some(reason) => {
                 let txn_lost = inner.txn != TxnState::Idle;
                 inner.txn = TxnState::Idle;
-                inner.ddl_pending = false;
+                inner.owed = Owed::default();
                 SessionSlot::Lost { reason, txn_lost }
             }
             None => SessionSlot::Idle(session),
@@ -179,7 +202,7 @@ impl Console {
         }
         inner.session = SessionSlot::Empty;
         inner.txn = TxnState::Idle;
-        inner.ddl_pending = false;
+        inner.owed = Owed::default();
         if let RunState::Running { run_id, started_at_ms, statements } = &mut inner.run {
             let mut in_flight = true;
             for s in statements.iter_mut() {
@@ -357,21 +380,16 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
             ),
         };
         let invalidates = if result.is_ok() { stmt.kind.invalidates() } else { Invalidates::Nothing };
-        console
+        let due = console
             .edit(&shared, run_id, |inner| {
                 inner.txn = txn;
                 Console::statements_mut(inner)[index].status = status;
-                if invalidates == Invalidates::Catalog {
-                    inner.ddl_pending = true;
-                }
-                if inner.ddl_pending && txn == TxnState::Idle {
-                    inner.ddl_pending = false;
-                    shared.schedule_catalog_refresh(inner.config.db());
-                }
+                inner.owed.add(invalidates);
+                (txn == TxnState::Idle).then(|| (inner.config.db(), inner.owed.take()))
             })
             .await?;
-        if invalidates == Invalidates::DatabaseList {
-            shared.schedule_database_list_refresh(plan.connection.id);
+        if let Some((db, owed)) = due {
+            shared.schedule_refreshes(db, owed);
         }
         let mut lines = notice_lines(&mut session);
         lines.push(line);
