@@ -575,10 +575,10 @@ export type SchemaInfo = {
 	/**  `information_schema` or a `pg_` prefix, which Postgres reserves for its own schemas. */
 	system: boolean,
 	/**
-	 *  Tables, views, materialized views, foreign and partitioned tables, counted by the schema
-	 *  query itself, so it is right for a system schema whose `relations` are not loaded.
+	 *  Tables, partitioned tables, and foreign tables, which the tree lists as tables. Counted by
+	 *  the schema query itself, so it is right for a system schema whose `relations` are not loaded.
 	 */
-	relationCount: number,
+	tableCount: number,
 	relations: Relation[],
 	functions: FunctionInfo[],
 };

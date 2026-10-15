@@ -1407,9 +1407,13 @@ async fn default_view_shows_home_with_all_its_schemas() {
     assert_default_view(&h).await;
     let catalog = h.engine.catalog(h.db()).await.unwrap();
     let lab = catalog.schemas.iter().find(|s| s.name == "lab").unwrap();
-    assert_eq!((lab.system, lab.relation_count, lab.relations.len()), (false, 1, 1));
+    assert_eq!((lab.system, lab.table_count, lab.relations.len()), (false, 1, 1));
+    let public = catalog.schemas.iter().find(|s| s.name == "public").unwrap();
+    let tables = public.relations.iter().filter(|r| !matches!(r.kind, RelKind::View | RelKind::MaterializedView)).count();
+    assert_eq!(public.table_count as usize, tables, "views are relations but not tables");
+    assert!(public.relations.len() >= tables + 3, "the seed's three views are listed");
     let system: Vec<(&str, bool, usize, usize)> =
-        catalog.schemas.iter().filter(|s| s.system).map(|s| (s.name.as_str(), s.relation_count > 0, s.relations.len(), s.functions.len())).collect();
+        catalog.schemas.iter().filter(|s| s.system).map(|s| (s.name.as_str(), s.table_count > 0, s.relations.len(), s.functions.len())).collect();
     assert_eq!(system, [("information_schema", true, 0, 0), ("pg_catalog", true, 0, 0)], "system schemas are listed with a count but not loaded");
 }
 
@@ -1426,8 +1430,8 @@ async fn showing_a_database_opens_its_slot_and_shows_only_its_default_schema() {
 
     let catalog = h.engine.catalog(h.db_named("reporting")).await.unwrap();
     assert_eq!(catalog.default_schema.as_deref(), Some("public"));
-    let schemas: Vec<(&str, bool, u32, usize)> = catalog.schemas.iter().map(|s| (s.name.as_str(), s.system, s.relation_count, s.relations.len())).collect();
-    assert_eq!(schemas, [("audit", false, 1, 1), ("information_schema", true, 69, 0), ("pg_catalog", true, 140, 0), ("public", false, 1, 1)]);
+    let schemas: Vec<(&str, bool, u32, usize)> = catalog.schemas.iter().map(|s| (s.name.as_str(), s.system, s.table_count, s.relations.len())).collect();
+    assert_eq!(schemas, [("audit", false, 1, 1), ("information_schema", true, 4, 0), ("pg_catalog", true, 64, 0), ("public", false, 1, 1)]);
 
     h.edit_view(ViewEdit::Database { name: "reporting".into(), shown: true }).await;
     assert_eq!(h.database_state("reporting").shown_schemas, ["public"], "the same edit twice changes nothing");
@@ -1488,7 +1492,8 @@ async fn showing_pg_catalog_loads_its_relations_and_no_functions() {
     let loaded = h.catalog_when(&h.db(), |c| c.version > initial && c.schemas.iter().any(|s| s.name == "pg_catalog" && !s.relations.is_empty())).await;
     let pg_catalog = loaded.schemas.iter().find(|s| s.name == "pg_catalog").unwrap();
     assert!(pg_catalog.system && pg_catalog.relations.len() > 100 && pg_catalog.functions.is_empty(), "{} relations", pg_catalog.relations.len());
-    assert_eq!(pg_catalog.relation_count as usize, pg_catalog.relations.len());
+    let tables = pg_catalog.relations.iter().filter(|r| !matches!(r.kind, RelKind::View | RelKind::MaterializedView)).count();
+    assert_eq!((pg_catalog.table_count, tables), (64, 64));
     let shop = h.wait_database("shop", |d| d.shown_schemas.iter().any(|s| s == "pg_catalog")).await;
     assert_eq!(shop.shown_schemas, ["lab", "pg_catalog", "public"]);
     assert!(shop.show_system_schemas);

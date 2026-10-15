@@ -55,14 +55,14 @@ pub async fn count_schemas(client: &Client) -> Result<u32, tokio_postgres::Error
 }
 
 /// Five queries on one database's metadata session. Every schema is listed with its `system` flag
-/// and relation count; relations and columns load for user schemas and for the system schemas in
+/// and table count; relations and columns load for user schemas and for the system schemas in
 /// `extra_schemas`; functions load for user schemas only.
 pub async fn load(client: &Client, db: DatabaseRef, version: u64, extra_schemas: &[String]) -> Result<Catalog, tokio_postgres::Error> {
     let schema_rows = client
         .query(
             &format!(
                 "SELECT n.nspname, {SYSTEM_SCHEMA},
-                        (SELECT count(*) FROM pg_class c WHERE c.relnamespace = n.oid AND c.relkind IN ('r', 'p', 'v', 'm', 'f'))::int4
+                        (SELECT count(*) FROM pg_class c WHERE c.relnamespace = n.oid AND c.relkind IN ('r', 'p', 'f'))::int4
                  FROM pg_namespace n WHERE NOT {UNLISTED_SCHEMA} ORDER BY n.nspname"
             ),
             &[],
@@ -70,7 +70,7 @@ pub async fn load(client: &Client, db: DatabaseRef, version: u64, extra_schemas:
         .await?;
     let mut schemas: Vec<SchemaInfo> = schema_rows
         .iter()
-        .map(|r| SchemaInfo { name: r.get(0), system: r.get(1), relation_count: r.get::<_, i32>(2) as u32, relations: Vec::new(), functions: Vec::new() })
+        .map(|r| SchemaInfo { name: r.get(0), system: r.get(1), table_count: r.get::<_, i32>(2) as u32, relations: Vec::new(), functions: Vec::new() })
         .collect();
     let schema_index: HashMap<String, usize> = schemas.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
 

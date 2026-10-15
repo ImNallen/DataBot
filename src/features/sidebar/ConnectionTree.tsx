@@ -479,7 +479,7 @@ function SchemaNode({
         icon={<IconStack2 size={15} className="text-muted" />}
         label={schema.name}
         contextMenu={<NewMenu db={db} />}
-        trailing={<Count>{tables.length}</Count>}
+        trailing={<Count>{schema.tableCount}</Count>}
       />
       {open && (
         <>

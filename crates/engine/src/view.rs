@@ -225,7 +225,7 @@ mod tests {
             default_schema: default.map(str::to_owned),
             schemas: schemas
                 .iter()
-                .map(|(name, system)| SchemaInfo { name: (*name).into(), system: *system, relation_count: 0, relations: Vec::new(), functions: Vec::new() })
+                .map(|(name, system)| SchemaInfo { name: (*name).into(), system: *system, table_count: 0, relations: Vec::new(), functions: Vec::new() })
                 .collect(),
         })
     }

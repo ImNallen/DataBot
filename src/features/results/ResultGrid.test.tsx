@@ -47,7 +47,7 @@ it("looks primary keys up in the catalog of the database the rows came from", ()
       {
         name: "public",
         system: false,
-        relationCount: 1,
+        tableCount: 1,
         relations: [
           {
             ...orders,

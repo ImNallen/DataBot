@@ -122,7 +122,7 @@ export function schemaPicker(state: DatabaseState, catalog: Catalog, query: stri
         name: s.name,
         checked: shown.has(s.name),
         isDefault: s.name === catalog.defaultSchema,
-        trailing: plural(s.relationCount, "table", "tables"),
+        trailing: plural(s.tableCount, "table", "tables"),
         disabled: false,
         system: s.system,
       })),

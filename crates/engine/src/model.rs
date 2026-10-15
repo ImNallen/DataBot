@@ -211,9 +211,9 @@ pub struct SchemaInfo {
     pub name: String,
     /// `information_schema` or a `pg_` prefix, which Postgres reserves for its own schemas.
     pub system: bool,
-    /// Tables, views, materialized views, foreign and partitioned tables, counted by the schema
-    /// query itself, so it is right for a system schema whose `relations` are not loaded.
-    pub relation_count: u32,
+    /// Tables, partitioned tables, and foreign tables, which the tree lists as tables. Counted by
+    /// the schema query itself, so it is right for a system schema whose `relations` are not loaded.
+    pub table_count: u32,
     pub relations: Vec<Relation>,
     pub functions: Vec<FunctionInfo>,
 }

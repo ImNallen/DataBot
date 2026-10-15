@@ -39,13 +39,13 @@ const prod = instance([
   db("vault", { schemaCount: { kind: "Unavailable", message: "permission denied for database vault" } }),
 ]);
 
-const schema = (name: string, relationCount: number, system = false): SchemaInfo => ({ name, system, relationCount, relations: [], functions: [] });
+const schema = (name: string, tableCount: number, system = false): SchemaInfo => ({ name, system, tableCount, relations: [], functions: [] });
 
 const shopCatalog: Catalog = {
   db: { connectionId: "c1", database: "shop" },
   version: 3,
   defaultSchema: "public",
-  schemas: [schema("analytics_tmp", 1), schema("audit", 2), schema("billing", 3), schema("information_schema", 68, true), schema("pg_catalog", 140, true), schema("public", 14)],
+  schemas: [schema("analytics_tmp", 1), schema("audit", 2), schema("billing", 3), schema("information_schema", 4, true), schema("pg_catalog", 64, true), schema("public", 13)],
 };
 
 const shopState = db("shop", { shown: true, shownSchemas: ["audit", "pg_catalog", "public"], catalog: { kind: "Ready", version: 3 } });
@@ -146,7 +146,7 @@ describe("schemaPicker", () => {
       { name: "analytics_tmp", checked: false, isDefault: false, trailing: "1 table", disabled: false, system: false },
       { name: "audit", checked: true, isDefault: false, trailing: "2 tables", disabled: false, system: false },
       { name: "billing", checked: false, isDefault: false, trailing: "3 tables", disabled: false, system: false },
-      { name: "public", checked: true, isDefault: true, trailing: "14 tables", disabled: false, system: false },
+      { name: "public", checked: true, isDefault: true, trailing: "13 tables", disabled: false, system: false },
     ]);
   });
 
@@ -154,7 +154,7 @@ describe("schemaPicker", () => {
     const m = schemaPicker({ ...shopState, showSystemSchemas: true }, shopCatalog, "PG_");
     expect(m.showSystem).toBe(true);
     expect(m.subtitle).toBe("3 of 6 schemas shown");
-    expect(m.items).toEqual([{ name: "pg_catalog", checked: true, isDefault: false, trailing: "140 tables", disabled: false, system: true }]);
+    expect(m.items).toEqual([{ name: "pg_catalog", checked: true, isDefault: false, trailing: "64 tables", disabled: false, system: true }]);
   });
 
   it("builds the engine's intents for its database", () => {

@@ -45,14 +45,16 @@ function relation(spec: TableSpec, oid: number): Relation {
   };
 }
 
+const tableCount = (specs: TableSpec[]) => specs.filter((s) => s.kind !== "View").length;
+
 export function shopCatalog(connectionId: ConnectionId, version: number): Catalog {
   return {
     db: { connectionId, database: "shop" },
     version,
     defaultSchema: "public",
     schemas: [
-      { name: "lab", system: false, relationCount: LAB.length, relations: LAB.map((s, i) => relation(s, 16_900 + i)), functions: [] },
-      { name: "public", system: false, relationCount: SHOP.length, relations: SHOP.map((s, i) => relation(s, 16_400 + i)), functions: SHOP_FUNCTIONS },
+      { name: "lab", system: false, tableCount: tableCount(LAB), relations: LAB.map((s, i) => relation(s, 16_900 + i)), functions: [] },
+      { name: "public", system: false, tableCount: tableCount(SHOP), relations: SHOP.map((s, i) => relation(s, 16_400 + i)), functions: SHOP_FUNCTIONS },
     ],
   };
 }
