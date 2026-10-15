@@ -19,29 +19,6 @@ export function isNumeric(category: TypeCategory): boolean {
   return category === "Integer" || category === "Numeric";
 }
 
-const UNITS: readonly [number, string][] = [
-  [1e9, "B"],
-  [1e6, "M"],
-  [1e3, "k"],
-];
-
-export function compactCount(n: number): string {
-  const abs = Math.abs(n);
-  if (abs < 1000) return String(Math.round(n));
-  let i = UNITS.findIndex(([base]) => abs >= base);
-  let text = scaleTo(n, UNITS[i]![0]);
-  if (Math.abs(Number(text)) >= 1000 && i > 0) {
-    i -= 1;
-    text = scaleTo(n, UNITS[i]![0]);
-  }
-  return text + UNITS[i]![1];
-}
-
-function scaleTo(n: number, base: number): string {
-  const scaled = n / base;
-  return String(Math.abs(scaled) >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10);
-}
-
 const digits = (v: number) => groupDigits(String(v));
 
 function totalLabel(last: number, shortPage: boolean, estimate: number | null, exactRowCount: number | undefined): string {

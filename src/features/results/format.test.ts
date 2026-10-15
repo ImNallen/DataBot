@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactCount, formatClock, formatElapsed, groupDigits, isNumeric, pageStatus, shortType, toTsv } from "./format";
+import { formatClock, formatElapsed, groupDigits, isNumeric, pageStatus, shortType, toTsv } from "./format";
 
 describe("groupDigits", () => {
   it("groups the integer part and keeps sign and fraction verbatim", () => {
@@ -22,27 +22,6 @@ describe("groupDigits", () => {
 
   it("passes through text that is not a plain decimal", () => {
     for (const s of ["NaN", "Infinity", "-Infinity", "$1,234.00", "", "1.2.3"]) expect(groupDigits(s)).toBe(s);
-  });
-});
-
-describe("compactCount", () => {
-  it("matches the mockup's row estimates", () => {
-    expect(compactCount(18_400)).toBe("18.4k");
-    expect(compactCount(241_000)).toBe("241k");
-    expect(compactCount(612_000)).toBe("612k");
-    expect(compactCount(1_200)).toBe("1.2k");
-  });
-
-  it("keeps small counts exact and drops a trailing .0", () => {
-    expect(compactCount(0)).toBe("0");
-    expect(compactCount(999)).toBe("999");
-    expect(compactCount(3_000)).toBe("3k");
-  });
-
-  it("promotes to the next unit when rounding carries", () => {
-    expect(compactCount(999_999)).toBe("1M");
-    expect(compactCount(1_234_567)).toBe("1.2M");
-    expect(compactCount(2_500_000_000)).toBe("2.5B");
   });
 });
 
