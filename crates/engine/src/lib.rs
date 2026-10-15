@@ -180,7 +180,9 @@ impl Shared {
     }
 
     /// The Ready catalog, or one load of it. Loads of one database are single-flight: callers
-    /// that arrive during a load wait for it and get its result.
+    /// that arrive during a load wait for it and get its result. A load that fails after an
+    /// earlier one succeeded serves the last good catalog; the failure shows on the connection
+    /// snapshot, and the next call tries again.
     async fn ensure_catalog(self: &Arc<Self>, instance: &Arc<Instance>, slot: &Arc<DbSlot>) -> Result<Arc<Catalog>, CatalogError> {
         if let Some(catalog) = slot.ready() {
             return Ok(catalog);
@@ -189,7 +191,10 @@ impl Shared {
         if let Some(catalog) = slot.ready() {
             return Ok(catalog);
         }
-        self.load_catalog(instance, slot, &mut meta).await
+        match self.load_catalog(instance, slot, &mut meta).await {
+            Ok(catalog) => Ok(catalog),
+            Err(e) => slot.last().ok_or(e),
+        }
     }
 
     /// One load under the slot's session lock. Opens the session when the slot has none.

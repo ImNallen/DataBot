@@ -22,7 +22,7 @@ function startPersistence() {
   onEditorDocChanged(schedule);
 }
 
-/** The catalog store holds exactly the Ready catalogs of the connection snapshots. */
+/** The catalog store holds exactly the catalogs the connection snapshots serve. */
 function startCatalogSync() {
   const sync = (s: LiveData) => {
     const wanted = wantedCatalogs(s.connections);

@@ -130,7 +130,7 @@ async fn manual_tab_isolated_until_commit_and_abort_rolls_back() {
 4. **During a run, the session moves into the run task.** `Console` holds `Option<Session>`. A run takes it and gives it back when finished. Commit, rollback, or a second run while it is gone returns `Busy`. Concurrent use of one session cannot be expressed.
 5. **Snapshots over deltas.** The backend emits whole `ConsoleState` and `ConnectionState` values with a monotonically increasing `rev`. The frontend's live store is a pure projection: `apply(event)` keeps the higher rev. This is idempotent and tolerant of event order. Only `ConsoleOutput`, the append-only output log, uses deltas.
 6. **One SQL lexer, in Rust.** `split_statements` and `classify` are pure functions. They handle dollar quotes, `E''` strings, nested block comments, and quoted identifiers. They drive statement picking, transaction-state tracking, DDL-triggered catalog refresh, and synthesized command tags. The frontend sends the whole document plus a cursor or selection. All offsets crossing IPC are UTF-16 code units (CodeMirror's unit), and the conversion happens once at the boundary.
-7. **One full-catalog snapshot per database, keyed by `DatabaseRef { connectionId, database }`, loaded in four queries.** It covers schemas, relations with `reltuples`, columns with PK flags, and functions. The tree, ⌘P fuzzy search, CodeMirror completion, and the PK lookups for table pages and staged edits are all derived from the catalog of the database they address; OIDs are never compared across databases. The connection snapshot is the single source of catalog versions: `ConnStatus::Connected.instance` lists every database with its `CatalogStatus` (`Idle`, `Loading`, `Ready { version }`, `Failed`), and the frontend fetches `catalog_get(db)` when a `Ready` version is newer than what it holds and drops views that are no longer `Ready`. Versions come from one engine-wide counter, so a reconnect never reissues one. Successful DDL schedules a refresh of the console's database; a slot's `RefreshGate` coalesces a burst into at most two loads.
+7. **One full-catalog snapshot per database, keyed by `DatabaseRef { connectionId, database }`, loaded in four queries.** It covers schemas, relations with `reltuples`, columns with PK flags, and functions. The tree, ⌘P fuzzy search, CodeMirror completion, and the PK lookups for table pages and staged edits are all derived from the catalog of the database they address; OIDs are never compared across databases. The connection snapshot is the single source of catalog versions: `ConnStatus::Connected.instance` lists every database with its `CatalogStatus` (`Idle`, `Loading`, `Ready { version }`, `Failed`), and the frontend fetches `catalog_get(db)` when the served version is newer than what it holds. `Failed` carries the last good catalog's version, and `catalog_get` keeps serving that catalog, so a failed reload shows its error in the tree beside the schemas it already had, with a Retry; the frontend drops only views whose database serves no version (`Idle`, `Loading`, or a `Failed` first load). Versions come from one engine-wide counter, so a reconnect never reissues one. Successful DDL schedules a refresh of the console's database; a slot's `RefreshGate` coalesces a burst into at most two loads.
 8. **Contract generation.** Every IPC type lives in `crates/engine` with `#[derive(Serialize, Deserialize, specta::Type)]`. `src-tauri` registers commands with `tauri-specta` and adds `AppEvent` as a plain exported type; the shell forwards `Engine::subscribe()` with `app.emit("app-event", ev)`, which sidesteps the release-candidate event API. Debug builds export `src/ipc/bindings.ts`, and a test fails if the checked-in file differs.
 9. **SQL text is interpreted only in Rust.** That includes table-browse SQL: `RunRequest::TablePage` makes the engine build `SELECT * FROM "schema"."table" WHERE <filters> ORDER BY <user order>, <pk> LIMIT n OFFSET m` with its own identifier and literal quoting and the catalog's PK columns. The user's `WHERE` and `ORDER BY` text goes in as written, and the engine refuses the page if the result isn't one statement. Staged row edits go through `table_apply`, which builds the `INSERT`, `UPDATE`, and `DELETE` statements the same way.
 
@@ -191,7 +191,7 @@ pub struct DatabaseState { pub name: String, pub system: bool, pub access: DbAcc
 #[derive(Clone, Copy, Serialize, Type)] pub enum DbAccess { Ok, NoConnections, NoPrivilege }
 #[derive(Clone, Serialize, Type)]
 #[serde(tag = "kind")]
-pub enum CatalogStatus { Idle, Loading, Ready { version: u64 }, Failed { message: String } }
+pub enum CatalogStatus { Idle, Loading, Ready { version: u64 }, Failed { message: String, version: Option<u64> } }  // Failed.version: the last good catalog, still served
 #[derive(Clone, Serialize, Type)]
 pub struct ConnectionState { pub id: ConnectionId, pub rev: u64, pub status: ConnStatus }
 
@@ -557,7 +557,7 @@ pub struct ConsoleInner {
     pub txn: TxnState,
     pub run: RunState,
     pub rev: u64,
-    pub ddl_pending: bool,                                // DDL ran inside a transaction; refresh the catalog on commit
+    pub owed: Owed,                                       // refreshes (catalog, database list) owed by statements whose transaction has not committed
 }
 pub enum SessionSlot {
     Empty,
@@ -654,7 +654,7 @@ async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: Sessi
         txn = txn_after(txn, &kind, outcome.ok_or_err());
         shared.record_history(...);                      // single writer: run tasks, via store mutex
         if outcome.failed() && settings.stop_on_error { mark rest Skipped; break }
-        match kind.invalidates() { Catalog if ok && txn == Idle => shared.schedule_catalog_refresh(console db), DatabaseList if ok => shared.schedule_database_list_refresh(conn), _ => {} }  // Catalog inside a txn: ddl_pending until commit
+        if ok { owed.add(kind.invalidates()) }; if txn == Idle { shared.schedule_refreshes(console db, owed.take()) }  // inside a txn: owed until commit
     }
     // if session.closed has Some(reason): slot = Lost { reason, txn_lost: txn != Idle }; txn = Idle
     // else slot = Idle(session)
@@ -667,7 +667,7 @@ Session-loss rules:
 - **Death detection.** Driver-task exit, or TCP keepalive (`keepalives_idle = 30s`), sets `closed`.
 - **Lost while idle with no transaction.** The next run opens a fresh session transparently and logs `Info("Session reset")`.
 - **Lost with a transaction open.** The slot becomes `Lost { txn_lost: true }` and the UI shows a persistent banner: "Transaction rolled back: connection lost". The next run starts a fresh session and clears the banner.
-- **Metadata session death.** The home database's session marks `ConnectionState` `Lost`. Another database's session marks only that database's `CatalogStatus` `Failed`. Consoles are independent.
+- **Metadata session death.** The home database's session marks `ConnectionState` `Lost` and closes the instance, which drops every slot and its session. Another database's session marks only that database's `CatalogStatus` `Failed`, keeping the last catalog's version; the next load on it reopens the session. Consoles are independent. A disconnect closes the instance the same way, and a slot's watch task holds the instance weakly so it cannot keep a session alive past that.
 
 `disconnect(force=false)` checks every console of that connection that is `Active` or `Aborted`. To compute `has_writes` it runs `SELECT pg_current_xact_id_if_assigned() IS NOT NULL` (PG13+, else `true`) on the idle session.
 
@@ -957,7 +957,7 @@ Engine phase (every `todo!()` in `crates/engine` filled in, self-check wired). T
 - **Schema changes apply at the next run.** The run task compares the session's `search_path` with the console config and issues `SET search_path TO "<schema>"` (the schema alone) before the first statement. One path serves both the busy and the idle case. `SET TimeZone` failures (an OS zone Postgres does not know) are ignored.
 - **A FATAL answer is a dead session.** `pg_terminate_backend` delivers `FATAL 57P01` to the statement in flight before the driver task sees EOF, so the run task treats any FATAL as a loss and waits up to 500 ms for the driver's reason. `Session::closed_reason` also consults `Client::is_closed`.
 - **Cancel between statements.** The next pending statement is marked `Cancelled`, the rest `Skipped`, outcome `Cancelled`. A statement that fails with `57014` while the stop flag is set is `Cancelled`; the same code without the flag (a `statement_timeout`) is `Failed`.
-- **Catalog refresh after DDL in a transaction** waits for the commit (`ddl_pending` on the console), whether the commit is a `COMMIT` statement or `console_commit`.
+- **Catalog and database-list refreshes after DDL in a transaction** wait for the commit (`owed` on the console), whether the commit is a `COMMIT` statement or `console_commit`. `ALTER DATABASE` inside a Manual-mode transaction therefore re-reads `pg_database` at commit, when the home session can see it.
 - **`has_writes`** is probed by taking the idle session out of the slot like a run does, so the console lock is never held across the query; an aborted transaction or a busy session reports `true`.
 - **A run task owns the tab only while the slot says so.** Every write a task makes to console state goes through `Console::edit(run_id, ..)`, which applies and publishes the edit only while `SessionSlot::Busy { run_id }` matches. Disconnect and close reassign the slot and finish the run themselves (statement in flight `Cancelled`, the rest `Skipped`, outcome `Cancelled`, `txn` Idle), send a `CancelRequest`, and the task gets `Orphaned` at its next write, stops, and drops its session.
 - **CSV** uses CRLF records with a header row, quotes fields containing `"`, `,`, CR, or LF, writes NULL as an empty field and the empty string as `""`, which is `COPY ... CSV HEADER` modulo line endings. The pg test compares after normalizing CRLF.

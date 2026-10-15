@@ -6,6 +6,7 @@ import type {
   ConnectionState,
   ConsoleState,
   DatabaseRef,
+  DatabaseState,
   HistoryEntry,
   InstanceState,
   OutputEntry,
@@ -39,14 +40,32 @@ export function instanceOf(state: ConnectionState | undefined): InstanceState | 
   return state?.status.kind === "Connected" ? state.status.instance : null;
 }
 
-/** Every Ready catalog across the connected instances: what the catalog store must hold, and at which version. */
+/** The version `catalog_get` serves for a database: the Ready one, or the last good one behind a failed reload. */
+function servedVersion(catalog: DatabaseState["catalog"]): number | null {
+  switch (catalog.kind) {
+    case "Ready":
+      return catalog.version;
+    case "Failed":
+      return catalog.version;
+    case "Idle":
+    case "Loading":
+      return null;
+    default: {
+      const unreachable: never = catalog;
+      return unreachable;
+    }
+  }
+}
+
+/** Every served catalog across the connected instances: what the catalog store must hold, and at which version. */
 export function wantedCatalogs(connections: Record<ConnectionId, ConnectionState>): Map<DbKey, { ref: DatabaseRef; version: number }> {
   const wanted = new Map<DbKey, { ref: DatabaseRef; version: number }>();
   for (const conn of Object.values(connections)) {
     for (const db of instanceOf(conn)?.databases ?? []) {
-      if (db.catalog.kind !== "Ready") continue;
+      const version = servedVersion(db.catalog);
+      if (version === null) continue;
       const ref = { connectionId: conn.id, database: db.name };
-      wanted.set(dbKey(ref), { ref, version: db.catalog.version });
+      wanted.set(dbKey(ref), { ref, version });
     }
   }
   return wanted;

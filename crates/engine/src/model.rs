@@ -146,7 +146,9 @@ pub enum CatalogStatus {
     /// `version` comes from one engine-wide counter, so it rises across every database and every
     /// reconnect. The UI fetches `catalog_get` when it is newer than what it holds.
     Ready { version: u64 },
-    Failed { message: String },
+    /// The last load failed. `version` is the last good catalog's, which `catalog_get` still
+    /// serves, so the UI keeps it until a reload succeeds.
+    Failed { message: String, version: Option<u64> },
 }
 
 #[derive(Debug, Clone, Serialize, Type)]

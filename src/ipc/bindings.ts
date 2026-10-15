@@ -92,7 +92,12 @@ export type CatalogStatus =
  *  `version` comes from one engine-wide counter, so it rises across every database and every
  *  reconnect. The UI fetches `catalog_get` when it is newer than what it holds.
  */
-{ kind: "Ready"; version: number } | { kind: "Failed"; message: string };
+{ kind: "Ready"; version: number } | 
+/**
+ *  The last load failed. `version` is the last good catalog's, which `catalog_get` still
+ *  serves, so the UI keeps it until a reload succeeds.
+ */
+{ kind: "Failed"; message: string; version: number | null };
 
 export type CellWrite = {
 	column: string,

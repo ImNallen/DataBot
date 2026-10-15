@@ -1160,3 +1160,34 @@ async fn alter_database_in_a_manual_transaction_refreshes_the_list_on_commit() {
     h.run_ok(auto, &format!("drop database {new}")).await;
     h.wait_database_names(|names| !names.contains(&new)).await;
 }
+
+/// A console-only database whose metadata session dies keeps its last catalog on the wire, and
+/// the next `catalog()` reopens the session and reloads.
+#[tokio::test]
+async fn a_dead_metadata_session_keeps_the_last_catalog_until_the_next_load() {
+    let role = Role::create().await;
+    let mut h = Harness::start_as(&role).await;
+    let tab = h.sql_tab_on(TxnMode::AutoCommit, "reporting").await;
+    let state = h.run_ok(tab, "select 1").await;
+    let SessionState::Open { backend_pid: console_pid } = state.session else { panic!("{:?}", state.session) };
+    let reporting = h.db_named("reporting");
+    let before = h.catalog_when(&reporting, |_| true).await.version;
+    let meta: Vec<i32> = role.backends().await.into_iter().filter(|(db, pid)| db == "reporting" && *pid != console_pid).map(|(_, pid)| pid).collect();
+    let [meta_pid] = meta[..] else { panic!("one reporting metadata session, found {meta:?}") };
+
+    role.oracle.simple_query(&format!("select pg_terminate_backend({meta_pid})")).await.unwrap();
+    let started = Instant::now();
+    while !matches!(h.catalog_status("reporting"), CatalogStatus::Failed { .. }) {
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", h.catalog_status("reporting"));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let CatalogStatus::Failed { version, message } = h.catalog_status("reporting") else { unreachable!() };
+    assert_eq!(version, Some(before), "the last good version stays on the wire: {message}");
+    assert!(matches!(h.status(), ConnStatus::Connected { .. }), "another database's session is not the home session");
+
+    let reloaded = h.engine.catalog(reporting.clone()).await.unwrap();
+    assert!(reloaded.version > before, "the next load reopened the session: {} > {before}", reloaded.version);
+    assert_eq!(h.catalog_status("reporting"), CatalogStatus::Ready { version: reloaded.version });
+    h.engine.disconnect(h.conn, false).await.unwrap();
+    role.drop().await;
+}

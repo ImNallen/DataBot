@@ -316,9 +316,20 @@ function DatabaseNode({ path, db, state, expanded }: { path: string; db: Databas
         label={db.database}
         contextMenu={<NewMenu db={db} />}
       />
-      {open && !view && state.catalog.kind === "Failed" && (
-        <div data-testid={`db-error-${path}/${db.database}`} className="mx-2 mb-1 pr-2 pl-[52px] text-ui-11.5 leading-4 text-danger/90">
-          {state.catalog.message}
+      {open && state.catalog.kind === "Failed" && (
+        <div data-testid={`db-error-${path}/${db.database}`} className="mx-2 mb-1 flex items-baseline gap-2 pr-2 pl-[52px] text-ui-11.5 leading-4 text-danger/90">
+          <span className="min-w-0 flex-1 truncate" title={state.catalog.message}>
+            {view ? "Refresh failed: " : ""}
+            {state.catalog.message}
+          </span>
+          <button
+            type="button"
+            data-testid={`db-retry-${path}/${db.database}`}
+            onClick={() => void refreshCatalog(db)}
+            className="shrink-0 rounded px-1 text-fg/80 underline-offset-2 hover:bg-control hover:underline"
+          >
+            Retry
+          </button>
         </div>
       )}
       {open && !view && state.catalog.kind !== "Failed" && (

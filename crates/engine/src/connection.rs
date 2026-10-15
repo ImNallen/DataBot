@@ -256,7 +256,7 @@ impl DbSlot {
             CatalogSlot::Idle => CatalogStatus::Idle,
             CatalogSlot::Opening => CatalogStatus::Loading,
             CatalogSlot::Ready(c) => CatalogStatus::Ready { version: c.version },
-            CatalogSlot::Failed { message, .. } => CatalogStatus::Failed { message: message.clone() },
+            CatalogSlot::Failed { message, last } => CatalogStatus::Failed { message: message.clone(), version: last.as_ref().map(|c| c.version) },
         }
     }
 
@@ -408,6 +408,22 @@ impl ConnEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_reload_keeps_the_last_catalog_and_its_version() {
+        let db = DatabaseRef { connection_id: ConnectionId(uuid::Uuid::nil()), database: "shop".into() };
+        let slot = DbSlot::new(db.clone());
+        slot.fail("first load failed".into());
+        assert_eq!(slot.status(), CatalogStatus::Failed { message: "first load failed".into(), version: None });
+        assert!(slot.last().is_none());
+
+        let catalog = Arc::new(Catalog { db, version: 7, schemas: Vec::new() });
+        slot.set(CatalogSlot::Ready(catalog.clone()));
+        slot.fail("statement timeout".into());
+        assert_eq!(slot.status(), CatalogStatus::Failed { message: "statement timeout".into(), version: Some(7) });
+        assert!(slot.ready().is_none());
+        assert_eq!(slot.last().map(|c| c.version), Some(7));
+    }
 
     #[test]
     fn url_becomes_a_draft() {

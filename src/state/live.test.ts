@@ -56,7 +56,7 @@ describe("live.apply", () => {
     expect(s.consoles[TAB]?.rev).toBe(1);
   });
 
-  it("wants exactly the Ready catalogs of connected instances, at their versions", () => {
+  it("wants the Ready catalogs of connected instances and the last good one behind a failed reload", () => {
     const db = (name: string, catalog: DatabaseState["catalog"]): DatabaseState => ({ name, system: false, access: "Ok", shown: name === "shop", catalog });
     const server = { version: "16.4", versionNum: 160004, encoding: "UTF8" };
     const connections: Record<string, ConnectionState> = {
@@ -66,7 +66,16 @@ describe("live.apply", () => {
         status: {
           kind: "Connected",
           server,
-          instance: { home: "shop", databases: [db("postgres", { kind: "Idle" }), db("reporting", { kind: "Ready", version: 7 }), db("shop", { kind: "Loading" })] },
+          instance: {
+            home: "shop",
+            databases: [
+              db("postgres", { kind: "Idle" }),
+              db("reporting", { kind: "Ready", version: 7 }),
+              db("shop", { kind: "Loading" }),
+              db("stale", { kind: "Failed", message: "statement timeout", version: 5 }),
+              db("never", { kind: "Failed", message: "permission denied", version: null }),
+            ],
+          },
         },
       },
       other: { id: "other", rev: 1, status: { kind: "Connected", server, instance: { home: "x", databases: [db("x", { kind: "Ready", version: 2 })] } } },
@@ -74,6 +83,7 @@ describe("live.apply", () => {
     };
     expect([...wantedCatalogs(connections).entries()]).toEqual([
       [`${CONN}\u0000reporting`, { ref: { connectionId: CONN, database: "reporting" }, version: 7 }],
+      [`${CONN}\u0000stale`, { ref: { connectionId: CONN, database: "stale" }, version: 5 }],
       ["other\u0000x", { ref: { connectionId: "other", database: "x" }, version: 2 }],
     ]);
   });
