@@ -96,10 +96,14 @@ export function shortType(display: string): string {
   return display;
 }
 
-export function plural(n: number, noun: string): string {
-  return `${groupDigits(String(n))} ${n === 1 ? noun : `${noun}s`}`;
+export function pluralRows(n: number): string {
+  return `${groupDigits(String(n))} ${n === 1 ? "row" : "rows"}`;
 }
 
-export function pluralRows(n: number): string {
-  return plural(n, "row");
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Local wall-clock time, `HH:MM:SS`. */
+export function formatClock(atMs: number): string {
+  const d = new Date(atMs);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }

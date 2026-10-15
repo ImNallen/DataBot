@@ -10,18 +10,17 @@ import {
   IconChevronRight,
   IconChevronRightPipe,
   IconDownload,
-  IconMessage2,
   IconMinus,
   IconPlus,
+  IconTerminal2,
   IconUpload,
 } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { commands, type OutputEntry, type QueryError, type ResultMeta, type RunState, type TabId } from "../../ipc/bindings";
 import { exportErrorText } from "../../ipc/errors";
-import { OUTPUT_LIMIT, useLive } from "../../state/live";
+import { useLive } from "../../state/live";
 import {
-  messagesLabel,
-  messagesSince,
+  outputTone,
   resultView,
   rowResults,
   runStatements,
@@ -47,9 +46,11 @@ import {
 } from "../editor/runActions";
 import { FilterBar } from "./FilterBar";
 import { groupDigits, pageStatus, pluralRows } from "./format";
-import { ErrorBlock, MessagesPanel } from "./MessagesPanel";
+import { ErrorBlock, OutputPanel } from "./OutputPanel";
 import { ResultGrid, type GridActions, type GridEditing, type GridQuery } from "./ResultGrid";
 import { filterForValue, formatOrderBy, nextSort, parseOrderBy, useFilterDrafts } from "./tableQuery";
+
+const NO_OUTPUT: readonly OutputEntry[] = [];
 
 const EXPORT_FORMATS = [
   { label: "CSV", ready: true },
@@ -230,7 +231,7 @@ function RunTail({ run }: { run: RunState }) {
 function ResultBody({
   run,
   view,
-  messages,
+  output,
   bottomInset,
   query,
   editing,
@@ -238,7 +239,7 @@ function ResultBody({
 }: {
   run: RunState;
   view: ResultView;
-  messages: OutputEntry[];
+  output: readonly OutputEntry[];
   bottomInset: number;
   query: GridQuery | null;
   editing: GridEditing | null;
@@ -257,8 +258,8 @@ function ResultBody({
           actionsRef={actions}
         />
       );
-    case "messages":
-      return <MessagesPanel entries={messages} dropped={messages.length === OUTPUT_LIMIT} tail={<RunTail run={run} />} />;
+    case "output":
+      return <OutputPanel entries={output} />;
     case "tail": {
       const error = failedError(run);
       if (error) return <ErrorPanel error={error} />;
@@ -284,10 +285,10 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
   const results = rowResults(run);
   const shown = shownResult(run, picked);
   const summary = runSummary(run, picked, now);
-  const entries = useLive((s) => (tabId ? s.output[tabId] : undefined));
-  const messages = useMemo(() => messagesSince(entries, run), [entries, run]);
-  const view = resultView(run, picked, messages.length > 0);
-  const label = messagesLabel(messages);
+  const output = useLive((s) => (tabId ? s.output[tabId] : undefined)) ?? NO_OUTPUT;
+  const view = resultView(run, picked, output.length > 0);
+  const tone = outputTone(output);
+  const outputPick = run.kind === "Idle" ? undefined : { kind: "output" as const, runId: run.runId };
 
   const isTable = tab?.kind === "table";
   const browsingNow = () => tab?.kind === "table" && isBrowsing(tab);
@@ -337,21 +338,24 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
             ))}
           </div>
         )}
-        {messages.length > 0 && tabId && run.kind !== "Idle" && (
+        {output.length > 0 && tabId && (
           <button
             type="button"
-            data-testid="messages-toggle"
-            data-tone={label.tone}
-            aria-pressed={view.kind === "messages"}
-            onClick={() => setActiveResult(tabId, view.kind === "messages" ? (shown?.index ?? 0) : { kind: "messages", runId: run.runId })}
+            data-testid="output-toggle"
+            data-tone={tone}
+            aria-pressed={view.kind === "output"}
+            onClick={() => {
+              const pick = view.kind === "output" ? (shown?.index ?? 0) : outputPick;
+              if (pick !== undefined) setActiveResult(tabId, pick);
+            }}
             className={cx(
               "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-ui-12.5 whitespace-nowrap outline-none",
-              view.kind === "messages" ? "bg-pill" : "hover:bg-hover",
-              label.tone === "warn" ? "text-amber" : view.kind === "messages" ? "text-fg" : "text-muted hover:text-fg",
+              view.kind === "output" ? "bg-pill" : "hover:bg-hover",
+              tone === "warn" ? "text-amber" : view.kind === "output" ? "text-fg" : "text-muted hover:text-fg",
             )}
           >
-            <IconMessage2 size={14} />
-            {label.text}
+            <IconTerminal2 size={14} />
+            Output
           </button>
         )}
 
@@ -401,7 +405,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
       {browsingTable && <FilterBar tab={browsingTable} />}
 
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <ResultBody run={run} view={view} messages={messages} bottomInset={pager ? PAGER_INSET : 0} query={gridQuery} editing={editing} actions={actions} />
+        <ResultBody run={run} view={view} output={output} bottomInset={pager ? PAGER_INSET : 0} query={gridQuery} editing={editing} actions={actions} />
         {pager && <TablePager tab={pager} rows={shown?.meta.rowCount ?? 0} />}
       </div>
     </section>

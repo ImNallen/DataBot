@@ -1,5 +1,5 @@
 import type { ConnectionState, ConsoleState, OutputEntry, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
-import { formatElapsed, groupDigits, plural, pluralRows } from "../features/results/format";
+import { formatElapsed, groupDigits, pluralRows } from "../features/results/format";
 
 export function hasUncommittedWork(console: ConsoleState | undefined): boolean {
   return console !== undefined && console.config.mode === "Manual" && console.txn !== "Idle";
@@ -45,31 +45,28 @@ export function rowResults(run: RunState): RowResult[] {
   return out;
 }
 
-export type ResultPick = number | { kind: "messages"; runId: number };
+/** A number picks a statement's row result. An Output pick belongs to the run it was made on. */
+export type ResultPick = number | { kind: "output"; runId: number };
 
 export function shownResult(run: RunState, picked: ResultPick | undefined): RowResult | undefined {
   const results = rowResults(run);
   return results.find((r) => r.index === picked) ?? results.at(-1);
 }
 
-export function messagesSince(entries: readonly OutputEntry[] | undefined, run: RunState): OutputEntry[] {
-  if (run.kind === "Idle" || !entries) return [];
-  return entries.filter((e) => e.runId >= run.runId);
-}
+export type ResultView = { kind: "rows"; result: RowResult } | { kind: "output" } | { kind: "tail" };
 
-export type ResultView = { kind: "rows"; result: RowResult } | { kind: "messages" } | { kind: "tail" };
-
-export function resultView(run: RunState, picked: ResultPick | undefined, hasMessages: boolean): ResultView {
-  const pickedMessages = typeof picked === "object" && run.kind !== "Idle" && picked.runId === run.runId;
-  if (hasMessages && pickedMessages) return { kind: "messages" };
+export function resultView(run: RunState, picked: ResultPick | undefined, hasOutput: boolean): ResultView {
+  const pickedOutput = typeof picked === "object" && run.kind !== "Idle" && picked.runId === run.runId;
+  if (hasOutput && pickedOutput) return { kind: "output" };
   const result = shownResult(run, picked);
   if (result) return { kind: "rows", result };
-  return hasMessages ? { kind: "messages" } : { kind: "tail" };
+  return hasOutput ? { kind: "output" } : { kind: "tail" };
 }
 
-export function messagesLabel(entries: readonly OutputEntry[]): { text: string; tone: "muted" | "warn" } {
-  const warn = entries.some((e) => e.body.kind === "Error" || (e.body.kind === "Notice" && e.body.severity === "WARNING"));
-  return { text: plural(entries.length, "message"), tone: warn ? "warn" : "muted" };
+export function outputTone(entries: readonly OutputEntry[]): "muted" | "warn" {
+  const latest = entries.at(-1)?.runId;
+  const warned = entries.some((e) => e.runId === latest && e.body.kind === "Notice" && e.body.severity === "WARNING");
+  return warned ? "warn" : "muted";
 }
 
 export type Summary = { tone: "ok" | "error" | "running" | "muted"; text: string };
