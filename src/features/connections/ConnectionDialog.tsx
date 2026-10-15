@@ -240,7 +240,7 @@ function ConnectionForm({
     const d = res.data;
     setUrlError(null);
     update({ host: d.host, port: String(d.port), database: d.database, user: d.user, sslMode: d.sslMode });
-    if (typeof d.password === "object") setPassword({ kind: "set", value: d.password.Set });
+    setPassword(typeof d.password === "object" ? { kind: "set", value: d.password.Set } : initialPassword(existing));
   };
   // A half-typed URL fails to parse, so its error waits for a blur or until it reads like a URL or a key=value string.
   const shownUrlError = urlError !== null && (urlBlurred || url.includes("://") || url.includes("=")) ? urlError : null;
