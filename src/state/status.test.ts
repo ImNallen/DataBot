@@ -92,11 +92,16 @@ describe("resultView", () => {
   const withRows = finishedRun(7, [rowsAt(0), rowsAt(1)]);
 
   it("shows an Output pick made on the current run over the grid", () => {
-    expect(resultView(withRows, { kind: "output", runId: 7 }, true)).toEqual({ kind: "output" });
+    expect(resultView(withRows, { kind: "output", runId: 7, result: undefined }, true)).toEqual({ kind: "output" });
+  });
+
+  it("keeps the picked result set behind an Output pick", () => {
+    expect(shownResult(withRows, { kind: "output", runId: 7, result: 0 })).toMatchObject({ index: 0 });
+    expect(resultView(withRows, { kind: "output", runId: 7, result: 0 }, false)).toMatchObject({ kind: "rows", result: { index: 0 } });
   });
 
   it("drops an Output pick on the next run", () => {
-    expect(resultView(finishedRun(8, [rowsAt(0)]), { kind: "output", runId: 7 }, true)).toMatchObject({ kind: "rows", result: { index: 0 } });
+    expect(resultView(finishedRun(8, [rowsAt(0)]), { kind: "output", runId: 7, result: undefined }, true)).toMatchObject({ kind: "rows", result: { index: 0 } });
   });
 
   it("prefers the grid to the log without a pick", () => {
@@ -110,7 +115,7 @@ describe("resultView", () => {
 
   it("falls back to the tail when the log is empty", () => {
     expect(resultView(finishedRun(7, [stmt(0, { kind: "Command", tag: "DO", elapsedMs: 1 })]), undefined, false)).toEqual({ kind: "tail" });
-    expect(resultView(finishedRun(7), { kind: "output", runId: 7 }, false)).toEqual({ kind: "tail" });
+    expect(resultView(finishedRun(7), { kind: "output", runId: 7, result: undefined }, false)).toEqual({ kind: "tail" });
     expect(resultView({ kind: "Idle" }, undefined, false)).toEqual({ kind: "tail" });
   });
 });

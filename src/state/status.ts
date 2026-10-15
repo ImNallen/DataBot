@@ -45,11 +45,12 @@ export function rowResults(run: RunState): RowResult[] {
   return out;
 }
 
-export type ResultPick = number | { kind: "output"; runId: number };
+export type ResultPick = number | { kind: "output"; runId: number; result: number | undefined };
 
 export function shownResult(run: RunState, picked: ResultPick | undefined): RowResult | undefined {
   const results = rowResults(run);
-  return results.find((r) => r.index === picked) ?? results.at(-1);
+  const index = typeof picked === "object" ? picked.result : picked;
+  return results.find((r) => r.index === index) ?? results.at(-1);
 }
 
 export type ResultView = { kind: "rows"; result: RowResult } | { kind: "output" } | { kind: "tail" };

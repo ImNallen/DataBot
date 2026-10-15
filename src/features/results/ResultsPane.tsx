@@ -288,7 +288,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
   const output = useLive((s) => (tabId ? s.output[tabId] : undefined)) ?? NO_OUTPUT;
   const view = resultView(run, picked, output.length > 0);
   const tone = outputTone(output);
-  const outputPick = run.kind === "Idle" ? undefined : { kind: "output" as const, runId: run.runId };
+  const outputPick = run.kind === "Idle" ? undefined : { kind: "output" as const, runId: run.runId, result: shown?.index };
 
   const isTable = tab?.kind === "table";
   const browsingNow = () => tab?.kind === "table" && isBrowsing(tab);
