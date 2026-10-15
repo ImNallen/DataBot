@@ -207,16 +207,26 @@ async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Valu
         .result_page(ResultRef { tab_id: tab, run_id: accepted.run_id, index: 0 }, 0, 1)
         .map_err(fail("result_page"))?;
     let catalog = engine.catalog(DatabaseRef { connection_id: config.id, database: config.database.clone() }).await.map_err(fail("catalog_get"))?;
+    engine
+        .edit_view(config.id, ViewEdit::Database { name: "reporting".into(), shown: true })
+        .await
+        .map_err(fail("connection_edit_view"))?;
+    let reporting = engine.catalog(DatabaseRef { connection_id: config.id, database: "reporting".into() }).await.map_err(fail("catalog_get reporting"))?;
+    let report = |c: &Catalog| {
+        serde_json::json!({
+            "version": c.version,
+            "database": c.db.database,
+            "defaultSchema": c.default_schema,
+            "schemas": c.schemas.iter().map(|s| serde_json::json!({
+                "name": s.name, "system": s.system, "relations": s.relations.len(), "functions": s.functions.len(),
+            })).collect::<Vec<_>>(),
+        })
+    };
     Ok(serde_json::json!({
         "server": server,
         "select1": { "rows": page.rows, "elapsedMs": finished.1 },
-        "catalog": {
-            "version": catalog.version,
-            "database": catalog.db.database,
-            "schemas": catalog.schemas.iter().map(|s| serde_json::json!({
-                "name": s.name, "relations": s.relations.len(), "functions": s.functions.len(),
-            })).collect::<Vec<_>>(),
-        },
+        "catalog": report(&catalog),
+        "shownCatalog": report(&reporting),
     }))
 }
 

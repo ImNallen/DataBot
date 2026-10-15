@@ -11,6 +11,7 @@ use tokio_postgres::error::{DbError, ErrorPosition};
 
 use crate::model::*;
 use crate::session::Session;
+use crate::view::{self, ConnectionView, Known};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
@@ -207,10 +208,30 @@ pub struct Instance {
     pub server: ServerInfo,
     pub home: String,
     pub databases: RwLock<Arc<Vec<PgDatabase>>>,
+    /// The engine's copy of the stored view, written only by `Engine::edit_view` and the deferred
+    /// show check in `load_catalog`.
+    pub view: RwLock<ConnectionView>,
     pub slots: Mutex<HashMap<String, Arc<DbSlot>>>,
+    /// Schema counts of databases without a slot, from `probe_databases`. Cleared by
+    /// `refresh_connection`; dies with the instance.
+    pub probes: Mutex<HashMap<String, SchemaCount>>,
+    pub probe_gate: tokio::sync::Semaphore,
+    /// Databases an edit showed while their catalog was unknown. After each one's first load the
+    /// engine checks that its stored selection still resolves to a schema.
+    pub show_checks: Mutex<BTreeSet<String>>,
     /// Set once the instance is disconnected or lost. A task that still holds the instance may
     /// finish its query, but it opens no session and converges no slot after this.
     closed: AtomicBool,
+}
+
+pub const PROBE_PERMITS: usize = 4;
+
+/// The slots `converge` keeps and the ones it creates. `open` is a subset of `keep`: a shown
+/// database past `view::AUTO_OPEN_LIMIT` is kept but gets its slot only when something asks for
+/// its catalog.
+pub struct Wanted {
+    pub keep: BTreeSet<String>,
+    pub open: BTreeSet<String>,
 }
 
 /// One metadata session and catalog for one database.
@@ -306,15 +327,39 @@ impl RefreshGate {
 }
 
 impl Instance {
-    pub fn new(config: ConnectionConfig, server: ServerInfo, home: String, databases: Vec<PgDatabase>, home_slot: DbSlot) -> Self {
+    pub fn new(config: ConnectionConfig, server: ServerInfo, home: String, databases: Vec<PgDatabase>, view: ConnectionView, home_slot: DbSlot) -> Self {
         Self {
             config,
             server,
             home: home.clone(),
             databases: RwLock::new(Arc::new(databases)),
+            view: RwLock::new(view),
             slots: Mutex::new(HashMap::from([(home, Arc::new(home_slot))])),
+            probes: Mutex::new(HashMap::new()),
+            probe_gate: tokio::sync::Semaphore::new(PROBE_PERMITS),
+            show_checks: Mutex::new(BTreeSet::new()),
             closed: AtomicBool::new(false),
         }
+    }
+
+    pub fn view(&self) -> ConnectionView {
+        self.view.read().unwrap().clone()
+    }
+
+    /// The served catalog of every slot that has one: Ready, or the last good one behind Failed.
+    pub fn catalogs(&self) -> HashMap<String, Arc<Catalog>> {
+        served_catalogs(&self.slots.lock().unwrap())
+    }
+
+    pub fn slot_names(&self) -> Vec<String> {
+        self.slots.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// The databases the view shows, resolved against the current `pg_database` list.
+    pub fn shown(&self) -> BTreeSet<String> {
+        let databases = self.databases.read().unwrap().clone();
+        let known = Known { home: &self.home, databases: &databases, catalogs: &HashMap::new() };
+        view::resolve_databases(&self.view.read().unwrap(), &known)
     }
 
     pub fn slot(&self, database: &str) -> Option<Arc<DbSlot>> {
@@ -336,16 +381,16 @@ impl Instance {
         self.databases.read().unwrap().iter().any(|d| d.name == database)
     }
 
-    /// Converges the slots to `wanted`: drops the unwanted ones, which closes their sessions,
-    /// creates the missing ones, and returns every slot whose catalog has not been loaded yet.
-    /// Running it twice changes nothing.
-    pub fn converge(&self, id: ConnectionId, wanted: &BTreeSet<String>) -> Vec<Arc<DbSlot>> {
+    /// Converges the slots to `wanted`: drops the ones outside `keep`, which closes their
+    /// sessions, creates the missing ones in `open`, and returns every slot whose catalog has not
+    /// been loaded yet. Running it twice changes nothing.
+    pub fn converge(&self, id: ConnectionId, wanted: &Wanted) -> Vec<Arc<DbSlot>> {
         let mut slots = self.slots.lock().unwrap();
         if self.is_closed() {
             return Vec::new();
         }
-        slots.retain(|name, _| wanted.contains(name));
-        for name in wanted {
+        slots.retain(|name, _| wanted.keep.contains(name));
+        for name in &wanted.open {
             if !slots.contains_key(name) && self.knows(name) {
                 slots.insert(name.clone(), Arc::new(DbSlot::new(DatabaseRef { connection_id: id, database: name.clone() })));
             }
@@ -353,26 +398,42 @@ impl Instance {
         slots.values().filter(|s| matches!(*s.catalog.read().unwrap(), CatalogSlot::Idle)).cloned().collect()
     }
 
+    /// The tree's view of the instance, resolved from the database list, the stored view, each
+    /// slot's served catalog, and the probe cache.
     pub fn state(&self) -> InstanceState {
         let slots = self.slots.lock().unwrap();
-        let databases = self
-            .databases
-            .read()
-            .unwrap()
+        let catalogs = served_catalogs(&slots);
+        let list = self.databases.read().unwrap().clone();
+        let view = self.view.read().unwrap();
+        let probes = self.probes.lock().unwrap();
+        let known = Known { home: &self.home, databases: &list, catalogs: &catalogs };
+        let shown = view::resolve_databases(&view, &known);
+        let databases = list
             .iter()
-            .map(|d| DatabaseState {
-                name: d.name.clone(),
-                system: d.system,
-                access: d.access,
-                shown: d.name == self.home,
-                show_system_schemas: false,
-                shown_schemas: Vec::new(),
-                schema_count: SchemaCount::Unknown,
-                catalog: slots.get(&d.name).map_or(CatalogStatus::Idle, |s| s.status()),
+            .map(|d| {
+                let entry = view.database(&d.name, &self.home);
+                let catalog = catalogs.get(&d.name);
+                DatabaseState {
+                    name: d.name.clone(),
+                    system: d.system,
+                    access: d.access,
+                    shown: shown.contains(&d.name),
+                    show_system_schemas: entry.show_system_schemas,
+                    shown_schemas: catalog.map(|c| view::resolve_schemas(&entry, c)).unwrap_or_default(),
+                    schema_count: match catalog {
+                        Some(c) => SchemaCount::Known { count: c.schemas.iter().filter(|s| !s.system).count() as u32 },
+                        None => probes.get(&d.name).cloned().unwrap_or(SchemaCount::Unknown),
+                    },
+                    catalog: slots.get(&d.name).map_or(CatalogStatus::Idle, |s| s.status()),
+                }
             })
             .collect();
-        InstanceState { home: self.home.clone(), show_system_databases: false, databases }
+        InstanceState { home: self.home.clone(), show_system_databases: view.show_system_databases, databases }
     }
+}
+
+fn served_catalogs(slots: &HashMap<String, Arc<DbSlot>>) -> HashMap<String, Arc<Catalog>> {
+    slots.iter().filter_map(|(name, slot)| slot.last().map(|c| (name.clone(), c))).collect()
 }
 
 pub enum ConnSlot {

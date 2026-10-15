@@ -60,6 +60,31 @@ DB=$(echo "$CONN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dat
 echo "saved connection $CONN_ID"
 invoke connection_connect "{\"id\":\"$CONN_ID\"}" | ok
 invoke catalog_get "{\"db\":{\"connectionId\":\"$CONN_ID\",\"database\":\"$DB\"}}" | ok | python3 -c 'import json,sys; c=json.load(sys.stdin); print("catalog %s v%d: %s" % (c["db"]["database"], c["version"], ", ".join("%s(%d)" % (s["name"], len(s["relations"])) for s in c["schemas"])))'
+
+database_state() {
+  invoke app_boot '{}' | ok | python3 -c 'import json,sys; b=json.load(sys.stdin); live=[c for c in b["live"] if c["id"]==sys.argv[1]][0]; print(json.dumps([d for d in live["status"]["instance"]["databases"] if d["name"]==sys.argv[2]][0]))' "$CONN_ID" "$1"
+}
+wait_database() {
+  for _ in $(seq 1 100); do
+    state=$(database_state "$1")
+    if echo "$state" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if ($2) else 1)"; then
+      echo "$state"
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "timed out waiting for $1: $state" >&2
+  return 1
+}
+invoke connection_edit_view "{\"id\":\"$CONN_ID\",\"edit\":{\"kind\":\"Database\",\"name\":\"reporting\",\"shown\":true}}" | ok >/dev/null
+SHOWN=$(wait_database reporting 'd["shown"] and d["catalog"]["kind"] == "Ready" and d["shownSchemas"] == ["public"]')
+echo "shown reporting: $SHOWN"
+invoke connection_probe_databases "{\"id\":\"$CONN_ID\",\"databases\":[\"postgres\"]}" | ok >/dev/null
+PROBED=$(wait_database postgres 'd["schemaCount"]["kind"] == "Known"')
+echo "probed postgres: $PROBED"
+invoke connection_edit_view "{\"id\":\"$CONN_ID\",\"edit\":{\"kind\":\"Database\",\"name\":\"reporting\",\"shown\":false}}" | ok >/dev/null
+wait_database reporting 'not d["shown"] and d["catalog"]["kind"] == "Idle"' >/dev/null
+echo "hidden reporting again"
 TAB=$(python3 -c 'import uuid; print(uuid.uuid4())')
 invoke console_configure "{\"tabId\":\"$TAB\",\"config\":{\"connectionId\":\"$CONN_ID\",\"database\":\"$DB\",\"schema\":null,\"mode\":\"AutoCommit\"}}" | ok >/dev/null
 NOTICE=$(cat <<'SQL'

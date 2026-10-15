@@ -10,6 +10,7 @@ mod sql;
 mod store;
 mod text;
 mod txn;
+mod view;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -19,12 +20,13 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use connection::{CatalogSlot, ConnEntry, ConnSlot, ConnectParams, DbSlot, Instance};
+use connection::{CatalogSlot, ConnEntry, ConnSlot, ConnectParams, DbSlot, Instance, Wanted};
 use console::{Console, Owed, PlannedStmt, RunPlan, SessionSlot};
 use model::*;
 use secrets::Vault;
 use session::Session;
 use store::{HistoryInsert, Store};
+use view::{ConnectionView, Known, Selection};
 
 pub use connection::draft_from_url;
 pub use secrets::{KeyStore, KeyringKeyStore, MemoryKeyStore, SecretError};
@@ -50,10 +52,14 @@ pub(crate) struct Shared {
     next_run: AtomicU64,
     /// Engine-wide, so a reconnect never reissues a catalog version the UI has already seen.
     next_catalog_version: AtomicU64,
+    /// Serializes every view edit, so two concurrent `edit_view` calls cannot interleave apply
+    /// and persist.
+    view_edits: tokio::sync::Mutex<()>,
     timezone: String,
 }
 
 const EVENT_BUFFER: usize = 1024;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const DB_FILE: &str = "l1-data.sqlite3";
 const KV_WORKSPACE: &str = "workspace";
 const KV_SETTINGS: &str = "settings";
@@ -125,17 +131,22 @@ impl Shared {
         self.consoles.read().unwrap().values().cloned().collect()
     }
 
-    /// Databases of `id` that must have a slot: the home database, the shown ones, and the
-    /// database of every console on the connection.
-    fn wanted(&self, instance: &Instance) -> BTreeSet<String> {
-        let mut wanted = BTreeSet::from([instance.home.clone()]);
+    /// Databases of `id` that may have a slot (`keep`): the home database, the shown ones, and
+    /// the database of every console on the connection. The ones that get a slot without being
+    /// asked (`open`) are the same minus the shown databases past the auto-open cap.
+    fn wanted(&self, instance: &Instance) -> Wanted {
+        let mut keep = BTreeSet::from([instance.home.clone()]);
         for console in self.all_consoles() {
             let config = console.latest.lock().unwrap().config.clone();
             if config.connection_id == instance.config.id {
-                wanted.insert(config.database);
+                keep.insert(config.database);
             }
         }
-        wanted
+        let shown = instance.shown();
+        let mut open = keep.clone();
+        open.extend(view::auto_open(&shown));
+        keep.extend(shown);
+        Wanted { keep, open }
     }
 
     /// Converges the current instance's slots to `wanted` and starts a load for each slot not
@@ -147,9 +158,12 @@ impl Shared {
     }
 
     fn reconcile_instance(self: &Arc<Self>, instance: &Arc<Instance>) {
+        self.converge(instance, &self.wanted(instance));
+    }
+
+    fn converge(self: &Arc<Self>, instance: &Arc<Instance>, wanted: &Wanted) {
         let id = instance.config.id;
-        let wanted = self.wanted(instance);
-        let opened = instance.converge(id, &wanted);
+        let opened = instance.converge(id, wanted);
         self.republish_connection(id);
         for slot in opened {
             let shared = self.clone();
@@ -169,10 +183,12 @@ impl Shared {
             return Err(CatalogError::UnknownDatabase { database: db.database.clone() });
         }
         if instance.slot(&db.database).is_none() {
-            if !self.wanted(&instance).contains(&db.database) {
+            let mut wanted = self.wanted(&instance);
+            if !wanted.keep.contains(&db.database) {
                 return Err(CatalogError::NotShown { database: db.database.clone() });
             }
-            self.reconcile_instance(&instance);
+            wanted.open.insert(db.database.clone());
+            self.converge(&instance, &wanted);
         }
         let slot = instance.slot(&db.database).ok_or_else(|| {
             if instance.knows(&db.database) { CatalogError::NotConnected } else { CatalogError::UnknownDatabase { database: db.database.clone() } }
@@ -215,10 +231,15 @@ impl Shared {
             }
         };
         let version = self.next_catalog_version();
-        match catalog::load(&session.client, slot.db.clone(), version).await {
+        let extra = view::system_schemas_to_load(&instance.view.read().unwrap().database(&slot.db.database, &instance.home));
+        match catalog::load(&session.client, slot.db.clone(), version, &extra).await {
             Ok(catalog) => {
                 let catalog = Arc::new(catalog);
                 slot.set(CatalogSlot::Ready(catalog.clone()));
+                let owed_check = instance.show_checks.lock().unwrap().remove(&slot.db.database);
+                if owed_check {
+                    self.check_shown_schemas(instance, &slot.db.database, &catalog).await;
+                }
                 self.republish_connection(id);
                 Ok(catalog)
             }
@@ -239,6 +260,35 @@ impl Shared {
                 Err(CatalogError::Failed { message })
             }
         }
+    }
+
+    /// The deferred half of `ViewEdit::Database { shown: true }`: a database shown while its
+    /// catalog was unknown, whose stored `Only` selection resolves to no schema once the catalog
+    /// is known, falls back to its default schema.
+    async fn check_shown_schemas(self: &Arc<Self>, instance: &Arc<Instance>, database: &str, catalog: &Catalog) {
+        let _edits = self.view_edits.lock().await;
+        let view = instance.view();
+        let entry = view.database(database, &instance.home);
+        if !matches!(entry.schemas, Selection::Only { .. }) || !view::resolve_schemas(&entry, catalog).is_empty() {
+            return;
+        }
+        let known = Known { home: &instance.home, databases: &[], catalogs: &HashMap::new() };
+        let next = view.apply(&ViewEdit::Schemas { database: database.to_owned(), preset: Preset::DefaultOnly }, &known);
+        if let Err(e) = self.store.set_view(instance.config.id, &next) {
+            eprintln!("connection view save failed: {e}");
+        }
+        *instance.view.write().unwrap() = next;
+    }
+
+    /// Re-reads `pg_database` on the home session into the instance.
+    async fn reread_databases(self: &Arc<Self>, instance: &Arc<Instance>) -> Result<(), CatalogError> {
+        let failed = |message: String| CatalogError::Failed { message };
+        let home = instance.slot(&instance.home).ok_or(CatalogError::NotConnected)?;
+        let mut meta = home.meta.lock().await;
+        let session = self.session_in(instance, &home, &mut meta).await.map_err(|e| failed(connection::connect_error_text(&e)))?;
+        let (databases, _) = catalog::list_databases(&session.client).await.map_err(|e| failed(connection::error_text(&e)))?;
+        *instance.databases.write().unwrap() = Arc::new(databases);
+        Ok(())
     }
 
     /// The slot's open session, reopened if it died or was never opened.
@@ -333,16 +383,9 @@ impl Shared {
         let shared = self.clone();
         tokio::spawn(async move {
             let Some(instance) = shared.instance(id) else { return };
-            let Some(home) = instance.slot(&instance.home) else { return };
-            let mut meta = home.meta.lock().await;
-            let Ok(session) = shared.session_in(&instance, &home, &mut meta).await else { return };
-            match catalog::list_databases(&session.client).await {
-                Ok((databases, _)) => {
-                    *instance.databases.write().unwrap() = Arc::new(databases);
-                    drop(meta);
-                    shared.reconcile(id);
-                }
-                Err(e) => eprintln!("database list refresh failed: {}", connection::error_text(&e)),
+            match shared.reread_databases(&instance).await {
+                Ok(()) => shared.reconcile_instance(&instance),
+                Err(e) => eprintln!("database list refresh failed: {e:?}"),
             }
         });
     }
@@ -385,7 +428,18 @@ impl Shared {
         let (server, pid, closed) = (session.server.clone(), session.backend_pid, session.closed_watch());
         let slot = DbSlot::new(DatabaseRef { connection_id: id, database: home.clone() });
         *slot.meta.lock().await = Some(session);
-        Ok((Arc::new(Instance::new(config, server, home, databases, slot)), pid, closed))
+        let view = self.stored_view(id);
+        Ok((Arc::new(Instance::new(config, server, home, databases, view, slot)), pid, closed))
+    }
+
+    fn stored_view(&self, id: ConnectionId) -> ConnectionView {
+        match self.store.view(id) {
+            Ok(view) => view.unwrap_or_else(ConnectionView::initial),
+            Err(e) => {
+                eprintln!("connection view load failed: {e}");
+                ConnectionView::initial()
+            }
+        }
     }
 
     /// Consoles of `id` with an open transaction, with `has_writes` probed on their idle sessions.
@@ -498,6 +552,7 @@ impl Engine {
                 events,
                 next_run: AtomicU64::new(1),
                 next_catalog_version: AtomicU64::new(1),
+                view_edits: tokio::sync::Mutex::new(()),
                 timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
             }),
         }))
@@ -642,21 +697,101 @@ impl Engine {
         Ok(self.shared.load_catalog(&instance, &slot, &mut meta).await?.version)
     }
 
-    /// Re-reads `pg_database`, reconciles the slots, and refreshes every loaded catalog.
+    /// Re-reads `pg_database`, drops the probe cache, reconciles the slots, and refreshes every
+    /// catalog that has been loaded or has failed. The "Refresh" item on the connection menu.
     pub async fn refresh_connection(&self, id: ConnectionId) -> Result<(), CatalogError> {
-        let _ = id;
-        Err(CatalogError::NotConnected)
+        let s = &self.shared;
+        let instance = s.instance(id).ok_or(CatalogError::NotConnected)?;
+        s.reread_databases(&instance).await?;
+        instance.probes.lock().unwrap().clear();
+        s.reconcile_instance(&instance);
+        for name in instance.slot_names() {
+            let Some(slot) = instance.slot(&name) else { continue };
+            if !matches!(slot.status(), CatalogStatus::Idle | CatalogStatus::Loading) {
+                s.schedule_catalog_refresh(slot.db.clone());
+            }
+        }
+        Ok(())
     }
 
-    /// Applies one picker edit to the connection's stored view.
+    /// Applies one picker edit to the connection's stored view: apply, persist, reconcile the
+    /// slots, reload the catalogs whose system schemas changed, republish. Works while
+    /// disconnected too, where it only persists.
     pub async fn edit_view(&self, id: ConnectionId, edit: ViewEdit) -> Result<(), CatalogError> {
-        let _ = (id, edit);
-        Err(CatalogError::NotConnected)
+        let s = &self.shared;
+        let _edits = s.view_edits.lock().await;
+        let config = s.config(id).ok_or(CatalogError::NotConnected)?;
+        let Some(instance) = s.instance(id) else {
+            let view = s.stored_view(id);
+            let known = Known { home: &config.database, databases: &[], catalogs: &HashMap::new() };
+            return s.store.set_view(id, &view.apply(&edit, &known)).map_err(|e| CatalogError::Failed { message: e.to_string() });
+        };
+        let view = instance.view();
+        let databases = instance.databases.read().unwrap().clone();
+        let catalogs = instance.catalogs();
+        let known = Known { home: &instance.home, databases: &databases, catalogs: &catalogs };
+        let next = view.apply(&edit, &known);
+        s.store.set_view(id, &next).map_err(|e| CatalogError::Failed { message: e.to_string() })?;
+        if let ViewEdit::Database { name, shown: true } = &edit
+            && !catalogs.contains_key(name)
+        {
+            instance.show_checks.lock().unwrap().insert(name.clone());
+        }
+        let reload: Vec<String> = instance
+            .slot_names()
+            .into_iter()
+            .filter(|db| view::system_schemas_to_load(&view.database(db, &instance.home)) != view::system_schemas_to_load(&next.database(db, &instance.home)))
+            .collect();
+        *instance.view.write().unwrap() = next;
+        s.reconcile_instance(&instance);
+        for database in reload {
+            s.schedule_catalog_refresh(DatabaseRef { connection_id: id, database });
+        }
+        Ok(())
     }
 
-    /// Counts the non-system schemas of databases that have no slot, through short-lived sessions.
+    /// Counts the non-system schemas of the named databases that have no slot and no cached
+    /// count, each through a short-lived session, at most `PROBE_PERMITS` at a time. Fire and
+    /// forget: each result lands on the connection snapshot.
     pub fn probe_databases(&self, id: ConnectionId, databases: Vec<String>) {
-        let _ = (id, databases);
+        let s = &self.shared;
+        let Some(instance) = s.instance(id) else { return };
+        let mut fresh = Vec::new();
+        {
+            let mut probes = instance.probes.lock().unwrap();
+            for name in databases {
+                if instance.slot(&name).is_some() || probes.contains_key(&name) || !instance.knows(&name) {
+                    continue;
+                }
+                probes.insert(name.clone(), SchemaCount::Probing);
+                fresh.push(name);
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        s.republish_connection(id);
+        for name in fresh {
+            let (shared, instance) = (s.clone(), instance.clone());
+            tokio::spawn(async move {
+                let _permit = instance.probe_gate.acquire().await;
+                let probe = async {
+                    let params = shared.params(&instance.config, &name).map_err(|e| connection::connect_error_text(&e))?;
+                    let session = Session::open(&params, None, &shared.timezone).await.map_err(|e| connection::connect_error_text(&e))?;
+                    catalog::count_schemas(&session.client).await.map_err(|e| connection::error_text(&e))
+                };
+                let count = match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+                    Ok(Ok(count)) => SchemaCount::Known { count },
+                    Ok(Err(message)) => SchemaCount::Unavailable { message },
+                    Err(_) => SchemaCount::Unavailable { message: format!("timed out after {} s", PROBE_TIMEOUT.as_secs()) },
+                };
+                if instance.is_closed() {
+                    return;
+                }
+                instance.probes.lock().unwrap().insert(name, count);
+                shared.republish_connection(id);
+            });
+        }
     }
 
     /// `count(*)` with the query's filters, on the database's metadata session.

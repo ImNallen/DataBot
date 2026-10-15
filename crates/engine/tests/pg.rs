@@ -68,12 +68,36 @@ impl Harness {
         Self { engine, events, seen: Vec::new(), conn: config.id, database: config.database, dir }
     }
 
-    /// Names in the instance's `pg_database` list as the snapshot reports it.
-    fn database_names(&self) -> Vec<String> {
+    fn instance(&self) -> InstanceState {
         match self.status() {
-            ConnStatus::Connected { instance, .. } => instance.databases.into_iter().map(|d| d.name).collect(),
+            ConnStatus::Connected { instance, .. } => instance,
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Names in the instance's `pg_database` list as the snapshot reports it.
+    fn database_names(&self) -> Vec<String> {
+        self.instance().databases.into_iter().map(|d| d.name).collect()
+    }
+
+    fn database_state(&self, name: &str) -> DatabaseState {
+        self.instance().databases.into_iter().find(|d| d.name == name).unwrap_or_else(|| panic!("{name} not listed"))
+    }
+
+    async fn wait_database(&self, name: &str, done: impl Fn(&DatabaseState) -> bool) -> DatabaseState {
+        let started = Instant::now();
+        loop {
+            let state = self.database_state(name);
+            if done(&state) {
+                return state;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "{name} never reached the expected state: {state:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn edit_view(&self, edit: ViewEdit) {
+        self.engine.edit_view(self.conn, edit).await.unwrap();
     }
 
     async fn wait_database_names(&self, done: impl Fn(&[String]) -> bool) -> Vec<String> {
@@ -335,8 +359,8 @@ async fn connect_reports_server_and_catalog_has_the_mockup_tables() {
     let catalog = h.engine.catalog(h.db()).await.unwrap();
     assert_eq!(catalog.db.database, "shop");
     let names: Vec<&str> = catalog.schemas.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["lab", "public"]);
-    let public = &catalog.schemas[1];
+    assert_eq!(names, ["information_schema", "lab", "pg_catalog", "public"]);
+    let public = catalog.schemas.iter().find(|s| s.name == "public").unwrap();
     for (table, rows) in [("customers", 18_400), ("orders", 241_000), ("order_items", 612_000), ("payments", 238_000), ("products", 1_200)] {
         let rel = public.relations.iter().find(|r| r.name == table).unwrap_or_else(|| panic!("{table} missing"));
         assert_eq!(rel.kind, RelKind::Table);
@@ -992,7 +1016,7 @@ async fn table_page_on_second_database_uses_its_pk() {
 
     let reporting = h.engine.catalog(h.db_named("reporting")).await.unwrap();
     assert_eq!(reporting.db, h.db_named("reporting"));
-    assert_eq!(reporting.schemas.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["audit", "public"]);
+    assert_eq!(reporting.schemas.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["audit", "information_schema", "pg_catalog", "public"]);
     assert_eq!(reporting.relation("public", "daily").unwrap().pk_columns(), ["day"]);
     assert!(h.engine.catalog(h.db()).await.unwrap().relation("public", "daily").is_none(), "shop's catalog is a different database");
 
@@ -1073,7 +1097,7 @@ async fn a_database_no_tab_or_tree_uses_gets_no_catalog() {
 
     let tab = h.sql_tab_on(TxnMode::AutoCommit, "postgres").await;
     let catalog = h.engine.catalog(postgres.clone()).await.unwrap();
-    assert_eq!(catalog.schemas.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["public"]);
+    assert_eq!(catalog.schemas.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["information_schema", "pg_catalog", "public"]);
     assert!(matches!(h.catalog_status("postgres"), CatalogStatus::Ready { .. }));
 
     h.engine.console_close(tab, false).await.unwrap();
@@ -1358,4 +1382,147 @@ async fn relation_detail_hides_partition_clones_and_shows_inherited_triggers() {
     assert_eq!(parted_1.triggers, [trigger("t_parent", true)], "a partition shows the row trigger it inherits");
 
     oracle.batch_execute(&format!("drop schema {s} cascade")).await.unwrap();
+}
+
+/// What a connection with no stored view shows: the home database with every user schema, and
+/// nothing else.
+async fn assert_default_view(h: &Harness) {
+    let shop = h.wait_database("shop", |d| matches!(d.catalog, CatalogStatus::Ready { .. })).await;
+    assert!(shop.shown && !shop.show_system_schemas);
+    assert_eq!(shop.shown_schemas, ["lab", "public"]);
+    assert_eq!(shop.schema_count, SchemaCount::Known { count: 2 });
+    assert_eq!(h.engine.catalog(h.db()).await.unwrap().default_schema.as_deref(), Some("public"));
+    for name in ["postgres", "reporting"] {
+        let d = h.database_state(name);
+        assert!(!d.shown, "{name} is shown");
+        assert_eq!((d.shown_schemas.len(), d.schema_count, d.catalog), (0, SchemaCount::Unknown, CatalogStatus::Idle), "{name}");
+    }
+    assert!(!h.instance().show_system_databases);
+}
+
+#[tokio::test]
+async fn default_view_shows_home_with_all_its_schemas() {
+    let h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    assert_default_view(&h).await;
+    let catalog = h.engine.catalog(h.db()).await.unwrap();
+    let lab = catalog.schemas.iter().find(|s| s.name == "lab").unwrap();
+    assert_eq!((lab.system, lab.relation_count, lab.relations.len()), (false, 1, 1));
+    let system: Vec<(&str, bool, usize, usize)> =
+        catalog.schemas.iter().filter(|s| s.system).map(|s| (s.name.as_str(), s.relation_count > 0, s.relations.len(), s.functions.len())).collect();
+    assert_eq!(system, [("information_schema", true, 0, 0), ("pg_catalog", true, 0, 0)], "system schemas are listed with a count but not loaded");
+}
+
+#[tokio::test]
+async fn showing_a_database_opens_its_slot_and_shows_only_its_default_schema() {
+    let h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    h.edit_view(ViewEdit::Database { name: "reporting".into(), shown: true }).await;
+    let reporting = h.wait_database("reporting", |d| matches!(d.catalog, CatalogStatus::Ready { .. })).await;
+    assert!(reporting.shown);
+    assert_eq!(reporting.shown_schemas, ["public"]);
+    assert_eq!(reporting.schema_count, SchemaCount::Known { count: 2 });
+    assert!(h.database_state("shop").shown, "the home database stays shown");
+
+    let catalog = h.engine.catalog(h.db_named("reporting")).await.unwrap();
+    assert_eq!(catalog.default_schema.as_deref(), Some("public"));
+    let schemas: Vec<(&str, bool, u32, usize)> = catalog.schemas.iter().map(|s| (s.name.as_str(), s.system, s.relation_count, s.relations.len())).collect();
+    assert_eq!(schemas, [("audit", false, 1, 1), ("information_schema", true, 69, 0), ("pg_catalog", true, 140, 0), ("public", false, 1, 1)]);
+
+    h.edit_view(ViewEdit::Database { name: "reporting".into(), shown: true }).await;
+    assert_eq!(h.database_state("reporting").shown_schemas, ["public"], "the same edit twice changes nothing");
+}
+
+#[tokio::test]
+async fn hiding_a_database_closes_its_slot_unless_a_tab_uses_it() {
+    let h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let reporting = h.db_named("reporting");
+    h.edit_view(ViewEdit::Database { name: "reporting".into(), shown: true }).await;
+    h.wait_database("reporting", |d| matches!(d.catalog, CatalogStatus::Ready { .. })).await;
+
+    h.edit_view(ViewEdit::Database { name: "reporting".into(), shown: false }).await;
+    let hidden = h.wait_database("reporting", |d| d.catalog == CatalogStatus::Idle).await;
+    assert!(!hidden.shown && hidden.shown_schemas.is_empty());
+    assert!(matches!(h.engine.catalog(reporting.clone()).await, Err(CatalogError::NotShown { .. })));
+
+    let tab = h.sql_tab_on(TxnMode::AutoCommit, "reporting").await;
+    assert_eq!(h.engine.catalog(reporting.clone()).await.unwrap().db, reporting);
+    h.edit_view(ViewEdit::Database { name: "reporting".into(), shown: false }).await;
+    let kept = h.database_state("reporting");
+    assert!(matches!(kept.catalog, CatalogStatus::Ready { .. }), "{:?}", kept.catalog);
+    assert!(!kept.shown);
+    assert_eq!(h.engine.catalog(reporting).await.unwrap().relation("public", "daily").unwrap().pk_columns(), ["day"]);
+    h.engine.console_close(tab, false).await.unwrap();
+    h.wait_database("reporting", |d| d.catalog == CatalogStatus::Idle).await;
+}
+
+#[tokio::test]
+async fn probe_counts_schemas_of_a_database_without_a_slot() {
+    let role = Role::create().await;
+    let h = Harness::start_as(&role).await;
+    h.engine.connect(h.conn).await.unwrap();
+    h.engine.probe_databases(h.conn, vec!["postgres".into(), "template0".into(), "nope".into()]);
+    let probing = |d: &DatabaseState| d.schema_count != SchemaCount::Unknown && d.schema_count != SchemaCount::Probing;
+    let postgres = h.wait_database("postgres", probing).await;
+    assert_eq!((postgres.schema_count, postgres.catalog), (SchemaCount::Known { count: 1 }, CatalogStatus::Idle));
+    let template0 = h.wait_database("template0", probing).await;
+    assert!(
+        matches!(&template0.schema_count, SchemaCount::Unavailable { message } if message.contains("is not currently accepting connections")),
+        "{:?}",
+        template0.schema_count
+    );
+    let left = role.backends_when(|b| b.iter().all(|(db, _)| db == "shop")).await;
+    assert_eq!(left.iter().map(|(db, _)| db.as_str()).collect::<Vec<_>>(), ["shop"], "the probe session is gone; the home metadata session stays");
+    h.engine.disconnect(h.conn, false).await.unwrap();
+    role.drop().await;
+}
+
+#[tokio::test]
+async fn showing_pg_catalog_loads_its_relations_and_no_functions() {
+    let h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let initial = h.catalog_when(&h.db(), |_| true).await.version;
+    h.edit_view(ViewEdit::ShowSystemSchemas { database: "shop".into(), show: true }).await;
+    h.edit_view(ViewEdit::Schema { database: "shop".into(), name: "pg_catalog".into(), shown: true }).await;
+    let loaded = h.catalog_when(&h.db(), |c| c.version > initial && c.schemas.iter().any(|s| s.name == "pg_catalog" && !s.relations.is_empty())).await;
+    let pg_catalog = loaded.schemas.iter().find(|s| s.name == "pg_catalog").unwrap();
+    assert!(pg_catalog.system && pg_catalog.relations.len() > 100 && pg_catalog.functions.is_empty(), "{} relations", pg_catalog.relations.len());
+    assert_eq!(pg_catalog.relation_count as usize, pg_catalog.relations.len());
+    let shop = h.wait_database("shop", |d| d.shown_schemas.iter().any(|s| s == "pg_catalog")).await;
+    assert_eq!(shop.shown_schemas, ["lab", "pg_catalog", "public"]);
+    assert!(shop.show_system_schemas);
+    assert_eq!(shop.schema_count, SchemaCount::Known { count: 2 }, "the count stays non-system");
+
+    h.edit_view(ViewEdit::ShowSystemSchemas { database: "shop".into(), show: false }).await;
+    let off = h.wait_database("shop", |d| !d.show_system_schemas).await;
+    assert_eq!(off.shown_schemas, ["lab", "public"]);
+    h.catalog_when(&h.db(), |c| c.schemas.iter().any(|s| s.name == "pg_catalog" && s.relations.is_empty())).await;
+
+    h.edit_view(ViewEdit::ShowSystemSchemas { database: "shop".into(), show: true }).await;
+    let on = h.wait_database("shop", |d| d.shown_schemas.iter().any(|s| s == "pg_catalog")).await;
+    assert_eq!(on.shown_schemas, ["lab", "pg_catalog", "public"], "the checked schema was remembered while the toggle was off");
+}
+
+#[tokio::test]
+async fn a_view_row_that_fails_to_parse_falls_back_to_the_initial_view() {
+    let (dir, conn) = {
+        let h = Harness::start_in(tempfile::tempdir().unwrap()).await;
+        h.engine.connect(h.conn).await.unwrap();
+        h.edit_view(ViewEdit::Database { name: "reporting".into(), shown: true }).await;
+        h.wait_database("reporting", |d| d.shown).await;
+        h.engine.disconnect(h.conn, false).await.unwrap();
+        let Harness { dir, conn, .. } = h;
+        (dir, conn)
+    };
+    let sqlite = rusqlite::Connection::open(dir.path().join("l1-data.sqlite3")).unwrap();
+    let changed = sqlite.execute("UPDATE connection_views SET json = '{\"databases\": [' WHERE connection_id = ?1", [conn.0.to_string()]).unwrap();
+    assert_eq!(changed, 1, "the edit above stored a row");
+
+    let h = Harness::start_in(dir).await;
+    assert_eq!(h.conn, conn);
+    // A fresh engine has a fresh in-memory vault, so the saved password has to be sealed again.
+    h.engine.save_connection(ConnectionDraft { id: Some(conn), ..draft_from_url(&url(), "dev").unwrap() }).await.unwrap();
+    h.engine.connect(h.conn).await.unwrap();
+    assert_default_view(&h).await;
 }
