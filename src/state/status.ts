@@ -1,4 +1,4 @@
-import type { ConnectionState, ConsoleState, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
+import type { ConnectionState, ConsoleState, OutputEntry, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
 import { formatElapsed, groupDigits, pluralRows } from "../features/results/format";
 
 export function hasUncommittedWork(console: ConsoleState | undefined): boolean {
@@ -45,9 +45,28 @@ export function rowResults(run: RunState): RowResult[] {
   return out;
 }
 
-export function shownResult(run: RunState, picked: number | undefined): RowResult | undefined {
+export type ResultPick = number | { kind: "output"; runId: number; result: number | undefined };
+
+export function shownResult(run: RunState, picked: ResultPick | undefined): RowResult | undefined {
   const results = rowResults(run);
-  return results.find((r) => r.index === picked) ?? results.at(-1);
+  const index = typeof picked !== "object" ? picked : run.kind !== "Idle" && picked.runId === run.runId ? picked.result : undefined;
+  return results.find((r) => r.index === index) ?? results.at(-1);
+}
+
+export type ResultView = { kind: "rows"; result: RowResult } | { kind: "output" } | { kind: "tail" };
+
+export function resultView(run: RunState, picked: ResultPick | undefined, hasOutput: boolean): ResultView {
+  const pickedOutput = typeof picked === "object" && run.kind !== "Idle" && picked.runId === run.runId;
+  if (hasOutput && pickedOutput) return { kind: "output" };
+  const result = shownResult(run, picked);
+  if (result) return { kind: "rows", result };
+  return hasOutput ? { kind: "output" } : { kind: "tail" };
+}
+
+export function outputTone(entries: readonly OutputEntry[]): "muted" | "warn" {
+  const latest = entries.at(-1)?.runId;
+  const warned = entries.some((e) => e.runId === latest && e.body.kind === "Notice" && e.body.severity === "WARNING");
+  return warned ? "warn" : "muted";
 }
 
 export type Summary = { tone: "ok" | "error" | "running" | "muted"; text: string };
@@ -58,7 +77,7 @@ function rowsText(meta: ResultMeta): string {
   return `${groupDigits(String(meta.rowCount))} of ${groupDigits(String(meta.rowsSeen))} rows (${why})`;
 }
 
-export function runSummary(run: RunState, picked: number | undefined, nowMs: number): Summary | null {
+export function runSummary(run: RunState, picked: ResultPick | undefined, nowMs: number): Summary | null {
   switch (run.kind) {
     case "Idle":
       return null;

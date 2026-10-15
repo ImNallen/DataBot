@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ConsoleState, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
-import { hasUncommittedWork, rowResults, runSummary, shownResult } from "./status";
+import type { ConsoleState, OutputEntry, QueryError, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
+import { hasUncommittedWork, outputTone, resultView, rowResults, runSummary, shownResult } from "./status";
 import { nextUntitled, tabFromSnapshot, workspaceSnapshot, type Tab } from "./workspace";
 
 const meta = (index: number, rowCount: number, extra: Partial<ResultMeta> = {}): ResultMeta => ({
@@ -76,6 +76,69 @@ describe("shownResult", () => {
     expect(shownResult(run, undefined)?.index).toBe(2);
     expect(shownResult(run, 0)?.index).toBe(0);
     expect(shownResult(run, 1)?.index).toBe(2);
+  });
+});
+
+const notice = (runId: number, message: string, severity = "NOTICE"): OutputEntry => ({
+  atMs: 0,
+  runId,
+  body: { kind: "Notice", severity, message, detail: null },
+});
+const failure: QueryError = { severity: "ERROR", sqlstate: "40001", message: "could not serialize", detail: null, hint: null, context: null, position: null };
+const finishedRun = (runId: number, statements: StatementRun[] = []): RunState => ({ kind: "Finished", runId, elapsedMs: 5, statements, outcome: "Ok" });
+const rowsAt = (index: number) => stmt(index, { kind: "Rows", result: meta(index, 1), done: true });
+
+describe("resultView", () => {
+  const withRows = finishedRun(7, [rowsAt(0), rowsAt(1)]);
+
+  it("shows an Output pick made on the current run over the grid", () => {
+    expect(resultView(withRows, { kind: "output", runId: 7, result: undefined }, true)).toEqual({ kind: "output" });
+  });
+
+  it("keeps the picked result set behind an Output pick", () => {
+    expect(shownResult(withRows, { kind: "output", runId: 7, result: 0 })).toMatchObject({ index: 0 });
+    expect(resultView(withRows, { kind: "output", runId: 7, result: 0 }, false)).toMatchObject({ kind: "rows", result: { index: 0 } });
+  });
+
+  it("forgets the result set behind a lapsed Output pick", () => {
+    expect(shownResult(finishedRun(8, [rowsAt(0), rowsAt(1), rowsAt(2)]), { kind: "output", runId: 7, result: 0 })).toMatchObject({ index: 2 });
+  });
+
+  it("drops an Output pick on the next run", () => {
+    expect(resultView(finishedRun(8, [rowsAt(0)]), { kind: "output", runId: 7, result: undefined }, true)).toMatchObject({ kind: "rows", result: { index: 0 } });
+  });
+
+  it("prefers the grid to the log without a pick", () => {
+    expect(resultView(withRows, undefined, true)).toMatchObject({ kind: "rows", result: { index: 1 } });
+    expect(resultView(withRows, 0, true)).toMatchObject({ kind: "rows", result: { index: 0 } });
+  });
+
+  it("shows the log instead of the tail when the tab has entries", () => {
+    expect(resultView(finishedRun(7, [stmt(0, { kind: "Command", tag: "DO", elapsedMs: 1 })]), undefined, true)).toEqual({ kind: "output" });
+  });
+
+  it("falls back to the tail when the log is empty", () => {
+    expect(resultView(finishedRun(7, [stmt(0, { kind: "Command", tag: "DO", elapsedMs: 1 })]), undefined, false)).toEqual({ kind: "tail" });
+    expect(resultView(finishedRun(7), { kind: "output", runId: 7, result: undefined }, false)).toEqual({ kind: "tail" });
+    expect(resultView({ kind: "Idle" }, undefined, false)).toEqual({ kind: "tail" });
+  });
+});
+
+describe("outputTone", () => {
+  const command = (runId: number): OutputEntry => ({ atMs: 0, runId, body: { kind: "Command", statement: 0, tag: "DO", elapsedMs: 1 } });
+  const error = (runId: number): OutputEntry => ({ atMs: 0, runId, body: { kind: "Error", statement: 0, error: failure } });
+
+  it("turns amber for a WARNING in the latest run", () => {
+    expect(outputTone([notice(7, "careful", "WARNING"), command(7)])).toBe("warn");
+  });
+
+  it("stays muted once a later run raised no WARNING", () => {
+    expect(outputTone([notice(7, "careful", "WARNING"), command(7), command(8)])).toBe("muted");
+  });
+
+  it("stays muted for other notices and for errors", () => {
+    expect(outputTone([notice(7, "fyi"), notice(7, "info", "INFO"), error(7)])).toBe("muted");
+    expect(outputTone([])).toBe("muted");
   });
 });
 

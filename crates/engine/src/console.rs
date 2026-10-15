@@ -113,13 +113,18 @@ impl Console {
         state
     }
 
-    pub fn output(&self, shared: &Shared, run_id: Option<RunId>, body: OutputBody) {
-        if self.closed.load(Ordering::Relaxed) {
+    pub fn output(&self, shared: &Shared, run_id: RunId, body: OutputBody) {
+        self.output_all(shared, run_id, vec![body]);
+    }
+
+    pub fn output_all(&self, shared: &Shared, run_id: RunId, bodies: Vec<OutputBody>) {
+        if bodies.is_empty() || self.closed.load(Ordering::Relaxed) {
             return;
         }
+        let at_ms = now_ms();
         shared.emit(AppEvent::ConsoleOutput {
             tab_id: self.tab,
-            entries: vec![OutputEntry { at_ms: now_ms(), run_id, body }],
+            entries: bodies.into_iter().map(|body| OutputEntry { at_ms, run_id, body }).collect(),
         });
     }
 
@@ -247,7 +252,7 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
         && let Err(e) = session.set_search_path(plan.schema.as_deref()).await
     {
         let error = e.as_db_error().map_or_else(|| transport_error(&e), |db| query_error(db, None));
-        console.output(&shared, Some(run_id), OutputBody::Error { statement: None, error });
+        console.output(&shared, run_id, OutputBody::Error { statement: None, error });
     }
 
     let mut index = 0;
@@ -266,22 +271,24 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
                 Ok(()) => {
                     txn = TxnState::Active;
                     console.edit(&shared, run_id, |inner| inner.txn = txn).await?;
-                    console.output(&shared, Some(run_id), OutputBody::Info { message: "BEGIN (implicit)".into() });
+                    console.output(&shared, run_id, OutputBody::Info { message: "BEGIN (implicit)".into() });
                 }
                 Err(e) => {
                     let error = e.as_db_error().map_or_else(|| transport_error(&e), |db| query_error(db, None));
-                    console.output(&shared, Some(run_id), OutputBody::Error { statement: Some(i), error });
+                    console.output(&shared, run_id, OutputBody::Error { statement: Some(i), error });
                     outcome = RunOutcome::Failed;
                     break;
                 }
             }
         }
 
+        console.output(&shared, run_id, statement_line(i, sql));
         set_status(&console, &shared, run_id, i, StmtStatus::Preparing).await?;
         let prepared = session.client.prepare(sql).await;
         // A cancel that reached the backend while it was idle between prepare and execute is lost.
         if prepared.is_ok() && stop.load(Ordering::Relaxed) {
             set_status(&console, &shared, run_id, i, StmtStatus::Cancelled).await?;
+            console.output(&shared, run_id, OutputBody::Info { message: "Cancelled.".into() });
             outcome = RunOutcome::Cancelled;
             break;
         }
@@ -322,7 +329,7 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
         }
         txn = txn_after(txn, &stmt.kind, if result.is_ok() { StmtOutcome::Ok } else { StmtOutcome::Err });
 
-        let (status, body, history) = match &result {
+        let (status, line, history) = match &result {
             Ok(StmtOk::Rows(set)) => {
                 let meta = set.meta();
                 (
@@ -360,8 +367,9 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
                 }
             })
             .await?;
-        publish_notices(&console, &shared, &mut session, run_id);
-        console.output(&shared, Some(run_id), body);
+        let mut lines = notice_lines(&mut session);
+        lines.push(line);
+        console.output_all(&shared, run_id, lines);
         shared.record_history(HistoryInsert {
             at_ms: now_ms(),
             connection_id: plan.connection.id,
@@ -404,7 +412,7 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
                 } else {
                     format!("Session reset: connection lost ({reason})")
                 };
-                console.output(&shared, Some(run_id), OutputBody::Info { message });
+                console.output(&shared, run_id, OutputBody::Info { message });
             }
             Console::return_session(inner, session, txn, lost);
             inner.run = RunState::Finished { run_id, elapsed_ms: elapsed_ms(started), statements, outcome };
@@ -417,12 +425,25 @@ async fn set_status(console: &Console, shared: &Shared, run_id: RunId, index: u1
 }
 
 fn publish_notices(console: &Console, shared: &Shared, session: &mut Session, run_id: RunId) {
-    for n in session.drain_notices() {
-        console.output(shared, Some(run_id), notice_body(&n));
-    }
+    console.output_all(shared, run_id, notice_lines(session));
 }
 
-pub fn notice_body(n: &DbError) -> OutputBody {
+pub fn notice_lines(session: &mut Session) -> Vec<OutputBody> {
+    session.drain_notices().iter().map(notice_body).collect()
+}
+
+/// Caps the logged text so one huge pasted statement cannot bloat the webview's 5,000-entry log.
+const STATEMENT_TEXT_CAP: usize = 2_000;
+
+pub fn statement_line(statement: u16, sql: &str) -> OutputBody {
+    let text = match sql.char_indices().nth(STATEMENT_TEXT_CAP) {
+        Some((cut, _)) => format!("{}…", &sql[..cut]),
+        None => sql.to_owned(),
+    };
+    OutputBody::Statement { statement, text }
+}
+
+fn notice_body(n: &DbError) -> OutputBody {
     OutputBody::Notice {
         severity: n.severity().to_owned(),
         message: n.message().to_owned(),

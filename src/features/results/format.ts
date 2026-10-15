@@ -99,3 +99,10 @@ export function shortType(display: string): string {
 export function pluralRows(n: number): string {
   return `${groupDigits(String(n))} ${n === 1 ? "row" : "rows"}`;
 }
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+export function formatClock(atMs: number): string {
+  const d = new Date(atMs);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
