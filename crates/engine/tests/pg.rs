@@ -35,6 +35,7 @@ struct Harness {
     events: broadcast::Receiver<AppEvent>,
     seen: Vec<AppEvent>,
     conn: ConnectionId,
+    database: String,
     dir: tempfile::TempDir,
 }
 
@@ -49,11 +50,20 @@ impl Harness {
             .unwrap();
         let events = engine.subscribe();
         let existing = engine.boot().connections.into_iter().next();
-        let conn = match existing {
-            Some(c) => c.id,
-            None => engine.save_connection(draft_from_url(&url(), "dev").unwrap()).await.unwrap().id,
+        let config = match existing {
+            Some(c) => c,
+            None => engine.save_connection(draft_from_url(&url(), "dev").unwrap()).await.unwrap(),
         };
-        Self { engine, events, seen: Vec::new(), conn, dir }
+        Self { engine, events, seen: Vec::new(), conn: config.id, database: config.database, dir }
+    }
+
+    /// The connection's configured database, the one every tab targets unless told otherwise.
+    fn db(&self) -> DatabaseRef {
+        self.db_named(&self.database)
+    }
+
+    fn db_named(&self, database: &str) -> DatabaseRef {
+        DatabaseRef { connection_id: self.conn, database: database.to_owned() }
     }
 
     async fn sql_tab(&self, mode: TxnMode) -> TabId {
@@ -61,12 +71,59 @@ impl Harness {
     }
 
     async fn sql_tab_in(&self, mode: TxnMode, schema: Option<&str>) -> TabId {
+        self.configure(mode, &self.database, schema).await
+    }
+
+    async fn sql_tab_on(&self, mode: TxnMode, database: &str) -> TabId {
+        self.configure(mode, database, None).await
+    }
+
+    async fn configure(&self, mode: TxnMode, database: &str, schema: Option<&str>) -> TabId {
         let tab = TabId(uuid::Uuid::new_v4());
         self.engine
-            .console_configure(tab, ConsoleConfig { connection_id: self.conn, schema: schema.map(str::to_owned), mode })
+            .console_configure(tab, ConsoleConfig { connection_id: self.conn, database: database.to_owned(), schema: schema.map(str::to_owned), mode })
             .await
             .unwrap();
         tab
+    }
+
+    /// The home database's catalog status as the connection snapshot reports it.
+    fn catalog_status(&self, database: &str) -> CatalogStatus {
+        let live = self.engine.boot().live;
+        let ConnStatus::Connected { instance, .. } = &live[0].status else { panic!("{:?}", live[0].status) };
+        instance.databases.iter().find(|d| d.name == database).unwrap_or_else(|| panic!("{database} not listed")).catalog.clone()
+    }
+
+    /// Waits until a connection snapshot has carried `version` for `database`, counting the
+    /// snapshots already seen, since a refresh can publish before the run that caused it finishes.
+    async fn wait_published(&mut self, database: &str, version: u64) {
+        loop {
+            self.drain();
+            let published = self.seen.iter().any(|e| match e {
+                AppEvent::ConnectionChanged(ConnectionState { id, status: ConnStatus::Connected { instance, .. }, .. }) if *id == self.conn => {
+                    instance.databases.iter().any(|d| d.name == database && d.catalog == CatalogStatus::Ready { version })
+                }
+                _ => false,
+            });
+            if published {
+                return;
+            }
+            self.next_event().await;
+        }
+    }
+
+    /// Polls the catalog until `done` accepts it.
+    async fn catalog_when(&self, db: &DatabaseRef, done: impl Fn(&Catalog) -> bool) -> Arc<Catalog> {
+        let started = Instant::now();
+        loop {
+            if let Ok(catalog) = self.engine.catalog(db.clone()).await
+                && done(&catalog)
+            {
+                return catalog;
+            }
+            assert!(started.elapsed() < Duration::from_secs(30), "catalog never reached the expected state");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     async fn next_event(&mut self) -> AppEvent {
@@ -183,8 +240,8 @@ async fn connect_reports_server_and_catalog_has_the_mockup_tables() {
     assert_eq!(server.encoding, "UTF8");
     assert_eq!(h.engine.connect(h.conn).await.unwrap().version, server.version, "connect is idempotent");
 
-    let catalog = h.engine.catalog(h.conn).unwrap();
-    assert_eq!(catalog.database, "shop");
+    let catalog = h.engine.catalog(h.db()).await.unwrap();
+    assert_eq!(catalog.db.database, "shop");
     let names: Vec<&str> = catalog.schemas.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["lab", "public"]);
     let public = &catalog.schemas[1];
@@ -203,18 +260,17 @@ async fn connect_reports_server_and_catalog_has_the_mockup_tables() {
     let zoo = catalog.relation("lab", "type_zoo").unwrap();
     assert_eq!(zoo.columns.iter().find(|c| c.name == "m").unwrap().type_display, "lab.mood");
 
-    let live = h.engine.boot().live;
-    assert!(matches!(live[0].status, ConnStatus::Connected { catalog_version: 1, .. }));
+    assert_eq!(h.catalog_status("shop"), CatalogStatus::Ready { version: 1 });
 }
 
 #[tokio::test]
 async fn exact_row_count_is_exact_and_reports_missing_tables() {
     let h = Harness::start().await;
-    assert!(matches!(h.engine.exact_row_count(h.conn, "public".into(), "coupons".into(), TableQuery::default()).await, Err(CountError::NotConnected)));
+    assert!(matches!(h.engine.exact_row_count(h.db(), "public".into(), "coupons".into(), TableQuery::default()).await, Err(CountError::NotConnected)));
     h.engine.connect(h.conn).await.unwrap();
-    assert_eq!(h.engine.exact_row_count(h.conn, "public".into(), "coupons".into(), TableQuery::default()).await.unwrap(), 3);
-    assert_eq!(h.engine.exact_row_count(h.conn, "lab".into(), "type_zoo".into(), TableQuery::default()).await.unwrap(), 2);
-    let missing = h.engine.exact_row_count(h.conn, "public".into(), "nope".into(), TableQuery::default()).await;
+    assert_eq!(h.engine.exact_row_count(h.db(), "public".into(), "coupons".into(), TableQuery::default()).await.unwrap(), 3);
+    assert_eq!(h.engine.exact_row_count(h.db(), "lab".into(), "type_zoo".into(), TableQuery::default()).await.unwrap(), 2);
+    let missing = h.engine.exact_row_count(h.db(), "public".into(), "nope".into(), TableQuery::default()).await;
     assert!(matches!(&missing, Err(CountError::Failed { message }) if message.contains("does not exist")), "{missing:?}");
 }
 
@@ -385,7 +441,9 @@ async fn manual_tab_isolated_until_commit_and_abort_rolls_back() {
     assert_eq!(h.scalar(b, &format!("select count(*) from {table}")).await, "0");
     let err = h.engine.disconnect(h.conn, false).await.unwrap_err();
     assert!(matches!(err, DisconnectError::OpenTransactions { ref tabs } if tabs.len() == 1 && tabs[0].tab_id == a && tabs[0].has_writes));
-    assert!(matches!(h.engine.console_configure(a, ConsoleConfig { connection_id: h.conn, schema: None, mode: TxnMode::AutoCommit }).await, Err(ConfigureError::TransactionOpen)));
+    let reconfigure = |database: &str, mode| ConsoleConfig { connection_id: h.conn, database: database.into(), schema: None, mode };
+    assert!(matches!(h.engine.console_configure(a, reconfigure("shop", TxnMode::AutoCommit)).await, Err(ConfigureError::TransactionOpen)));
+    assert!(matches!(h.engine.console_configure(a, reconfigure("reporting", TxnMode::Manual)).await, Err(ConfigureError::TransactionOpen)));
     h.engine.console_commit(a).await.unwrap();
     assert_eq!(h.console(a).txn, TxnState::Idle);
     assert_eq!(h.scalar(b, &format!("select count(*) from {table}")).await, "1");
@@ -568,19 +626,14 @@ async fn ddl_refreshes_the_catalog() {
     let tab = h.sql_tab(TxnMode::AutoCommit).await;
     h.engine.connect(h.conn).await.unwrap();
     let table = unique("t_ddl");
+    let initial = h.engine.catalog(h.db()).await.unwrap().version;
     h.run_ok(tab, &format!("create table public.{table} (id serial primary key, note text)")).await;
-    let version = loop {
-        if let AppEvent::CatalogChanged { connection_id, version } = h.next_event().await {
-            if connection_id == h.conn && version > 1 {
-                break version;
-            }
-        }
-    };
-    let catalog = h.engine.catalog(h.conn).unwrap();
-    assert_eq!(catalog.version, version);
-    let rel = catalog.relation("public", &table).expect("new table in catalog");
-    assert_eq!(rel.pk_columns(), ["id"]);
-    assert!(matches!(h.engine.boot().live[0].status, ConnStatus::Connected { catalog_version, .. } if catalog_version == version));
+    let catalog = h.catalog_when(&h.db(), |c| c.version > initial).await;
+    let version = catalog.version;
+    assert_eq!(version, initial + 1, "one DDL statement causes one refresh");
+    assert_eq!(catalog.relation("public", &table).unwrap().pk_columns(), ["id"]);
+    h.wait_published("shop", version).await;
+    assert_eq!(h.catalog_status("shop"), CatalogStatus::Ready { version });
 
     let page = h.engine.console_run(tab, RunRequest::TablePage { schema: "public".into(), table: "orders".into(), page: 2, query: TableQuery::default() }).await.unwrap();
     let state = h.wait_finished(tab, page.run_id).await;
@@ -591,9 +644,9 @@ async fn ddl_refreshes_the_catalog() {
     assert_eq!(h.page(&meta, 0, 1)[0][0].as_deref(), Some("1001"), "page 2 of 500 ordered by pk");
 
     h.run_ok(tab, &format!("drop table public.{table}")).await;
-    let dropped = h.engine.refresh_catalog(h.conn).await.unwrap();
+    let dropped = h.engine.refresh_catalog(h.db()).await.unwrap();
     assert!(dropped > version);
-    assert!(h.engine.catalog(h.conn).unwrap().relation("public", &table).is_none());
+    assert!(h.engine.catalog(h.db()).await.unwrap().relation("public", &table).is_none());
 }
 
 #[tokio::test]
@@ -645,7 +698,7 @@ async fn schema_and_search_path_follow_the_console_config() {
     let tab = h.sql_tab_in(TxnMode::AutoCommit, Some("lab")).await;
     assert_eq!(h.scalar(tab, "select count(*) from type_zoo").await, "2");
     assert_eq!(h.scalar(tab, "show search_path").await, "lab");
-    h.engine.console_configure(tab, ConsoleConfig { connection_id: h.conn, schema: Some("public".into()), mode: TxnMode::AutoCommit }).await.unwrap();
+    h.engine.console_configure(tab, ConsoleConfig { connection_id: h.conn, database: "shop".into(), schema: Some("public".into()), mode: TxnMode::AutoCommit }).await.unwrap();
     assert_eq!(h.scalar(tab, "show search_path").await, "public");
     assert_eq!(h.scalar(tab, "show application_name").await, "L1 Data");
     for copy in ["copy customers from stdin", "copy public.customers (id) to stdout", "copy pg_temp.nope from stdin with (format csv)"] {
@@ -658,7 +711,7 @@ async fn schema_and_search_path_follow_the_console_config() {
     assert!(h.engine.boot().consoles.is_empty());
     h.engine.disconnect(h.conn, false).await.unwrap();
     assert!(matches!(h.engine.boot().live[0].status, ConnStatus::Disconnected));
-    assert!(matches!(h.engine.catalog(h.conn), Err(NotConnected { .. })));
+    assert!(matches!(h.engine.catalog(h.db()).await, Err(CatalogError::NotConnected)));
 }
 
 #[tokio::test]
@@ -683,7 +736,7 @@ fn changes(table: &str) -> TableChanges {
 async fn edit_table(h: &mut Harness, tab: TabId) -> String {
     let table = unique("t_edit");
     h.run_ok(tab, &format!("create table public.{table} (id serial primary key, name text not null, note text); insert into public.{table} (name) values ('a'), ('b'), ('c')")).await;
-    h.engine.refresh_catalog(h.conn).await.unwrap();
+    h.engine.refresh_catalog(h.db()).await.unwrap();
     table
 }
 
@@ -801,7 +854,7 @@ async fn table_pages_sort_and_filter_in_the_engine() {
     assert!(rows.iter().all(|r| r[3].as_deref() == Some("APAC") && r[1].as_deref().unwrap().starts_with("user1")));
     let created: Vec<&str> = rows.iter().map(|r| r[4].as_deref().unwrap()).collect();
     assert!(created.windows(2).all(|w| w[0] >= w[1]), "newest first");
-    assert_eq!(h.engine.exact_row_count(h.conn, "public".into(), "customers".into(), query).await.unwrap(), u64::from(expected));
+    assert_eq!(h.engine.exact_row_count(h.db(), "public".into(), "customers".into(), query).await.unwrap(), u64::from(expected));
 
     for smuggled in [
         TableQuery { r#where: "true; drop table customers".into(), ..Default::default() },
@@ -827,5 +880,126 @@ async fn sql_comments_in_where_and_order_by_keep_the_page_limit() {
     let meta = Harness::result(&state, 0);
     assert_eq!(meta.row_count, 500, "the comment must not swallow LIMIT");
     let apac = h.scalar(tab, "select count(*) from customers where region = 'APAC'").await.parse::<u64>().unwrap();
-    assert_eq!(h.engine.exact_row_count(h.conn, "public".into(), "customers".into(), query).await.unwrap(), apac);
+    assert_eq!(h.engine.exact_row_count(h.db(), "public".into(), "customers".into(), query).await.unwrap(), apac);
+}
+
+#[tokio::test]
+async fn table_page_on_second_database_uses_its_pk() {
+    let mut h = Harness::start().await;
+    let tab = h.sql_tab_on(TxnMode::AutoCommit, "reporting").await;
+    let page = h
+        .engine
+        .console_run(tab, RunRequest::TablePage { schema: "public".into(), table: "daily".into(), page: 0, query: TableQuery::default() })
+        .await
+        .unwrap();
+    let state = h.wait_finished(tab, page.run_id).await;
+    assert_eq!(Harness::result(&state, 0).row_count, 90);
+    let logged: Vec<String> = h.entries(tab).iter().filter(|e| e.run_id == page.run_id).map(|e| log_line(&e.body)).collect();
+    assert_eq!(logged, ["0> SELECT * FROM \"public\".\"daily\" ORDER BY \"day\" LIMIT 500 OFFSET 0", "0 rows 90"]);
+    assert_eq!(h.scalar(tab, "select current_database()").await, "reporting");
+
+    let reporting = h.engine.catalog(h.db_named("reporting")).await.unwrap();
+    assert_eq!(reporting.db, h.db_named("reporting"));
+    assert_eq!(reporting.schemas.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["audit", "public"]);
+    assert_eq!(reporting.relation("public", "daily").unwrap().pk_columns(), ["day"]);
+    assert!(h.engine.catalog(h.db()).await.unwrap().relation("public", "daily").is_none(), "shop's catalog is a different database");
+
+    let mut changes = TableChanges { schema: "public".into(), table: "daily".into(), inserts: vec![], updates: vec![], deletes: vec![] };
+    changes.updates.push(RowUpdate { key: vec![cell("day", Some("2026-01-02"))], set: vec![cell("orders", Some("101"))] });
+    assert!(h.engine.table_apply(tab, changes).await.unwrap().committed, "the full key of daily is its own primary key");
+    h.run_ok(tab, "update daily set orders = 101 where day = '2026-01-02'").await;
+}
+
+#[tokio::test]
+async fn catalog_versions_rise_across_reconnect() {
+    let h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let started = Instant::now();
+    while h.catalog_status("shop") != (CatalogStatus::Ready { version: 1 }) {
+        assert!(started.elapsed() < Duration::from_secs(10), "connect loads the home catalog by itself: {:?}", h.catalog_status("shop"));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(h.engine.catalog(h.db()).await.unwrap().version, 1);
+    assert_eq!(h.engine.refresh_catalog(h.db()).await.unwrap(), 2);
+    h.engine.disconnect(h.conn, false).await.unwrap();
+    assert!(matches!(h.engine.catalog(h.db()).await, Err(CatalogError::NotConnected)));
+    h.engine.connect(h.conn).await.unwrap();
+    assert_eq!(h.engine.catalog(h.db()).await.unwrap().version, 3, "a reconnect never reissues a version the UI has seen");
+    assert_eq!(h.catalog_status("shop"), CatalogStatus::Ready { version: 3 });
+}
+
+#[tokio::test]
+async fn ddl_burst_coalesces_refreshes() {
+    let mut h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let tab = h.sql_tab(TxnMode::AutoCommit).await;
+    let gate = unique("t_gate");
+    h.run_ok(tab, &format!("create table public.{gate} (id int); insert into public.{gate} values (1)")).await;
+    let before = h.catalog_when(&h.db(), |c| c.relation("public", &gate).is_some()).await.version;
+
+    // A count holds the metadata session, so every refresh the burst schedules queues behind it.
+    let (engine, db, held) = (h.engine.clone(), h.db(), gate.clone());
+    let slow = tokio::spawn(async move {
+        let query = TableQuery { r#where: "pg_sleep(3)::text = ''".into(), ..Default::default() };
+        engine.exact_row_count(db, "public".into(), held, query).await
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let tables: Vec<String> = (0..30).map(|i| format!("{}_{i}", unique("t_burst"))).collect();
+    let script = tables.iter().map(|t| format!("create table public.{t} (id int)")).collect::<Vec<_>>().join(";\n");
+    h.run_ok(tab, &script).await;
+    assert_eq!(slow.await.unwrap().unwrap(), 1);
+
+    let after = h.catalog_when(&h.db(), |c| tables.iter().all(|t| c.relation("public", t).is_some())).await.version;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let settled = h.engine.catalog(h.db()).await.unwrap().version;
+    assert_eq!((after - before, settled - before), (2, 2), "30 DDL statements caused exactly two loads");
+    let drops = tables.iter().chain([&gate]).map(|t| format!("drop table public.{t}")).collect::<Vec<_>>().join(";\n");
+    h.run_ok(tab, &drops).await;
+}
+
+#[tokio::test]
+async fn history_records_console_database() {
+    let mut h = Harness::start().await;
+    let shop = h.sql_tab(TxnMode::AutoCommit).await;
+    let reporting = h.sql_tab_on(TxnMode::AutoCommit, "reporting").await;
+    let marker = unique("select 'db");
+    h.run_ok(shop, &format!("{marker}'")).await;
+    h.run_ok(reporting, &format!("{marker}'")).await;
+    let page = h.engine.history(HistoryQuery { text: Some(marker), connection_id: Some(h.conn), before_id: None, limit: 10 });
+    let databases: Vec<&str> = page.entries.iter().map(|e| e.database.as_str()).collect();
+    assert_eq!(databases, ["reporting", "shop"], "newest first, each with the database its console ran in");
+}
+
+#[tokio::test]
+async fn a_database_no_tab_or_tree_uses_gets_no_catalog() {
+    let h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let postgres = h.db_named("postgres");
+    assert!(matches!(h.engine.catalog(postgres.clone()).await, Err(CatalogError::NotShown { ref database }) if database == "postgres"));
+    assert!(matches!(h.engine.catalog(h.db_named("nope")).await, Err(CatalogError::UnknownDatabase { ref database }) if database == "nope"));
+    assert_eq!(h.catalog_status("postgres"), CatalogStatus::Idle);
+
+    let tab = h.sql_tab_on(TxnMode::AutoCommit, "postgres").await;
+    let catalog = h.engine.catalog(postgres.clone()).await.unwrap();
+    assert_eq!(catalog.schemas.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["public"]);
+    assert!(matches!(h.catalog_status("postgres"), CatalogStatus::Ready { .. }));
+
+    h.engine.console_close(tab, false).await.unwrap();
+    assert!(matches!(h.engine.catalog(postgres).await, Err(CatalogError::NotShown { .. })), "closing the console closes its slot");
+    assert_eq!(h.catalog_status("postgres"), CatalogStatus::Idle);
+
+    let live = h.engine.boot().live;
+    let ConnStatus::Connected { instance, .. } = &live[0].status else { panic!("{:?}", live[0].status) };
+    assert_eq!(instance.home, "shop");
+    let rows: Vec<(&str, bool, DbAccess, bool)> = instance.databases.iter().map(|d| (d.name.as_str(), d.system, d.access, d.shown)).collect();
+    assert_eq!(
+        rows,
+        [
+            ("postgres", false, DbAccess::Ok, false),
+            ("reporting", false, DbAccess::Ok, false),
+            ("shop", false, DbAccess::Ok, true),
+            ("template0", true, DbAccess::NoConnections, false),
+            ("template1", true, DbAccess::Ok, false),
+        ]
+    );
 }

@@ -1,14 +1,14 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { TabId } from "../../ipc/bindings";
-import { useCatalog } from "../../state/catalog";
-import { tabConnectionId, useWorkspace } from "../../state/workspace";
+import { useCatalog, viewFor } from "../../state/catalog";
+import { tabTarget, useWorkspace } from "../../state/workspace";
 import { activateEditor, configureSql, focusEditor, mountEditor } from "./editorStates";
 
 export function SqlEditor({ tabId }: { tabId: TabId }) {
   const host = useRef<HTMLDivElement>(null);
   const tab = useWorkspace((s) => s.tabs[tabId]);
-  const connectionId = tabConnectionId(tab);
-  const view = useCatalog((s) => (connectionId ? s.views[connectionId] : undefined));
+  const target = tabTarget(tab);
+  const view = useCatalog((s) => viewFor(s.views, target));
 
   useLayoutEffect(() => {
     activateEditor(tabId);

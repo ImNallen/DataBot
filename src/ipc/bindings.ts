@@ -10,9 +10,9 @@ export const commands = {
 	connectionTest: (draft: ConnectionDraft) => typedError<ServerInfo, ConnectError>(__TAURI_INVOKE("connection_test", { draft })),
 	connectionConnect: (id: ConnectionId) => typedError<ServerInfo, ConnectError>(__TAURI_INVOKE("connection_connect", { id })),
 	connectionDisconnect: (id: ConnectionId, force: boolean) => typedError<null, DisconnectError>(__TAURI_INVOKE("connection_disconnect", { id, force })),
-	catalogGet: (id: ConnectionId) => typedError<Catalog, NotConnected>(__TAURI_INVOKE("catalog_get", { id })),
-	catalogRefresh: (id: ConnectionId) => typedError<number, NotConnected>(__TAURI_INVOKE("catalog_refresh", { id })),
-	exactRowCount: (id: ConnectionId, schema: string, table: string, query: TableQuery) => typedError<number, CountError>(__TAURI_INVOKE("exact_row_count", { id, schema, table, query })),
+	catalogGet: (db: DatabaseRef) => typedError<Catalog, CatalogError>(__TAURI_INVOKE("catalog_get", { db })),
+	catalogRefresh: (db: DatabaseRef) => typedError<number, CatalogError>(__TAURI_INVOKE("catalog_refresh", { db })),
+	exactRowCount: (db: DatabaseRef, schema: string, table: string, query: TableQuery) => typedError<number, CountError>(__TAURI_INVOKE("exact_row_count", { db, schema, table, query })),
 	consoleConfigure: (tabId: TabId, config: ConsoleConfig) => typedError<ConsoleState, ConfigureError>(__TAURI_INVOKE("console_configure", { tabId, config })),
 	consoleRun: (tabId: TabId, request: RunRequest) => typedError<RunAccepted, RunError>(__TAURI_INVOKE("console_run", { tabId, request })),
 	consoleCancel: (tabId: TabId) => __TAURI_INVOKE<void>("console_cancel", { tabId }),
@@ -32,11 +32,11 @@ export const commands = {
 /* Types */
 export type AppEvent = {
 	kind: "ConnectionChanged",
-} & ConnectionState | ({ kind: "CatalogChanged"; connectionId: ConnectionId; version: number }) & { entries?: never; tabId?: never } | 
+} & ConnectionState | 
 /**  Throttled to at most 10/s per console while streaming. */
 {
 	kind: "ConsoleChanged",
-} & ConsoleState | ({ kind: "ConsoleOutput"; tabId: TabId; entries: OutputEntry[] }) & { connectionId?: never; version?: never } | {
+} & ConsoleState | { kind: "ConsoleOutput"; tabId: TabId; entries: OutputEntry[] } | {
 	kind: "HistoryAppended",
 } & HistoryEntry;
 
@@ -67,11 +67,32 @@ export type BootSnapshot = {
 };
 
 export type Catalog = {
-	connectionId: ConnectionId,
+	db: DatabaseRef,
 	version: number,
-	database: string,
 	schemas: SchemaInfo[],
 };
+
+export type CatalogError = { kind: "NotConnected" } | 
+/**  Not in `pg_database` as last read. */
+{ kind: "UnknownDatabase"; database: string } | 
+/**
+ *  Neither the home database, a shown database, nor the database of a console. Consoles get
+ *  their catalog through the console path, so a frontend bug cannot open a session per database.
+ */
+{ kind: "NotShown"; database: string } | 
+/**  The metadata session or the load failed. `CatalogStatus::Failed` carries the same message. */
+{ kind: "Failed"; message: string };
+
+export type CatalogStatus = 
+/**  No metadata session is wanted for this database. */
+{ kind: "Idle" } | 
+/**  The first load is in flight. A reload keeps `Ready` with the old version. */
+{ kind: "Loading" } | 
+/**
+ *  `version` comes from one engine-wide counter, so it rises across every database and every
+ *  reconnect. The UI fetches `catalog_get` when it is newer than what it holds.
+ */
+{ kind: "Ready"; version: number } | { kind: "Failed"; message: string };
 
 export type CellWrite = {
 	column: string,
@@ -119,8 +140,13 @@ export type ConfigureError =
 /**  Mode or connection change requested while a transaction is open. */
 { kind: "TransactionOpen" } | { kind: "Busy" } | { kind: "UnknownConnection" };
 
-export type ConnStatus = { kind: "Disconnected" } | { kind: "Connecting" } | { kind: "Connected"; server: ServerInfo; catalogVersion: number } | { kind: "Failed"; error: ConnectError } | 
-/**  The metadata session died after being `Connected`. */
+export type ConnStatus = { kind: "Disconnected" } | { kind: "Connecting" } | 
+/**
+ *  The home session is open and `pg_database` was read. Catalogs load after this, each with
+ *  its own `CatalogStatus`, so one unreachable database never fails the instance.
+ */
+{ kind: "Connected"; server: ServerInfo; instance: InstanceState } | { kind: "Failed"; error: ConnectError } | 
+/**  The home database's metadata session died after being `Connected`. */
 { kind: "Lost"; reason: string };
 
 export type ConnectError = { kind: "Network"; message: string } | { kind: "Tls"; message: string } | { kind: "Auth"; message: string } | ({ kind: "MissingPassword" }) & { message?: never } | {
@@ -164,18 +190,23 @@ export type ConnectionState = {
 
 export type ConsoleConfig = {
 	connectionId: ConnectionId,
+	/**  A change resets the session like a connection change does. */
+	database: string,
 	schema: string | null,
 	mode: TxnMode,
 };
 
 export type ConsoleConfigSnapshot = {
 	connectionId: ConnectionId | null,
+	/**  `None` only in workspaces written before tabs carried a database (see `TabSnapshot::Table`). */
+	database: string | null,
 	schema: string | null,
 	mode: TxnMode,
 };
 
 export type ConsoleConfigView = {
 	connectionId: ConnectionId,
+	database: string,
 	schema: string | null,
 	mode: TxnMode,
 };
@@ -205,6 +236,31 @@ export type CustomThemeVariant = {
 	appearance: Appearance,
 	colors: { [key in string]: string },
 };
+
+/**
+ *  One database on one saved connection. Postgres catalogs and OIDs are per database, so every
+ *  catalog lookup, refresh, and count takes one of these. `database` is `pg_database.datname`.
+ */
+export type DatabaseRef = {
+	connectionId: ConnectionId,
+	database: string,
+};
+
+export type DatabaseState = {
+	name: string,
+	/**  `datistemplate OR NOT datallowconn`. `postgres` is an ordinary database. */
+	system: boolean,
+	access: DbAccess,
+	/**  Whether the tree shows this database. */
+	shown: boolean,
+	catalog: CatalogStatus,
+};
+
+export type DbAccess = "Ok" | 
+/**  `datallowconn` is false. */
+"NoConnections" | 
+/**  `has_database_privilege(datname, 'CONNECT')` is false. */
+"NoPrivilege";
 
 export type Density = "Compact" | "Standard" | "Spacious";
 
@@ -269,6 +325,17 @@ export type HistoryQuery = {
 	limit: number,
 };
 
+/**
+ *  Every database of the instance, with the state of its catalog. The connection snapshot is the
+ *  single source of catalog versions.
+ */
+export type InstanceState = {
+	/**  `ConnectionConfig.database` as the server spells it. */
+	home: string,
+	/**  Every row of `pg_database`, sorted by name. */
+	databases: DatabaseState[],
+};
+
 export type Layout = {
 	sidebar: boolean,
 	results: boolean,
@@ -276,10 +343,6 @@ export type Layout = {
 	resultsHeight: number,
 	sidebarWidth: number,
 	rightPanelWidth: number,
-};
-
-export type NotConnected = {
-	connectionId: ConnectionId,
 };
 
 /**  A console whose transaction would be lost by a disconnect or close. */
@@ -444,7 +507,12 @@ export type StmtStatus = { kind: "Pending" } | { kind: "Preparing" } | { kind: "
 /**  Minted by the frontend (`crypto.randomUUID()`). */
 export type TabId = string;
 
-export type TabSnapshot = { kind: "Sql"; id: TabId; title: string; text: string; console: ConsoleConfigSnapshot } | { kind: "Table"; id: TabId; connectionId: ConnectionId; schema: string; table: string; page: number; query?: TableQuery };
+export type TabSnapshot = { kind: "Sql"; id: TabId; title: string; text: string; console: ConsoleConfigSnapshot } | { kind: "Table"; id: TabId; connectionId: ConnectionId; 
+/**
+ *  `None` only in workspaces written before tabs carried a database; the frontend resolves
+ *  it to the connection's configured database, the only one such a tab could have used.
+ */
+database: string | null; schema: string; table: string; page: number; query?: TableQuery };
 
 /**  Staged edits to one table, applied together by `table_apply`. Rows to update or delete are found by primary key. */
 export type TableChanges = {

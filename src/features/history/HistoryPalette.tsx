@@ -125,7 +125,7 @@ function HistoryBrowser({ close }: { close: () => void }) {
             data-testid="history-item"
             onSelect={() => {
               close();
-              openSqlTab({ connectionId: h.connectionId, text: h.sql });
+              openSqlTab({ db: { connectionId: h.connectionId, database: h.database }, text: h.sql });
             }}
             className="cursor-default rounded-md px-2.5 py-2 data-[selected=true]:bg-selected"
           >

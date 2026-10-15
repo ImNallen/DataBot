@@ -2,22 +2,27 @@ import { create } from "zustand";
 import type {
   ConnectionConfig,
   ConnectionId,
-  ConsoleConfigSnapshot,
+  DatabaseRef,
   Layout,
   Settings,
   TabId,
   TableQuery,
   TabSnapshot,
+  TxnMode,
   Workspace,
 } from "../ipc/bindings";
 import type { SettingId, SettingsSectionId } from "../features/settings/sections";
+import { homeDb } from "./dbKey";
 import type { ResultPick } from "./status";
 
-export type SqlTab = { kind: "sql"; id: TabId; title: string; console: ConsoleConfigSnapshot };
+/** A tab's console target. A tab never names a connection without a database. */
+export type ConsoleTarget = { db: DatabaseRef | null; mode: TxnMode };
+
+export type SqlTab = { kind: "sql"; id: TabId; title: string; console: ConsoleTarget };
 export type TableTab = {
   kind: "table";
   id: TabId;
-  connectionId: ConnectionId;
+  db: DatabaseRef;
   schema: string;
   table: string;
   page: number;
@@ -32,7 +37,7 @@ export function isFiltered(q: TableQuery): boolean {
 }
 export type Tab = SqlTab | TableTab;
 
-export type RelationRef = { connectionId: ConnectionId; schema: string; relation: string };
+export type RelationRef = { db: DatabaseRef; schema: string; relation: string };
 
 export type Overlay =
   | { kind: "none" }
@@ -76,12 +81,24 @@ export const DEFAULT_SETTINGS: Settings = {
   panelMotionMs: 150,
 };
 
-export function tabFromSnapshot(t: TabSnapshot): Tab {
+/**
+ * A tab saved before tabs carried a database (`database: null`) resolves to the connection's
+ * configured database, the only one it could have used. A tab whose connection is gone loses its
+ * target: a SQL tab keeps its text, a table tab can never run again and is dropped.
+ */
+export function tabFromSnapshot(t: TabSnapshot, configs: Record<ConnectionId, ConnectionConfig>): Tab | null {
+  const resolve = (connectionId: ConnectionId | null, database: string | null | undefined): DatabaseRef | null => {
+    const config = connectionId ? configs[connectionId] : undefined;
+    if (!config) return null;
+    return database == null ? homeDb(config) : { connectionId: config.id, database };
+  };
   switch (t.kind) {
     case "Sql":
-      return { kind: "sql", id: t.id, title: t.title, console: { ...t.console, schema: null } };
-    case "Table":
-      return { kind: "table", id: t.id, connectionId: t.connectionId, schema: t.schema, table: t.table, page: t.page, query: t.query ?? EMPTY_QUERY };
+      return { kind: "sql", id: t.id, title: t.title, console: { db: resolve(t.console.connectionId, t.console.database), mode: t.console.mode } };
+    case "Table": {
+      const db = resolve(t.connectionId, t.database);
+      return db && { kind: "table", id: t.id, db, schema: t.schema, table: t.table, page: t.page, query: t.query ?? EMPTY_QUERY };
+    }
     default: {
       const unreachable: never = t;
       return unreachable;
@@ -94,8 +111,16 @@ export function workspaceSnapshot(s: Pick<WorkspaceData, "tabs" | "order" | "act
     const t = s.tabs[id];
     if (!t) return [];
     return t.kind === "sql"
-      ? [{ kind: "Sql", id: t.id, title: t.title, text: textOf(t.id), console: t.console }]
-      : [{ kind: "Table", id: t.id, connectionId: t.connectionId, schema: t.schema, table: t.table, page: t.page, query: t.query }];
+      ? [
+          {
+            kind: "Sql",
+            id: t.id,
+            title: t.title,
+            text: textOf(t.id),
+            console: { connectionId: t.console.db?.connectionId ?? null, database: t.console.db?.database ?? null, schema: null, mode: t.console.mode },
+          },
+        ]
+      : [{ kind: "Table", id: t.id, connectionId: t.db.connectionId, database: t.db.database, schema: t.schema, table: t.table, page: t.page, query: t.query }];
   });
   return { tabs, active: s.active, layout: s.layout };
 }
@@ -113,9 +138,14 @@ export function tabLabel(tab: Tab): string {
   return tab.kind === "sql" ? tab.title : tab.table;
 }
 
-export function tabConnectionId(tab: Tab | undefined): ConnectionId | null {
+export function tabTarget(tab: Tab | undefined): DatabaseRef | null {
   if (!tab) return null;
-  return tab.kind === "sql" ? tab.console.connectionId : tab.connectionId;
+  return tab.kind === "sql" ? tab.console.db : tab.db;
+}
+
+/** `prod-postgres · shop`, for the status bar. */
+export function targetLabel(ref: DatabaseRef, configs: Record<ConnectionId, ConnectionConfig>): string {
+  return `${configs[ref.connectionId]?.name ?? "Unknown connection"} · ${ref.database}`;
 }
 
 type WorkspaceActions = {
@@ -124,7 +154,7 @@ type WorkspaceActions = {
   closeTab(id: TabId): void;
   setActive(id: TabId): void;
   renameTab(id: TabId, title: string): void;
-  patchSqlConsole(id: TabId, patch: Partial<ConsoleConfigSnapshot>): void;
+  patchSqlConsole(id: TabId, patch: Partial<ConsoleTarget>): void;
   setTablePage(id: TabId, page: number, exactRowCount?: number): void;
   setTableQuery(id: TabId, query: TableQuery): void;
   setLayout(patch: Partial<Layout>): void;
@@ -158,14 +188,15 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
   cursor: { line: 1, col: 1 },
 
   restore: (w, connections, settings) => {
-    const tabs = w.tabs.map(tabFromSnapshot);
+    const configs = Object.fromEntries(connections.map((c) => [c.id, c]));
+    const tabs = w.tabs.flatMap((t) => tabFromSnapshot(t, configs) ?? []);
     const order = tabs.map((t) => t.id);
     set({
       tabs: Object.fromEntries(tabs.map((t) => [t.id, t])),
       order,
       active: w.active && order.includes(w.active) ? w.active : (order[0] ?? null),
       layout: { ...w.layout, rightPanel: w.layout.rightPanel && "Assistant" },
-      configs: Object.fromEntries(connections.map((c) => [c.id, c])),
+      configs,
       settings,
     });
   },
@@ -207,7 +238,7 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
       configs: { ...s.configs, [c.id]: c },
       tabs: Object.fromEntries(
         Object.entries(s.tabs).map(([id, t]) =>
-          t.kind === "sql" && t.console.connectionId === null ? [id, { ...t, console: { ...t.console, connectionId: c.id } }] : [id, t],
+          t.kind === "sql" && t.console.db === null ? [id, { ...t, console: { ...t.console, db: homeDb(c) } }] : [id, t],
         ),
       ),
     })),

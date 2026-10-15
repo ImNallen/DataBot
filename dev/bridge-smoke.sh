@@ -56,11 +56,12 @@ PY
 )
 CONN=$(invoke connection_save "$DRAFT" | ok)
 CONN_ID=$(echo "$CONN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+DB=$(echo "$CONN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["database"])')
 echo "saved connection $CONN_ID"
 invoke connection_connect "{\"id\":\"$CONN_ID\"}" | ok
-invoke catalog_get "{\"id\":\"$CONN_ID\"}" | ok | python3 -c 'import json,sys; c=json.load(sys.stdin); print("catalog v%d: %s" % (c["version"], ", ".join("%s(%d)" % (s["name"], len(s["relations"])) for s in c["schemas"])))'
+invoke catalog_get "{\"db\":{\"connectionId\":\"$CONN_ID\",\"database\":\"$DB\"}}" | ok | python3 -c 'import json,sys; c=json.load(sys.stdin); print("catalog %s v%d: %s" % (c["db"]["database"], c["version"], ", ".join("%s(%d)" % (s["name"], len(s["relations"])) for s in c["schemas"])))'
 TAB=$(python3 -c 'import uuid; print(uuid.uuid4())')
-invoke console_configure "{\"tabId\":\"$TAB\",\"config\":{\"connectionId\":\"$CONN_ID\",\"schema\":null,\"mode\":\"AutoCommit\"}}" | ok >/dev/null
+invoke console_configure "{\"tabId\":\"$TAB\",\"config\":{\"connectionId\":\"$CONN_ID\",\"database\":\"$DB\",\"schema\":null,\"mode\":\"AutoCommit\"}}" | ok >/dev/null
 NOTICE=$(cat <<'SQL'
 do $$ begin raise notice 'smoke notice'; end $$;
 SQL
@@ -90,7 +91,7 @@ done
 invoke result_page "{\"resultRef\":{\"tabId\":\"$TAB\",\"runId\":$RUN_ID,\"index\":1},\"start\":0,\"len\":10}" | ok
 kill $SSE_PID; wait $SSE_PID 2>/dev/null || true
 
-python3 - "$SSE_LOG" "$TAB" "$RUN_ID" "$QUERY" <<'EOF'
+python3 - "$SSE_LOG" "$TAB" "$RUN_ID" "$QUERY" "$DB" <<'EOF'
 import json, sys
 frames = [json.loads(l[5:]) for l in open(sys.argv[1]) if l.startswith("data:")]
 kinds = [f["kind"] for f in frames]
@@ -115,6 +116,10 @@ expected = [
 ]
 assert log == expected, log
 print("SSE ConsoleOutput: %d lines, notice %r" % (len(log), log[1][2]))
-assert "ConnectionChanged" in kinds and "CatalogChanged" in kinds and "ConsoleOutput" in kinds and "HistoryAppended" in kinds
+assert "ConnectionChanged" in kinds and "ConsoleOutput" in kinds and "HistoryAppended" in kinds
+ready = [d["catalog"]["version"] for f in frames if f["kind"] == "ConnectionChanged" and f["status"]["kind"] == "Connected"
+         for d in f["status"]["instance"]["databases"] if d["name"] == sys.argv[5] and d["catalog"]["kind"] == "Ready"]
+assert ready, "no ConnectionChanged carried a Ready catalog for %s" % sys.argv[5]
+print("SSE ConnectionChanged: %s catalog Ready at v%d" % (sys.argv[5], ready[-1]))
 print("bridge smoke ok")
 EOF

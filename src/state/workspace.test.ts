@@ -18,12 +18,12 @@ const config = (id: string): ConnectionConfig => ({
 describe("workspace.upsertConfig", () => {
   it("binds SQL tabs that have no connection and leaves bound tabs alone", () => {
     const ws = useWorkspace.getState();
-    ws.addTab({ kind: "sql", id: "free", title: "Untitled-1.sql", console: { connectionId: null, schema: "public", mode: "AutoCommit" } });
-    ws.addTab({ kind: "sql", id: "bound", title: "Untitled-2.sql", console: { connectionId: "old", schema: "public", mode: "Manual" } });
+    ws.addTab({ kind: "sql", id: "free", title: "Untitled-1.sql", console: { db: null, mode: "AutoCommit" } });
+    ws.addTab({ kind: "sql", id: "bound", title: "Untitled-2.sql", console: { db: { connectionId: "old", database: "reporting" }, mode: "Manual" } });
     ws.upsertConfig(config("new"));
     const tabs = useWorkspace.getState().tabs;
-    expect(tabs.free?.kind === "sql" && tabs.free.console.connectionId).toBe("new");
-    expect(tabs.bound?.kind === "sql" && tabs.bound.console.connectionId).toBe("old");
+    expect(tabs.free?.kind === "sql" && tabs.free.console.db).toEqual({ connectionId: "new", database: "shop" });
+    expect(tabs.bound?.kind === "sql" && tabs.bound.console.db).toEqual({ connectionId: "old", database: "reporting" });
   });
 });
 

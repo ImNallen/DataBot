@@ -23,9 +23,25 @@ pub enum StmtKind {
     Other(String),
 }
 
+/// What a successful statement makes stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Invalidates {
+    Nothing,
+    /// The catalog of the database the statement ran in.
+    Catalog,
+    /// The instance's `pg_database` list.
+    DatabaseList,
+}
+
 impl StmtKind {
-    pub fn is_ddl(&self) -> bool {
-        matches!(self, StmtKind::Ddl(_))
+    pub fn invalidates(&self) -> Invalidates {
+        match self {
+            StmtKind::Ddl(tag) | StmtKind::NoTxnBlock(tag) if tag.ends_with(" DATABASE") => Invalidates::DatabaseList,
+            StmtKind::Ddl(_) => Invalidates::Catalog,
+            // `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `REINDEX ... CONCURRENTLY`.
+            StmtKind::NoTxnBlock(tag) if tag.contains("INDEX") || tag.starts_with("REINDEX") => Invalidates::Catalog,
+            _ => Invalidates::Nothing,
+        }
     }
 }
 
@@ -200,5 +216,19 @@ mod tests {
         assert_eq!(classify("call p()"), StmtKind::Other("CALL".into()));
         assert_eq!(classify("(select 1) union (select 2)"), StmtKind::Query);
         assert_eq!(classify(""), StmtKind::Other(String::new()));
+    }
+
+    #[test]
+    fn statements_name_what_they_invalidate() {
+        let of = |sql: &str| classify(sql).invalidates();
+        assert_eq!(of("create table t (id int)"), Invalidates::Catalog);
+        assert_eq!(of("drop index concurrently i"), Invalidates::Catalog);
+        assert_eq!(of("reindex table concurrently t"), Invalidates::Catalog);
+        assert_eq!(of("create database x"), Invalidates::DatabaseList);
+        assert_eq!(of("drop database x"), Invalidates::DatabaseList);
+        assert_eq!(of("alter database x rename to y"), Invalidates::DatabaseList);
+        assert_eq!(of("vacuum t"), Invalidates::Nothing);
+        assert_eq!(of("insert into t values (1)"), Invalidates::Nothing);
+        assert_eq!(of("truncate t"), Invalidates::Nothing);
     }
 }

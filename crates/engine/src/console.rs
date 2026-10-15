@@ -12,7 +12,7 @@ use crate::connection::{original_position, query_error, transport_error};
 use crate::model::*;
 use crate::results::{Caps, ResultSet};
 use crate::session::{CancelHandle, Session};
-use crate::sql::{StmtKind, StmtSpan};
+use crate::sql::{Invalidates, StmtKind, StmtSpan};
 use crate::store::HistoryInsert;
 use crate::text::{OffsetMap, synthesize_tag, type_ref};
 use crate::txn::{StmtOutcome, needs_implicit_begin, txn_after};
@@ -213,6 +213,8 @@ pub struct RunPlan {
     pub mode: TxnMode,
     pub txn: TxnState,
     pub schema: Option<String>,
+    /// The database the session is on; catalog refreshes and history rows name it.
+    pub database: String,
     pub connection: ConnectionConfig,
 }
 
@@ -354,19 +356,23 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
                 (HistoryOutcome::Error { message: error.message.clone() }, 0),
             ),
         };
+        let invalidates = if result.is_ok() { stmt.kind.invalidates() } else { Invalidates::Nothing };
         console
             .edit(&shared, run_id, |inner| {
                 inner.txn = txn;
                 Console::statements_mut(inner)[index].status = status;
-                if stmt.kind.is_ddl() && result.is_ok() {
+                if invalidates == Invalidates::Catalog {
                     inner.ddl_pending = true;
                 }
                 if inner.ddl_pending && txn == TxnState::Idle {
                     inner.ddl_pending = false;
-                    shared.schedule_catalog_refresh(plan.connection.id);
+                    shared.schedule_catalog_refresh(inner.config.db());
                 }
             })
             .await?;
+        if invalidates == Invalidates::DatabaseList {
+            shared.schedule_database_list_refresh(plan.connection.id);
+        }
         let mut lines = notice_lines(&mut session);
         lines.push(line);
         console.output_all(&shared, run_id, lines);
@@ -374,7 +380,7 @@ pub async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: S
             at_ms: now_ms(),
             connection_id: plan.connection.id,
             connection_name: plan.connection.name.clone(),
-            database: plan.connection.database.clone(),
+            database: plan.database.clone(),
             sql: sql.to_owned(),
             elapsed_ms: history.1,
             outcome: history.0,

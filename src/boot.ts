@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { commands, type AppEvent } from "./ipc/bindings";
 import { useCatalog } from "./state/catalog";
-import { useLive, type LiveData } from "./state/live";
+import { useLive, wantedCatalogs, type LiveData } from "./state/live";
 import { useWorkspace, workspaceSnapshot } from "./state/workspace";
 import { startAppearance } from "./shell/appearance";
 import { startTheme } from "./shell/theme";
@@ -22,15 +22,16 @@ function startPersistence() {
   onEditorDocChanged(schedule);
 }
 
+/** The catalog store holds exactly the Ready catalogs of the connection snapshots. */
 function startCatalogSync() {
   const sync = (s: LiveData) => {
-    for (const [id, conn] of Object.entries(s.connections)) {
-      const version = s.catalogVersions[id];
-      if (conn.status.kind === "Connected" && version !== undefined) void useCatalog.getState().ensure(id, version);
-    }
+    const wanted = wantedCatalogs(s.connections);
+    const catalog = useCatalog.getState();
+    catalog.prune(new Set(wanted.keys()));
+    for (const { ref, version } of wanted.values()) void catalog.ensure(ref, version);
   };
   useLive.subscribe((s, prev) => {
-    if (s.connections !== prev.connections || s.catalogVersions !== prev.catalogVersions) sync(s);
+    if (s.connections !== prev.connections) sync(s);
   });
   sync(useLive.getState());
 }

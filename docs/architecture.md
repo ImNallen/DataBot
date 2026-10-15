@@ -55,7 +55,7 @@ export async function boot(): Promise<void> {
   startTheme();
   if (snapshot.workspace.tabs.length === 0) openSqlTab();
   startPersistence();                              // debounced workspace_save
-  startCatalogSync();                              // useCatalog.ensure(id, version) per connected connection
+  startCatalogSync();                              // useCatalog holds exactly the Ready catalogs in the connection snapshots
 }
 ```
 
@@ -126,11 +126,11 @@ async fn manual_tab_isolated_until_commit_and_abort_rolls_back() {
    - Type-aware rendering keys off `TypeCategory` on the column, not off the value.
    - Session `TimeZone` is set to the OS IANA zone on session open, so timestamptz text is local time.
 2. **Rust owns result rows. The webview pulls windows.** A `ResultSet` is an append-only text arena filled by the run task. The grid requests `resultPage(ref, start, len)`. CSV export writes straight from the arena. The webview never holds more than a few pages, and the row-cap policy lives in one place. Sort and filter on a table tab do not touch the arena. They change the tab's `TableQuery` and re-run `TablePage`, so the engine sorts and filters. The value viewer is the `cell` overlay, opened from the grid. It reads a cut cell's full text with `result_cell` through `RowCache.loadFull`.
-3. **One dedicated session per tab, opened lazily, plus one metadata session per connection.** No pool. The metadata session also serves `exact_row_count`. Session state (search_path, temp tables, GUCs, transactions) belongs to the tab, which is what an IDE user expects.
+3. **One dedicated session per tab, opened lazily, plus one metadata session per database the instance needs.** No pool. A connection is an `Instance`: its *home* session is on the configured database, and it reads `pg_database` on connect. Every other database gets a `DbSlot` with its own lazily opened metadata session, because a Postgres session reads only its own database's catalog. A slot exists exactly for the databases the tree shows and the databases this connection's consoles target; `reconcile` converges the slots to that set after connect, `console_configure`, and `console_close`, and `catalog_get` refuses any other database with `NotShown`. The home session's death marks the connection `Lost`; another slot's death fails only that database, and the next load reopens it. A slot's session also serves `exact_row_count` for its database. Session state (search_path, temp tables, GUCs, transactions) belongs to the tab, which is what an IDE user expects.
 4. **During a run, the session moves into the run task.** `Console` holds `Option<Session>`. A run takes it and gives it back when finished. Commit, rollback, or a second run while it is gone returns `Busy`. Concurrent use of one session cannot be expressed.
 5. **Snapshots over deltas.** The backend emits whole `ConsoleState` and `ConnectionState` values with a monotonically increasing `rev`. The frontend's live store is a pure projection: `apply(event)` keeps the higher rev. This is idempotent and tolerant of event order. Only `ConsoleOutput`, the append-only output log, uses deltas.
 6. **One SQL lexer, in Rust.** `split_statements` and `classify` are pure functions. They handle dollar quotes, `E''` strings, nested block comments, and quoted identifiers. They drive statement picking, transaction-state tracking, DDL-triggered catalog refresh, and synthesized command tags. The frontend sends the whole document plus a cursor or selection. All offsets crossing IPC are UTF-16 code units (CodeMirror's unit), and the conversion happens once at the boundary.
-7. **One full-catalog snapshot per connection, loaded in four queries.** It covers schemas, relations with `reltuples`, columns with PK flags, and functions. The tree, ⌘P fuzzy search, and CodeMirror completion are all derived from it. Successful DDL triggers a background refresh and a `CatalogChanged` event.
+7. **One full-catalog snapshot per database, keyed by `DatabaseRef { connectionId, database }`, loaded in four queries.** It covers schemas, relations with `reltuples`, columns with PK flags, and functions. The tree, ⌘P fuzzy search, CodeMirror completion, and the PK lookups for table pages and staged edits are all derived from the catalog of the database they address; OIDs are never compared across databases. The connection snapshot is the single source of catalog versions: `ConnStatus::Connected.instance` lists every database with its `CatalogStatus` (`Idle`, `Loading`, `Ready { version }`, `Failed`), and the frontend fetches `catalog_get(db)` when a `Ready` version is newer than what it holds and drops views that are no longer `Ready`. Versions come from one engine-wide counter, so a reconnect never reissues one. Successful DDL schedules a refresh of the console's database; a slot's `RefreshGate` coalesces a burst into at most two loads.
 8. **Contract generation.** Every IPC type lives in `crates/engine` with `#[derive(Serialize, Deserialize, specta::Type)]`. `src-tauri` registers commands with `tauri-specta` and adds `AppEvent` as a plain exported type; the shell forwards `Engine::subscribe()` with `app.emit("app-event", ev)`, which sidesteps the release-candidate event API. Debug builds export `src/ipc/bindings.ts`, and a test fails if the checked-in file differs.
 9. **SQL text is interpreted only in Rust.** That includes table-browse SQL: `RunRequest::TablePage` makes the engine build `SELECT * FROM "schema"."table" WHERE <filters> ORDER BY <user order>, <pk> LIMIT n OFFSET m` with its own identifier and literal quoting and the catalog's PK columns. The user's `WHERE` and `ORDER BY` text goes in as written, and the engine refuses the page if the result isn't one statement. Staged row edits go through `table_apply`, which builds the `INSERT`, `UPDATE`, and `DELETE` statements the same way.
 
@@ -179,10 +179,19 @@ pub struct ServerInfo { pub version: String /* "16.4" */, pub version_num: u32, 
 pub enum ConnStatus {
     Disconnected,
     Connecting,
-    Connected { server: ServerInfo, catalog_version: u64 },
+    Connected { server: ServerInfo, instance: InstanceState },
     Failed { error: ConnectError },          // connect attempt failed
-    Lost { reason: String },                 // metadata session died after being Connected
+    Lost { reason: String },                 // the home database's metadata session died after being Connected
 }
+/// Every `pg_database` row with the state of its catalog. The single source of catalog versions.
+#[derive(Clone, Serialize, Type)]
+pub struct InstanceState { pub home: String, pub databases: Vec<DatabaseState> }
+#[derive(Clone, Serialize, Type)]
+pub struct DatabaseState { pub name: String, pub system: bool, pub access: DbAccess, pub shown: bool, pub catalog: CatalogStatus }
+#[derive(Clone, Copy, Serialize, Type)] pub enum DbAccess { Ok, NoConnections, NoPrivilege }
+#[derive(Clone, Serialize, Type)]
+#[serde(tag = "kind")]
+pub enum CatalogStatus { Idle, Loading, Ready { version: u64 }, Failed { message: String } }
 #[derive(Clone, Serialize, Type)]
 pub struct ConnectionState { pub id: ConnectionId, pub rev: u64, pub status: ConnStatus }
 
@@ -193,9 +202,12 @@ pub enum ConnectError {
     Auth { message: String }, MissingPassword, Server(QueryError), Keychain { message: String },
 }
 
-// ---- catalog (one snapshot per connection) -------------------------------------
+// ---- catalog (one snapshot per database) ---------------------------------------
+/// The key for every catalog read, refresh, and count. `database` is `pg_database.datname`.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+pub struct DatabaseRef { pub connection_id: ConnectionId, pub database: String }
 #[derive(Clone, Serialize, Type)]
-pub struct Catalog { pub connection_id: ConnectionId, pub version: u64, pub database: String, pub schemas: Vec<SchemaInfo> }
+pub struct Catalog { pub db: DatabaseRef, pub version: u64, pub schemas: Vec<SchemaInfo> }
 #[derive(Clone, Serialize, Type)]
 pub struct SchemaInfo { pub name: String, pub relations: Vec<Relation>, pub functions: Vec<FunctionInfo> }
 #[derive(Clone, Serialize, Type)]
@@ -217,7 +229,7 @@ pub struct FunctionInfo { pub oid: u32, pub name: String, pub args: String, pub 
 pub enum TxnMode { AutoCommit, Manual }
 
 #[derive(Clone, Deserialize, Type)]
-pub struct ConsoleConfig { pub connection_id: ConnectionId, pub schema: Option<String>, pub mode: TxnMode }
+pub struct ConsoleConfig { pub connection_id: ConnectionId, pub database: String, pub schema: Option<String>, pub mode: TxnMode }
 
 #[derive(Clone, Copy, PartialEq, Serialize, Type)]
 pub enum TxnState { Idle, Active, Aborted }   // Aborted: only ROLLBACK [TO SAVEPOINT] is accepted
@@ -232,7 +244,7 @@ pub struct ConsoleState {
     pub session: SessionState, pub txn: TxnState, pub run: RunState,
 }
 #[derive(Clone, Serialize, Type)]
-pub struct ConsoleConfigView { pub connection_id: ConnectionId, pub schema: Option<String>, pub mode: TxnMode }
+pub struct ConsoleConfigView { pub connection_id: ConnectionId, pub database: String, pub schema: Option<String>, pub mode: TxnMode }
 
 #[derive(Clone, Serialize, Type)]
 #[serde(tag = "kind")]
@@ -333,10 +345,11 @@ pub struct Workspace { pub tabs: Vec<TabSnapshot>, pub active: Option<TabId>, pu
 #[serde(tag = "kind")]
 pub enum TabSnapshot {
     Sql   { id: TabId, title: String, text: String, console: ConsoleConfigSnapshot },
-    Table { id: TabId, connection_id: ConnectionId, schema: String, table: String, page: u32, #[serde(default)] query: TableQuery },
+    Table { id: TabId, connection_id: ConnectionId, database: Option<String>, schema: String, table: String, page: u32, #[serde(default)] query: TableQuery },
 }
 #[derive(Clone, Serialize, Deserialize, Type)]
-pub struct ConsoleConfigSnapshot { pub connection_id: Option<ConnectionId>, pub schema: Option<String>, pub mode: TxnMode }
+pub struct ConsoleConfigSnapshot { pub connection_id: Option<ConnectionId>, pub database: Option<String>, pub schema: Option<String>, pub mode: TxnMode }
+// `database` is `None` only in workspaces saved before tabs carried one; `tabFromSnapshot` resolves it to the connection's configured database.
 #[derive(Clone, Serialize, Type)]
 pub struct Layout {
     pub sidebar: bool, pub results: bool, pub right_panel: Option<RightPanel>, pub results_height: u16,
@@ -361,8 +374,7 @@ pub struct BootSnapshot {
 #[derive(Clone, Serialize, Type)]
 #[serde(tag = "kind")]
 pub enum AppEvent {
-    ConnectionChanged(ConnectionState),
-    CatalogChanged { connection_id: ConnectionId, version: u64 },
+    ConnectionChanged(ConnectionState),                 // also carries every catalog version, in InstanceState
     ConsoleChanged(ConsoleState),                       // throttled to <= 10/s per console while streaming
     ConsoleOutput { tab_id: TabId, entries: Vec<OutputEntry> },
     HistoryAppended(HistoryEntry),
@@ -379,12 +391,12 @@ Each command is one line delegating to `Engine`. tauri-specta uses `ErrorHandlin
 | `connection_save` | `ConnectionDraft` | `Result<ConnectionConfig, SaveError>` | Upsert. Seals a set password and writes it before the config row. Reads the keychain only when a password is set. |
 | `connection_delete` | `ConnectionId` | `Result<(), DisconnectError>` | Disconnects (refuses on open txns), deletes the config row and sealed password together. Never touches the keychain. |
 | `connection_test` | `ConnectionDraft` | `Result<ServerInfo, ConnectError>` | `PasswordInput::Keep` opens the sealed password, if one is stored. |
-| `connection_connect` | `ConnectionId` | `Result<ServerInfo, ConnectError>` | Idempotent. Opens the metadata session and loads the catalog. |
+| `connection_connect` | `ConnectionId` | `Result<ServerInfo, ConnectError>` | Idempotent. Opens the home session and reads `pg_database`; catalogs load afterwards, each with its own status. |
 | `connection_disconnect` | `ConnectionId, force: bool` | `Result<(), DisconnectError>` | `OpenTransactions { tabs: Vec<OpenTxn> }` unless forced. |
-| `catalog_get` | `ConnectionId` | `Result<Catalog, NotConnected>` | Whole snapshot, fetched on `CatalogChanged`. |
-| `catalog_refresh` | `ConnectionId` | `Result<u64, NotConnected>` | Returns the new version. The event also fires. |
-| `exact_row_count` | `ConnectionId, schema: String, table: String, TableQuery` | `Result<u64, CountError>` | `count(*)` with the query's filters, on the metadata session. The pager's Last button calls it. |
-| `console_configure` | `TabId, ConsoleConfig` | `Result<ConsoleState, ConfigureError>` | Upsert. `TransactionOpen` if mode/connection change with a live txn. A schema change issues `SET search_path` (applied on next run if busy). |
+| `catalog_get` | `DatabaseRef` | `Result<Catalog, CatalogError>` | Whole snapshot of one database, loaded on first use. `NotShown` for a database neither shown nor targeted by a console. |
+| `catalog_refresh` | `DatabaseRef` | `Result<u64, CatalogError>` | Returns the new version. The connection snapshot carries it too. |
+| `exact_row_count` | `DatabaseRef, schema: String, table: String, TableQuery` | `Result<u64, CountError>` | `count(*)` with the query's filters, on that database's metadata session. The pager's Last button calls it. |
+| `console_configure` | `TabId, ConsoleConfig` | `Result<ConsoleState, ConfigureError>` | Upsert. `TransactionOpen` if mode, connection, or database change with a live txn. A connection or database change resets the session. A schema change issues `SET search_path` (applied on next run if busy). |
 | `console_run` | `TabId, RunRequest` | `Result<RunAccepted, RunError>` | Returns once statements are picked. Progress arrives as events. `BadFilter` when a table page's SQL isn't one statement. |
 | `console_cancel` | `TabId` | `()` | Idempotent. Sets the stop flag and sends `CancelRequest`. |
 | `console_commit` | `TabId` | `Result<(), TxnError>` | `Busy`, `NoTransaction`. Commit in `Aborted` reports `RolledBack`. |
@@ -486,9 +498,9 @@ impl Engine {
     pub async fn test_connection(&self, d: ConnectionDraft) -> Result<ServerInfo, ConnectError>;
     pub async fn connect(&self, id: ConnectionId) -> Result<ServerInfo, ConnectError>;
     pub async fn disconnect(&self, id: ConnectionId, force: bool) -> Result<(), DisconnectError>;
-    pub fn catalog(&self, id: ConnectionId) -> Result<Arc<Catalog>, NotConnected>;
-    pub async fn refresh_catalog(&self, id: ConnectionId) -> Result<u64, NotConnected>;
-    pub async fn exact_row_count(&self, id: ConnectionId, schema: String, table: String, query: TableQuery) -> Result<u64, CountError>;
+    pub async fn catalog(&self, db: DatabaseRef) -> Result<Arc<Catalog>, CatalogError>;
+    pub async fn refresh_catalog(&self, db: DatabaseRef) -> Result<u64, CatalogError>;
+    pub async fn exact_row_count(&self, db: DatabaseRef, schema: String, table: String, query: TableQuery) -> Result<u64, CountError>;
 
     pub async fn console_configure(&self, tab: TabId, c: ConsoleConfig) -> Result<ConsoleState, ConfigureError>;
     pub async fn console_run(&self, tab: TabId, r: RunRequest) -> Result<RunAccepted, RunError>;
@@ -521,7 +533,7 @@ The surface is 27 methods. 23 of them match the 23 registered commands one to on
 - The row cap with drain
 - Throttled snapshot emission
 - History recording
-- DDL-triggered catalog refresh
+- DDL-triggered catalog refresh, per database and coalesced
 - UTF-16 offset mapping
 - Table-browse, count, and edit SQL with its own quoting
 - Staged edits applied under one transaction or savepoint
@@ -642,7 +654,7 @@ async fn run_task(console: Arc<Console>, shared: Arc<Shared>, mut session: Sessi
         txn = txn_after(txn, &kind, outcome.ok_or_err());
         shared.record_history(...);                      // single writer: run tasks, via store mutex
         if outcome.failed() && settings.stop_on_error { mark rest Skipped; break }
-        if kind.is_ddl() && ok && txn == Idle { shared.schedule_catalog_refresh(conn) }  // else ddl_pending until commit
+        match kind.invalidates() { Catalog if ok && txn == Idle => shared.schedule_catalog_refresh(console db), DatabaseList if ok => shared.schedule_database_list_refresh(conn), _ => {} }  // Catalog inside a txn: ddl_pending until commit
     }
     // if session.closed has Some(reason): slot = Lost { reason, txn_lost: txn != Idle }; txn = Idle
     // else slot = Idle(session)
@@ -655,7 +667,7 @@ Session-loss rules:
 - **Death detection.** Driver-task exit, or TCP keepalive (`keepalives_idle = 30s`), sets `closed`.
 - **Lost while idle with no transaction.** The next run opens a fresh session transparently and logs `Info("Session reset")`.
 - **Lost with a transaction open.** The slot becomes `Lost { txn_lost: true }` and the UI shows a persistent banner: "Transaction rolled back: connection lost". The next run starts a fresh session and clears the banner.
-- **Metadata session death.** Only `ConnectionState` becomes `Lost`. Consoles are independent.
+- **Metadata session death.** The home database's session marks `ConnectionState` `Lost`. Another database's session marks only that database's `CatalogStatus` `Failed`. Consoles are independent.
 
 `disconnect(force=false)` checks every console of that connection that is `Active` or `Aborted`. To compute `has_writes` it runs `SELECT pg_current_xact_id_if_assigned() IS NOT NULL` (PG13+, else `true`) on the idle session.
 
@@ -675,9 +687,10 @@ type LiveData = {
   connections: Record<ConnectionId, ConnectionState>;
   consoles: Record<TabId, ConsoleState>;
   output: Record<TabId, OutputEntry[]>;                // ring buffer, 5,000 per tab; the Output panel renders all of it
-  catalogVersions: Record<ConnectionId, number>;       // highest version seen; boot.ts calls useCatalog.ensure
   historyTail: HistoryEntry[];                         // last 200 HistoryAppended entries, newest first
 };
+// wantedCatalogs(connections): every Ready catalog of every Connected instance, keyed by DbKey (connection id + NUL + database).
+// boot.ts prunes useCatalog to that set and calls ensure for each entry.
 type LiveState = LiveData & {
   hydrate(b: BootSnapshot): void;
   apply(e: AppEvent): void;                            // keep-higher-rev; exhaustive switch on e.kind
@@ -685,16 +698,17 @@ type LiveState = LiveData & {
 // export const useLive = create<LiveState>()(...)
 
 // state/workspace.ts: UI-owned; tabs, order, active, and layout persist via workspace_save (debounced)
+type ConsoleTarget = { db: DatabaseRef | null; mode: TxnMode };   // a tab never names a connection without a database
 type Tab =
-  | { kind: "sql"; id: TabId; title: string; console: ConsoleConfigSnapshot }
-  | { kind: "table"; id: TabId; connectionId: ConnectionId; schema: string; table: string; page: number;
+  | { kind: "sql"; id: TabId; title: string; console: ConsoleTarget }
+  | { kind: "table"; id: TabId; db: DatabaseRef; schema: string; table: string; page: number;
       query: TableQuery; exactRowCount?: number };    // exactRowCount: set by the pager's Last button
 type WorkspaceData = {
   tabs: Record<TabId, Tab>; order: TabId[]; active: TabId | null; layout: Layout;
   configs: Record<ConnectionId, ConnectionConfig>;
   activeResult: Record<TabId, number>;                 // which statement's result is shown
   settings: Settings;
-  selected: RelationRef | null;                        // highlighted relation in the tree
+  selected: RelationRef | null;                        // highlighted relation in the tree: { db, schema, relation }
   overlay: Overlay;                                    // none | palette | history | settings-search | connection | cell | confirm
   screen: Screen;                                      // workspace | settings
   toast: { id: number; text: string } | null;
@@ -703,15 +717,15 @@ type WorkspaceData = {
 // Editor text lives only in CodeMirror: editorStates: Map<TabId, EditorState> (module-level).
 // workspaceSnapshot() reads SQL tab text from there. No second copy of the text is kept.
 
-// state/catalog.ts: per connection, rebuilt when catalog version changes
+// state/catalog.ts: per database, rebuilt when its catalog version changes
 type CatalogView = {
   catalog: Catalog;
   completion: SQLNamespace;                            // {schema: {table: [cols]}} for lang-sql
   qualifiedTables: Completion[];                       // "schema.table", applied as "schema"."table"
-  searchItems: SearchItem[];                           // tables, views, functions, "table.column"
-  relationsById: Map<number, { schema: string; rel: Relation }>;
+  searchItems: SearchItem[];                           // tables, views, functions, "table.column"; each carries its DatabaseRef
+  relationsById: Map<number, { schema: string; rel: Relation }>;   // OIDs are per database, so per view
 };
-// useCatalog: { views: Record<ConnectionId, CatalogView>; ensure(id, version): Promise<void> }
+// useCatalog: { views: Record<DbKey, CatalogView>; ensure(ref, version): Promise<void>; prune(keep: Set<DbKey>): void }
 
 // state/rowCache.ts: outside React, per ResultRef, LRU of 256-row pages (max 64 pages)
 class RowCache {
@@ -842,7 +856,8 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - `generate_series(1, 300000)` truncates at `max_rows` with `rows_seen = 300000`
    - CSV export equals `COPY ... TO STDOUT CSV` output
    - history persists across `Engine::open` on the same dir
-   - DDL triggers `CatalogChanged`
+   - DDL refreshes the catalog and the connection snapshot carries the new version; a DDL burst behind a busy metadata session causes exactly two loads
+   - a table page on a second database (`reporting`) orders by that database's primary key; catalog versions keep rising across a reconnect; history records the console's database; a database no tab or tree row uses gets `NotShown`
    - `exact_row_count` is exact, reports `NotConnected` before connect, and fails on a missing table
    - a forced disconnect during a manual run leaves the tab idle, and a run orphaned by disconnect never writes into the next run
    - the console's schema sets `search_path`, `COPY ... FROM STDIN` and `TO STDOUT` are rejected as `Unsupported`, and the session survives
@@ -965,13 +980,14 @@ Frontend phase (PRs #4 and #11 to #13). These PRs built the live store, the edit
 - **Keys.** ⌘W closes the active tab. The macOS menu in `main.rs` mirrors Tauri's default menu with Close Window moved to ⇧⌘W, so ⌘W reaches the webview. Global shortcuts live in `shell/commands.ts`.
 - **History is a palette, and the right panel is a placeholder.** The sidebar's clock button opens `HistoryPalette` (cmdk), which pages `history_list` and puts `historyTail` on top. The right panel draws only an Assistant placeholder.
 - **CSV export needs the desktop app.** `exportCsv` asks for a path with the native save dialog. In the dev-bridge browser that dialog throws, and the app shows a toast. Other export formats are disabled menu items marked "Soon", and Import shows a "coming soon" toast.
+- **Catalogs are addressed by database (PR: address catalogs and consoles by database).** `Live` became `Instance` with a `DbSlot` per database; `ConnStatus::Connected.catalogVersion` and `AppEvent::CatalogChanged` are gone, and `InstanceState` in the connection snapshot is the only source of versions. `ConsoleConfig` and `ConsoleConfigView` carry a required `database`; the persisted `ConsoleConfigSnapshot.database` and `TabSnapshot::Table.database` are `Option<String>` so older workspaces load, and `tabFromSnapshot` resolves a missing one to the connection's configured database. A table tab whose connection no longer exists is dropped at restore. `StmtKind::invalidates()` maps a statement to `Nothing`, `Catalog`, or `DatabaseList`; `CREATE`, `DROP`, and `ALTER DATABASE` re-read `pg_database`, and `CONCURRENTLY` index DDL refreshes the catalog. `NotConnected` became `CatalogError { NotConnected | UnknownDatabase | NotShown | Failed }`. The status bar shows `connection · database` for the active tab, and ⌘P shows `database.schema` beside an item when more than one database is loaded. The TopBar picker still lists connections and targets each one's configured database.
 - **The output log is a toggle in the results pane.** #11 removed the `OutputLog` pane. The log came back as `OutputPanel`, which takes the results body behind an **Output** button in the results header, so it adds no chrome. The log is tab-wide: every run, commit, rollback, and `table_apply` on the tab, oldest first, with a hairline where the `runId` changes. Each statement logs a `Statement` line, its notices, and then a `Rows`, `Command`, or `Error` line. `table_apply` logs the SQL it built for each change and its affected-row tag. Every `OutputEntry` has a `runId`, and commit, rollback, and `table_apply` send the run id they take from the shared counter. `resultView` in `state/status.ts` picks the body: an Output pick made on the current run, then the row grid, then the log when the tab has entries, then the old tail. The tail is still needed because `output` is not in `BootSnapshot`, so after a restart the log is empty while the run state is restored. The pick `{ kind: "output", runId }` in `activeResult` lapses on the next run. The button turns amber only while the latest run in the log raised a WARNING. `output[tabId]` is never freed when a tab closes, which holds up to 5,000 entries per closed tab.
 
 ## Open questions and risks
 
 Answered since the design:
 
-- **Databases in the tree.** The tree shows one node per connection, the configured database. `Catalog` keeps the database name.
+- **Databases in the tree.** A connection is an instance. `InstanceState` lists every database of the server, and the tree draws the ones marked `shown` under the connection, each with its own catalog. Today that is the configured (home) database only; a visibility store is the next step. `Catalog.db` names the database.
 - **System schemas.** `pg_catalog`, `information_schema`, `pg_toast`, and temp schemas are filtered out in `catalog.rs`. There is no toggle.
 - **Timestamps.** The grid shows PG's text output verbatim, seconds included, and the export is verbatim too.
 - **`COPY` over stdio.** `CopyStdio` covers `COPY ... TO STDOUT` as well as `FROM STDIN`, and `console_run` rejects both with `RunError::Unsupported`.

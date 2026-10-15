@@ -2,8 +2,8 @@ import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import {
   commands,
-  type ConnectionId,
   type ConsoleConfig,
+  type DatabaseRef,
   type RunRequest,
   type Settings,
   type TabId,
@@ -11,12 +11,13 @@ import {
   type TxnMode,
 } from "../../ipc/bindings";
 import { applyErrorText, configureErrorText, disconnectErrorText, runErrorText, txnErrorText } from "../../ipc/errors";
-import { findRelation, useCatalog } from "../../state/catalog";
+import { findRelation, useCatalog, viewFor } from "../../state/catalog";
+import { homeDb, sameDb } from "../../state/dbKey";
 import { useLive } from "../../state/live";
 import { dropRowCaches } from "../../state/rowCache";
 import { isRunning } from "../../state/status";
 import { pendingCount, toChanges, useTableEdits, type TableEdits } from "../../state/tableEdits";
-import { EMPTY_QUERY, nextUntitled, tabConnectionId, useWorkspace, type RelationRef, type Tab, type TableTab } from "../../state/workspace";
+import { EMPTY_QUERY, nextUntitled, tabTarget, useWorkspace, type ConsoleTarget, type RelationRef, type Tab, type TableTab } from "../../state/workspace";
 import {
   dropEditor,
   editorStateOf,
@@ -32,13 +33,13 @@ const ws = () => useWorkspace.getState();
 const notify = (text: string) => ws().notify(text);
 
 function consoleConfig(tab: Tab): ConsoleConfig | null {
-  if (tab.kind === "table") return { connectionId: tab.connectionId, schema: null, mode: "AutoCommit" };
-  const { connectionId, schema, mode } = tab.console;
-  return connectionId ? { connectionId, schema, mode } : null;
+  const db = tabTarget(tab);
+  if (!db) return null;
+  return { connectionId: db.connectionId, database: db.database, schema: null, mode: tab.kind === "sql" ? tab.console.mode : "AutoCommit" };
 }
 
 function sameConfig(a: ConsoleConfig, b: ConsoleConfig): boolean {
-  return a.connectionId === b.connectionId && a.schema === b.schema && a.mode === b.mode;
+  return a.connectionId === b.connectionId && a.database === b.database && a.schema === b.schema && a.mode === b.mode;
 }
 
 async function ensureConsole(tab: Tab): Promise<boolean> {
@@ -130,12 +131,12 @@ export async function endTransaction(tabId: TabId, verb: "commit" | "rollback"):
   if (res.status === "error") notify(txnErrorText(res.error));
 }
 
-async function reconfigure(tabId: TabId, patch: { connectionId?: ConnectionId; mode?: TxnMode }) {
+async function reconfigure(tabId: TabId, patch: Partial<ConsoleTarget>) {
   const tab = ws().tabs[tabId];
   if (tab?.kind !== "sql") return;
   const next = { ...tab.console, ...patch };
-  if (next.connectionId && useLive.getState().consoles[tabId]) {
-    const res = await commands.consoleConfigure(tabId, { connectionId: next.connectionId, schema: next.schema, mode: next.mode });
+  if (next.db && useLive.getState().consoles[tabId]) {
+    const res = await commands.consoleConfigure(tabId, { connectionId: next.db.connectionId, database: next.db.database, schema: null, mode: next.mode });
     if (res.status === "error") {
       notify(configureErrorText(res.error));
       return;
@@ -145,25 +146,26 @@ async function reconfigure(tabId: TabId, patch: { connectionId?: ConnectionId; m
 }
 
 export const setTabMode = (tabId: TabId, mode: TxnMode) => reconfigure(tabId, { mode });
-export const setTabConnection = (tabId: TabId, connectionId: ConnectionId) => reconfigure(tabId, { connectionId });
+export const setTabTarget = (tabId: TabId, db: DatabaseRef) => reconfigure(tabId, { db });
 
-function defaultConnection(): ConnectionId | null {
+function defaultTarget(): DatabaseRef | null {
   const s = ws();
   const active = s.active ? s.tabs[s.active] : undefined;
-  if (active) return tabConnectionId(active);
+  if (active) return tabTarget(active);
   const live = useLive.getState().connections;
-  const ids = Object.keys(s.configs);
-  return ids.find((id) => live[id]?.status.kind === "Connected") ?? ids[0] ?? null;
+  const configs = Object.values(s.configs);
+  const config = configs.find((c) => live[c.id]?.status.kind === "Connected") ?? configs[0];
+  return config ? homeDb(config) : null;
 }
 
-export function openSqlTab(opts: { connectionId?: ConnectionId | null; text?: string; title?: string } = {}): TabId {
+export function openSqlTab(opts: { db?: DatabaseRef | null; text?: string; title?: string } = {}): TabId {
   const id = crypto.randomUUID();
   seedEditor(id, opts.text ?? "");
   ws().addTab({
     kind: "sql",
     id,
     title: opts.title ?? nextUntitled(Object.values(ws().tabs)),
-    console: { connectionId: opts.connectionId ?? defaultConnection(), schema: null, mode: "AutoCommit" },
+    console: { db: opts.db ?? defaultTarget(), mode: "AutoCommit" },
   });
   return id;
 }
@@ -173,9 +175,7 @@ function showResults() {
 }
 
 export function openTableTab(ref: RelationRef): void {
-  const existing = Object.values(ws().tabs).find(
-    (t) => t.kind === "table" && t.connectionId === ref.connectionId && t.schema === ref.schema && t.table === ref.relation,
-  );
+  const existing = Object.values(ws().tabs).find((t) => t.kind === "table" && sameDb(t.db, ref.db) && t.schema === ref.schema && t.table === ref.relation);
   ws().select(ref);
   showResults();
   if (existing) {
@@ -184,7 +184,7 @@ export function openTableTab(ref: RelationRef): void {
   }
   const id = crypto.randomUUID();
   seedEditor(id, browseQuery(ref.schema, ref.relation));
-  ws().addTab({ kind: "table", id, connectionId: ref.connectionId, schema: ref.schema, table: ref.relation, page: 0, query: EMPTY_QUERY });
+  ws().addTab({ kind: "table", id, db: ref.db, schema: ref.schema, table: ref.relation, page: 0, query: EMPTY_QUERY });
 }
 
 const loadedTables = new Set<TabId>();
@@ -213,7 +213,7 @@ export async function saveSettings(patch: Partial<Settings>): Promise<void> {
 export async function lastTablePage(tabId: TabId): Promise<void> {
   const tab = ws().tabs[tabId];
   if (tab?.kind !== "table") return;
-  const res = await commands.exactRowCount(tab.connectionId, tab.schema, tab.table, tab.query);
+  const res = await commands.exactRowCount(tab.db, tab.schema, tab.table, tab.query);
   if (res.status === "error") {
     notify(res.error.kind === "NotConnected" ? "Connect to jump to the last page." : res.error.message);
     return;
@@ -234,8 +234,8 @@ export function updateTableQuery(tabId: TabId, update: (q: TableQuery) => TableQ
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-export function tablePrimaryKey(tab: Pick<TableTab, "connectionId" | "schema" | "table">): string[] {
-  const rel = findRelation(useCatalog.getState().views[tab.connectionId], tab.schema, tab.table);
+export function tablePrimaryKey(tab: Pick<TableTab, "db" | "schema" | "table">): string[] {
+  const rel = findRelation(viewFor(useCatalog.getState().views, tab.db), tab.schema, tab.table);
   return rel?.kind === "Table" ? rel.columns.filter((c) => c.pk).map((c) => c.name) : [];
 }
 

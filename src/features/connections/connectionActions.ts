@@ -1,4 +1,4 @@
-import { commands, type ConnectionId } from "../../ipc/bindings";
+import { commands, type ConnectionId, type DatabaseRef } from "../../ipc/bindings";
 import { connectErrorText, disconnectErrorText } from "../../ipc/errors";
 import { useWorkspace } from "../../state/workspace";
 
@@ -40,7 +40,7 @@ export function confirmDelete(id: ConnectionId): void {
   });
 }
 
-export async function refreshCatalog(id: ConnectionId): Promise<void> {
-  const res = await commands.catalogRefresh(id);
-  if (res.status === "error") ws().notify("Connect first to refresh the catalog.");
+export async function refreshCatalog(db: DatabaseRef): Promise<void> {
+  const res = await commands.catalogRefresh(db);
+  if (res.status === "error") ws().notify(res.error.kind === "Failed" ? res.error.message : "Connect first to refresh the catalog.");
 }

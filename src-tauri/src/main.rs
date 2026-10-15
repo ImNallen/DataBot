@@ -176,7 +176,7 @@ async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Valu
     let server = engine.connect(config.id).await.map_err(fail("connection_connect"))?;
     let tab = TabId(uuid::Uuid::new_v4());
     engine
-        .console_configure(tab, ConsoleConfig { connection_id: config.id, schema: None, mode: TxnMode::AutoCommit })
+        .console_configure(tab, ConsoleConfig { connection_id: config.id, database: config.database.clone(), schema: None, mode: TxnMode::AutoCommit })
         .await
         .map_err(fail("console_configure"))?;
     let accepted = engine
@@ -202,13 +202,13 @@ async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Valu
     let page = engine
         .result_page(ResultRef { tab_id: tab, run_id: accepted.run_id, index: 0 }, 0, 1)
         .map_err(fail("result_page"))?;
-    let catalog = engine.catalog(config.id).map_err(fail("catalog_get"))?;
+    let catalog = engine.catalog(DatabaseRef { connection_id: config.id, database: config.database.clone() }).await.map_err(fail("catalog_get"))?;
     Ok(serde_json::json!({
         "server": server,
         "select1": { "rows": page.rows, "elapsedMs": finished.1 },
         "catalog": {
             "version": catalog.version,
-            "database": catalog.database,
+            "database": catalog.db.database,
             "schemas": catalog.schemas.iter().map(|s| serde_json::json!({
                 "name": s.name, "relations": s.relations.len(), "functions": s.functions.len(),
             })).collect::<Vec<_>>(),

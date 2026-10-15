@@ -1,10 +1,11 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { IconBraces, IconChevronRight, IconDatabase, IconDots, IconEye, IconKey, IconTable } from "@tabler/icons-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { ColumnInfo, ConnectionConfig, FunctionInfo, Relation, SchemaInfo } from "../../ipc/bindings";
-import { isViewKind, useCatalog } from "../../state/catalog";
+import type { ColumnInfo, ConnectionConfig, DatabaseRef, DatabaseState, FunctionInfo, Relation, SchemaInfo } from "../../ipc/bindings";
+import { isViewKind, useCatalog, viewFor } from "../../state/catalog";
 import { connectErrorText } from "../../ipc/errors";
-import { useLive } from "../../state/live";
+import { sameDb } from "../../state/dbKey";
+import { instanceOf, useLive } from "../../state/live";
 import { connectionStatus } from "../../state/status";
 import { useWorkspace } from "../../state/workspace";
 import {
@@ -101,10 +102,10 @@ function Row({
   return contextMenu ? <ContextMenuArea menu={contextMenu}>{row}</ContextMenuArea> : row;
 }
 
-function NewMenu({ connectionId }: { connectionId: string }) {
+function NewMenu({ db }: { db: DatabaseRef }) {
   return (
     <ContextSubmenu label="New" testId="tree-menu-new">
-      <ContextMenuItem testId="tree-menu-query-console" onSelect={() => openSqlTab({ connectionId })}>
+      <ContextMenuItem testId="tree-menu-query-console" onSelect={() => openSqlTab({ db })}>
         Query Console
       </ContextMenuItem>
     </ContextSubmenu>
@@ -131,23 +132,21 @@ function ColumnRow({ path, depth, column }: { path: string; depth: number; colum
 function RelationRow({
   path,
   depth,
-  connectionId,
+  db,
   schema,
   rel,
   expanded,
 }: {
   path: string;
   depth: number;
-  connectionId: string;
+  db: DatabaseRef;
   schema: string;
   rel: Relation;
   expanded: Expanded;
 }) {
   const me = `${path}/${rel.name}`;
   const open = expanded.has(me);
-  const selected = useWorkspace(
-    (s) => s.selected?.connectionId === connectionId && s.selected.schema === schema && s.selected.relation === rel.name,
-  );
+  const selected = useWorkspace((s) => sameDb(s.selected?.db, db) && s.selected?.schema === schema && s.selected.relation === rel.name);
   const select = useWorkspace((s) => s.select);
   const view = isViewKind(rel.kind);
   return (
@@ -159,10 +158,10 @@ function RelationRow({
         quietChevron
         open={open}
         selected={selected}
-        onClick={() => select({ connectionId, schema, relation: rel.name })}
+        onClick={() => select({ db, schema, relation: rel.name })}
         onToggle={() => expanded.toggle(me)}
-        onDoubleClick={() => openTableTab({ connectionId, schema, relation: rel.name })}
-        contextMenu={<NewMenu connectionId={connectionId} />}
+        onDoubleClick={() => openTableTab({ db, schema, relation: rel.name })}
+        contextMenu={<NewMenu db={db} />}
         icon={view ? <IconEye size={15} className="text-muted" /> : <IconTable size={15} className="text-muted" />}
         label={rel.name}
         trailing={!view && rel.rowEstimate !== null ? <Count>{compactCount(rel.rowEstimate)}</Count> : undefined}
@@ -219,7 +218,7 @@ function Group({
   );
 }
 
-function SchemaNode({ path, depth, connectionId, schema, expanded }: { path: string; depth: number; connectionId: string; schema: SchemaInfo; expanded: Expanded }) {
+function SchemaNode({ path, depth, db, schema, expanded }: { path: string; depth: number; db: DatabaseRef; schema: SchemaInfo; expanded: Expanded }) {
   const me = `${path}/${schema.name}`;
   const open = expanded.has(me);
   const tables = schema.relations.filter((r) => !isViewKind(r.kind));
@@ -233,18 +232,18 @@ function SchemaNode({ path, depth, connectionId, schema, expanded }: { path: str
         open={open}
         onClick={() => expanded.toggle(me)}
         label={schema.name}
-        contextMenu={<NewMenu connectionId={connectionId} />}
+        contextMenu={<NewMenu db={db} />}
         trailing={<Count>{`${tables.length} ${tables.length === 1 ? "table" : "tables"}`}</Count>}
       />
       {open && (
         <>
           {tables.map((rel) => (
-            <RelationRow key={rel.oid} path={me} depth={depth + 1} connectionId={connectionId} schema={schema.name} rel={rel} expanded={expanded} />
+            <RelationRow key={rel.oid} path={me} depth={depth + 1} db={db} schema={schema.name} rel={rel} expanded={expanded} />
           ))}
           {views.length > 0 && (
             <Group path={`${me}/views`} depth={depth + 1} icon={<IconEye size={15} className="text-muted" />} label="Views" count={views.length} expanded={expanded}>
               {views.map((rel) => (
-                <RelationRow key={rel.oid} path={`${me}/views`} depth={depth + 2} connectionId={connectionId} schema={schema.name} rel={rel} expanded={expanded} />
+                <RelationRow key={rel.oid} path={`${me}/views`} depth={depth + 2} db={db} schema={schema.name} rel={rel} expanded={expanded} />
               ))}
             </Group>
           )}
@@ -268,7 +267,8 @@ function SchemaNode({ path, depth, connectionId, schema, expanded }: { path: str
   );
 }
 
-function ConnectionMenu({ config, connected }: { config: ConnectionConfig; connected: boolean }) {
+function ConnectionMenu({ config, shown }: { config: ConnectionConfig; shown: DatabaseRef[] | null }) {
+  const connected = shown !== null;
   const open = useWorkspace((s) => s.open);
   return (
     <Menu.Root modal={false}>
@@ -285,8 +285,8 @@ function ConnectionMenu({ config, connected }: { config: ConnectionConfig; conne
         ) : (
           <MenuItem onSelect={() => void connect(config.id)}>Connect</MenuItem>
         )}
-        <MenuItem onSelect={() => openSqlTab({ connectionId: config.id })}>New SQL tab</MenuItem>
-        {connected && <MenuItem onSelect={() => void refreshCatalog(config.id)}>Refresh catalog</MenuItem>}
+        <MenuItem onSelect={() => openSqlTab({ db: shown?.[0] ?? { connectionId: config.id, database: config.database } })}>New SQL tab</MenuItem>
+        {shown && <MenuItem onSelect={() => shown.forEach((db) => void refreshCatalog(db))}>Refresh catalog</MenuItem>}
         <MenuSeparator />
         <MenuItem testId="conn-edit" onSelect={() => open({ kind: "connection", editing: config.id })}>
           Edit…
@@ -299,13 +299,47 @@ function ConnectionMenu({ config, connected }: { config: ConnectionConfig; conne
   );
 }
 
+/** One shown database of a connected instance: its row, then its schemas once the catalog is in. */
+function DatabaseNode({ path, db, state, expanded }: { path: string; db: DatabaseRef; state: DatabaseState; expanded: Expanded }) {
+  const me = `${path}/${db.database}`;
+  const open = expanded.has(me);
+  const view = useCatalog((s) => viewFor(s.views, db));
+  return (
+    <>
+      <Row
+        path={me}
+        depth={1}
+        expandable
+        open={open}
+        onClick={() => expanded.toggle(me)}
+        icon={<IconDatabase size={15} className="text-muted" />}
+        label={db.database}
+        contextMenu={<NewMenu db={db} />}
+      />
+      {open && !view && state.catalog.kind === "Failed" && (
+        <div data-testid={`db-error-${path}/${db.database}`} className="mx-2 mb-1 pr-2 pl-[52px] text-ui-11.5 leading-4 text-danger/90">
+          {state.catalog.message}
+        </div>
+      )}
+      {open && !view && state.catalog.kind !== "Failed" && (
+        <div className="flex h-7 items-center gap-2 pl-[52px] text-ui-12 text-dim">
+          <Spinner /> Loading catalog
+        </div>
+      )}
+      {open && view && view.catalog.schemas.map((s) => <SchemaNode key={s.name} path={me} depth={2} db={db} schema={s} expanded={expanded} />)}
+    </>
+  );
+}
+
 function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expanded: Expanded }) {
   const state = useLive((s) => s.connections[config.id]);
-  const view = useCatalog((s) => s.views[config.id]);
+  const instance = instanceOf(state);
   const status = connectionStatus(state);
   const path = config.name;
   const open = expanded.has(path);
-  const connected = state?.status.kind === "Connected";
+  const connected = instance !== null;
+  const shown = instance?.databases.filter((d) => d.shown) ?? [];
+  const home = instance?.home;
   const failure =
     state?.status.kind === "Failed"
       ? connectErrorText(state.status.error)
@@ -316,19 +350,18 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
   const revealed = useRef(false);
   const { toggle } = expanded;
   useEffect(() => {
-    if (!connected || revealed.current) return;
+    if (!home || revealed.current) return;
     revealed.current = true;
     toggle(path, true);
-    toggle(`${path}/${config.database}`, true);
-    toggle(`${path}/${config.database}/public`, true);
-  }, [connected, toggle, path, config.database]);
+    toggle(`${path}/${home}`, true);
+    toggle(`${path}/${home}/public`, true);
+  }, [home, toggle, path]);
 
   const onClick = () => {
     if (connected || state?.status.kind === "Connecting") expanded.toggle(path);
     else void connect(config.id);
   };
 
-  const db = view?.catalog;
   return (
     <>
       <Row
@@ -345,36 +378,16 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
             {connected ? "Live" : status.tone === "error" ? "Failed" : null}
           </span>
         }
-        menu={<ConnectionMenu config={config} connected={connected} />}
+        menu={<ConnectionMenu config={config} shown={instance && shown.map((d) => ({ connectionId: config.id, database: d.name }))} />}
       />
       {failure && (
         <div data-testid={`conn-error-${config.name}`} className="mx-2 mb-1 pr-2 pl-[38px] text-ui-11.5 leading-4 text-danger/90">
           {failure}
         </div>
       )}
-      {open && connected && !db && (
-        <div className="flex h-7 items-center gap-2 pl-[52px] text-ui-12 text-dim">
-          <Spinner /> Loading catalog
-        </div>
-      )}
-      {open && connected && db && (
-        <>
-          <Row
-            path={`${path}/${db.database}`}
-            depth={1}
-            expandable
-            open={expanded.has(`${path}/${db.database}`)}
-            onClick={() => expanded.toggle(`${path}/${db.database}`)}
-            icon={<IconDatabase size={15} className="text-muted" />}
-            label={db.database}
-            contextMenu={<NewMenu connectionId={config.id} />}
-          />
-          {expanded.has(`${path}/${db.database}`) &&
-            db.schemas.map((s) => (
-              <SchemaNode key={s.name} path={`${path}/${db.database}`} depth={2} connectionId={config.id} schema={s} expanded={expanded} />
-            ))}
-        </>
-      )}
+      {open &&
+        connected &&
+        shown.map((d) => <DatabaseNode key={d.name} path={path} db={{ connectionId: config.id, database: d.name }} state={d} expanded={expanded} />)}
     </>
   );
 }

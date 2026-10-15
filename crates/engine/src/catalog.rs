@@ -2,17 +2,44 @@ use std::collections::HashMap;
 
 use tokio_postgres::Client;
 
-use crate::model::{Catalog, ColumnInfo, ConnectionId, FnKind, FunctionInfo, RelKind, Relation, SchemaInfo};
+use crate::connection::PgDatabase;
+use crate::model::{Catalog, ColumnInfo, DatabaseRef, DbAccess, FnKind, FunctionInfo, RelKind, Relation, SchemaInfo};
 
 const SCHEMA_FILTER: &str = "n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
     AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'";
 
-pub async fn load(
-    client: &Client,
-    connection_id: ConnectionId,
-    version: u64,
-    database: String,
-) -> Result<Catalog, tokio_postgres::Error> {
+/// Every database on the server, plus the server's spelling of the one this session is on.
+pub async fn list_databases(client: &Client) -> Result<(Vec<PgDatabase>, String), tokio_postgres::Error> {
+    let rows = client
+        .query(
+            "SELECT datname, datistemplate OR NOT datallowconn, datallowconn, has_database_privilege(datname, 'CONNECT'),
+                    datname = current_database()
+             FROM pg_database ORDER BY datname",
+            &[],
+        )
+        .await?;
+    let mut home = String::new();
+    let databases = rows
+        .iter()
+        .map(|r| {
+            let name: String = r.get(0);
+            if r.get::<_, bool>(4) {
+                home = name.clone();
+            }
+            let access = if !r.get::<_, bool>(2) {
+                DbAccess::NoConnections
+            } else if !r.get::<_, bool>(3) {
+                DbAccess::NoPrivilege
+            } else {
+                DbAccess::Ok
+            };
+            PgDatabase { name, system: r.get(1), access }
+        })
+        .collect();
+    Ok((databases, home))
+}
+
+pub async fn load(client: &Client, db: DatabaseRef, version: u64) -> Result<Catalog, tokio_postgres::Error> {
     let schema_rows = client
         .query(&format!("SELECT n.nspname FROM pg_namespace n WHERE {SCHEMA_FILTER} ORDER BY n.nspname"), &[])
         .await?;
@@ -109,7 +136,7 @@ pub async fn load(
         });
     }
 
-    Ok(Catalog { connection_id, version, database, schemas })
+    Ok(Catalog { db, version, schemas })
 }
 
 impl Catalog {

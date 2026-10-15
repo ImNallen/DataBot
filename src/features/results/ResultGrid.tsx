@@ -23,9 +23,9 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSt
 import type { ColumnMeta, Density, FontSetting, ResultMeta, TypeCategory } from "../../ipc/bindings";
 import { DENSITY_FACTOR, gridRowHeight } from "../../shell/appearance";
 import { rowCacheFor, type RowCache } from "../../state/rowCache";
-import { isPrimaryKey, useCatalog } from "../../state/catalog";
+import { isPrimaryKey, useCatalog, viewFor } from "../../state/catalog";
 import { NO_EDITS, markDeleted, removeNewRows, resetNewCell, rowKey, setCell, setNewCell, useTableEdits, type CellValue, type RowId, type TableEdits } from "../../state/tableEdits";
-import { tabConnectionId, useWorkspace } from "../../state/workspace";
+import { tabTarget, useWorkspace } from "../../state/workspace";
 import { fontStack } from "../../themes/fonts";
 import { ContextMenuArea, ContextMenuItem, cx } from "../../ui/primitives";
 import { submitEdits } from "../editor/runActions";
@@ -245,8 +245,8 @@ export function ResultGrid({
   const [selection, setSelection] = useState<Selection>(null);
   const dragging = useRef<"cells" | "rows" | null>(null);
   const { rowCount, columns } = meta;
-  const connectionId = useWorkspace((s) => tabConnectionId(s.tabs[meta.ref.tabId]));
-  const catalog = useCatalog((s) => (connectionId ? s.views[connectionId] : undefined));
+  const target = useWorkspace((s) => tabTarget(s.tabs[meta.ref.tabId]));
+  const catalog = useCatalog((s) => viewFor(s.views, target));
   const pk = useMemo(() => columns.map((c) => isPrimaryKey(catalog, c.source)), [columns, catalog]);
   const tabId = meta.ref.tabId;
   const pkIdx = useMemo(() => editing?.pkColumns.map((n) => columns.findIndex((c) => c.name === n)) ?? [], [editing, columns]);

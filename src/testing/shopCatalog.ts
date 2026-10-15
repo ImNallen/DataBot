@@ -47,9 +47,8 @@ function relation(spec: TableSpec, oid: number): Relation {
 
 export function shopCatalog(connectionId: ConnectionId, version: number): Catalog {
   return {
-    connectionId,
+    db: { connectionId, database: "shop" },
     version,
-    database: "shop",
     schemas: [
       { name: "lab", relations: LAB.map((s, i) => relation(s, 16_900 + i)), functions: [] },
       { name: "public", relations: SHOP.map((s, i) => relation(s, 16_400 + i)), functions: SHOP_FUNCTIONS },

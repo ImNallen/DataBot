@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { fuzzyRank } from "../features/sidebar/fuzzy";
 import { shopCatalog } from "../testing/shopCatalog";
-import { buildCatalogView, isPrimaryKey } from "./catalog";
+import { buildCatalogView, isPrimaryKey, useCatalog } from "./catalog";
+import { dbKey } from "./dbKey";
 
 const view = buildCatalogView(shopCatalog("conn", 7));
 
@@ -68,5 +69,19 @@ describe("palette ranking over catalog items", () => {
   it("excludes items that do not contain the query in order", () => {
     expect(rank("zzz")).toEqual([]);
     expect(rank("it ord")).not.toContain("order_items");
+  });
+});
+
+describe("useCatalog.prune", () => {
+  it("keeps only the views in the wanted set", () => {
+    const shop = buildCatalogView(shopCatalog("c1", 1));
+    const other = buildCatalogView(shopCatalog("c2", 4));
+    useCatalog.setState({ views: { [dbKey(shop.catalog.db)]: shop, [dbKey(other.catalog.db)]: other } });
+    useCatalog.getState().prune(new Set([dbKey({ connectionId: "c2", database: "shop" })]));
+    expect(Object.keys(useCatalog.getState().views)).toEqual(["c2\u0000shop"]);
+    expect(useCatalog.getState().views[dbKey({ connectionId: "c2", database: "shop" })]?.catalog.version).toBe(4);
+    const unchanged = useCatalog.getState().views;
+    useCatalog.getState().prune(new Set([dbKey({ connectionId: "c2", database: "shop" })]));
+    expect(useCatalog.getState().views).toBe(unchanged);
   });
 });

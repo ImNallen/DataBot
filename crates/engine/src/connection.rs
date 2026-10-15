@@ -1,6 +1,7 @@
+use std::collections::{BTreeSet, HashMap};
 use std::error::Error as _;
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use postgres_native_tls::MakeTlsConnector;
@@ -25,11 +26,12 @@ pub struct ConnectParams {
 }
 
 impl ConnectParams {
-    pub fn from_config(c: &ConnectionConfig, password: Option<String>) -> Self {
+    /// The one place that chooses which database a session targets.
+    pub fn for_database(c: &ConnectionConfig, database: &str, password: Option<String>) -> Self {
         Self {
             host: c.host.clone(),
             port: c.port,
-            database: c.database.clone(),
+            database: database.to_owned(),
             user: c.user.clone(),
             password,
             ssl_mode: c.ssl_mode,
@@ -131,6 +133,14 @@ pub fn error_text(e: &tokio_postgres::Error) -> String {
     }
 }
 
+pub fn connect_error_text(e: &ConnectError) -> String {
+    match e {
+        ConnectError::Network { message } | ConnectError::Tls { message } | ConnectError::Auth { message } | ConnectError::Keychain { message } => message.clone(),
+        ConnectError::MissingPassword => "password missing".into(),
+        ConnectError::Server(q) => q.message.clone(),
+    }
+}
+
 pub fn connect_error(e: tokio_postgres::Error) -> ConnectError {
     if let Some(db) = e.as_db_error() {
         let code = db.code().code();
@@ -182,16 +192,161 @@ pub fn transport_error(e: &tokio_postgres::Error) -> QueryError {
     }
 }
 
-pub struct Live {
+pub struct PgDatabase {
+    pub name: String,
+    pub system: bool,
+    pub access: DbAccess,
+}
+
+/// One connected instance. `slots[home]` lives as long as the instance and its session is the one
+/// whose death marks the connection `Lost`. Every other slot is opened for a database the tree
+/// shows or a console targets, and its session's death fails only that database.
+pub struct Instance {
+    pub config: ConnectionConfig,
     pub server: ServerInfo,
-    pub meta: tokio::sync::Mutex<Session>,
-    pub catalog: RwLock<Arc<Catalog>>,
+    pub home: String,
+    pub databases: RwLock<Arc<Vec<PgDatabase>>>,
+    pub slots: Mutex<HashMap<String, Arc<DbSlot>>>,
+}
+
+/// One metadata session and catalog for one database.
+pub struct DbSlot {
+    pub db: DatabaseRef,
+    /// Opened on first use; `None` again after a loss until the next load reopens it. Loads and
+    /// counts run under this lock, so concurrent loads of one database are single-flight.
+    pub meta: tokio::sync::Mutex<Option<Session>>,
+    pub catalog: RwLock<CatalogSlot>,
+    pub refresh: RefreshGate,
+}
+
+pub enum CatalogSlot {
+    Idle,
+    /// The first load is in flight.
+    Opening,
+    Ready(Arc<Catalog>),
+    /// Keeps the last good catalog so a failed refresh does not blank the tree.
+    Failed { message: String, last: Option<Arc<Catalog>> },
+}
+
+impl DbSlot {
+    pub fn new(db: DatabaseRef) -> Self {
+        Self { db, meta: tokio::sync::Mutex::new(None), catalog: RwLock::new(CatalogSlot::Idle), refresh: RefreshGate::default() }
+    }
+
+    pub fn ready(&self) -> Option<Arc<Catalog>> {
+        match &*self.catalog.read().unwrap() {
+            CatalogSlot::Ready(c) => Some(c.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn last(&self) -> Option<Arc<Catalog>> {
+        match &*self.catalog.read().unwrap() {
+            CatalogSlot::Ready(c) | CatalogSlot::Failed { last: Some(c), .. } => Some(c.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn status(&self) -> CatalogStatus {
+        match &*self.catalog.read().unwrap() {
+            CatalogSlot::Idle => CatalogStatus::Idle,
+            CatalogSlot::Opening => CatalogStatus::Loading,
+            CatalogSlot::Ready(c) => CatalogStatus::Ready { version: c.version },
+            CatalogSlot::Failed { message, .. } => CatalogStatus::Failed { message: message.clone() },
+        }
+    }
+
+    pub fn set(&self, state: CatalogSlot) {
+        *self.catalog.write().unwrap() = state;
+    }
+
+    pub fn fail(&self, message: String) {
+        let last = self.last();
+        self.set(CatalogSlot::Failed { message, last });
+    }
+}
+
+/// Coalesces scheduled refreshes: while a load runs, further requests only mark it dirty, and the
+/// running loop loads once more when it finishes. A burst of DDL costs at most two loads.
+#[derive(Default)]
+pub struct RefreshGate {
+    state: Mutex<(bool, bool)>,
+}
+
+impl RefreshGate {
+    /// True when the caller must run the load loop; false when a running loop will cover it.
+    pub fn request(&self) -> bool {
+        let mut g = self.state.lock().unwrap();
+        let (running, dirty) = &mut *g;
+        if *running {
+            *dirty = true;
+            false
+        } else {
+            *running = true;
+            true
+        }
+    }
+
+    /// After a load: true when another load is owed.
+    pub fn again(&self) -> bool {
+        let mut g = self.state.lock().unwrap();
+        let (running, dirty) = &mut *g;
+        if *dirty {
+            *dirty = false;
+            true
+        } else {
+            *running = false;
+            false
+        }
+    }
+}
+
+impl Instance {
+    pub fn slot(&self, database: &str) -> Option<Arc<DbSlot>> {
+        self.slots.lock().unwrap().get(database).cloned()
+    }
+
+    pub fn knows(&self, database: &str) -> bool {
+        self.databases.read().unwrap().iter().any(|d| d.name == database)
+    }
+
+    /// Converges the slots to `wanted`: drops the unwanted ones, which closes their sessions,
+    /// creates the missing ones, and returns every slot whose catalog has not been loaded yet.
+    /// Running it twice changes nothing.
+    pub fn converge(&self, id: ConnectionId, wanted: &BTreeSet<String>) -> Vec<Arc<DbSlot>> {
+        let mut slots = self.slots.lock().unwrap();
+        slots.retain(|name, _| wanted.contains(name));
+        for name in wanted {
+            if !slots.contains_key(name) && self.knows(name) {
+                slots.insert(name.clone(), Arc::new(DbSlot::new(DatabaseRef { connection_id: id, database: name.clone() })));
+            }
+        }
+        slots.values().filter(|s| matches!(*s.catalog.read().unwrap(), CatalogSlot::Idle)).cloned().collect()
+    }
+
+    pub fn state(&self) -> InstanceState {
+        let slots = self.slots.lock().unwrap();
+        let databases = self
+            .databases
+            .read()
+            .unwrap()
+            .iter()
+            .map(|d| DatabaseState {
+                name: d.name.clone(),
+                system: d.system,
+                access: d.access,
+                shown: d.name == self.home,
+                catalog: slots.get(&d.name).map_or(CatalogStatus::Idle, |s| s.status()),
+            })
+            .collect();
+        InstanceState { home: self.home.clone(), databases }
+    }
 }
 
 pub enum ConnSlot {
     Disconnected,
     Connecting,
-    Connected(Arc<Live>),
+    Connected(Arc<Instance>),
     Failed(ConnectError),
     Lost(String),
 }
@@ -206,19 +361,16 @@ impl ConnEntry {
         let status = match &self.slot {
             ConnSlot::Disconnected => ConnStatus::Disconnected,
             ConnSlot::Connecting => ConnStatus::Connecting,
-            ConnSlot::Connected(live) => ConnStatus::Connected {
-                server: live.server.clone(),
-                catalog_version: live.catalog.read().unwrap().version,
-            },
+            ConnSlot::Connected(instance) => ConnStatus::Connected { server: instance.server.clone(), instance: instance.state() },
             ConnSlot::Failed(error) => ConnStatus::Failed { error: error.clone() },
             ConnSlot::Lost(reason) => ConnStatus::Lost { reason: reason.clone() },
         };
         ConnectionState { id, rev: self.rev, status }
     }
 
-    pub fn live(&self) -> Option<Arc<Live>> {
+    pub fn instance(&self) -> Option<Arc<Instance>> {
         match &self.slot {
-            ConnSlot::Connected(live) => Some(live.clone()),
+            ConnSlot::Connected(instance) => Some(instance.clone()),
             _ => None,
         }
     }
