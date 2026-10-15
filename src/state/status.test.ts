@@ -100,6 +100,10 @@ describe("resultView", () => {
     expect(resultView(withRows, { kind: "output", runId: 7, result: 0 }, false)).toMatchObject({ kind: "rows", result: { index: 0 } });
   });
 
+  it("forgets the result set behind a lapsed Output pick", () => {
+    expect(shownResult(finishedRun(8, [rowsAt(0), rowsAt(1), rowsAt(2)]), { kind: "output", runId: 7, result: 0 })).toMatchObject({ index: 2 });
+  });
+
   it("drops an Output pick on the next run", () => {
     expect(resultView(finishedRun(8, [rowsAt(0)]), { kind: "output", runId: 7, result: undefined }, true)).toMatchObject({ kind: "rows", result: { index: 0 } });
   });

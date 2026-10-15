@@ -49,7 +49,7 @@ export type ResultPick = number | { kind: "output"; runId: number; result: numbe
 
 export function shownResult(run: RunState, picked: ResultPick | undefined): RowResult | undefined {
   const results = rowResults(run);
-  const index = typeof picked === "object" ? picked.result : picked;
+  const index = typeof picked !== "object" ? picked : run.kind !== "Idle" && picked.runId === run.runId ? picked.result : undefined;
   return results.find((r) => r.index === index) ?? results.at(-1);
 }
 
