@@ -169,7 +169,7 @@ async fn self_check(app: AppHandle, engine: Arc<Engine>) {
     app.exit(if ok { 0 } else { 1 });
 }
 
-async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Value, (&'static str, serde_json::Value)> {
+async fn self_check_steps(engine: &Arc<Engine>, url: &str) -> Result<serde_json::Value, (&'static str, serde_json::Value)> {
     use engine::model::*;
     fn fail<E: serde::Serialize>(step: &'static str) -> impl FnOnce(E) -> (&'static str, serde_json::Value) {
         move |e| (step, serde_json::to_value(e).expect("IPC types serialize to JSON"))
@@ -212,6 +212,26 @@ async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Valu
         .await
         .map_err(fail("connection_edit_view"))?;
     let reporting = engine.catalog(DatabaseRef { connection_id: config.id, database: "reporting".into() }).await.map_err(fail("catalog_get reporting"))?;
+    // Called from a plain thread, as the sync command is on the main thread of the desktop app.
+    let prober = engine.clone();
+    let id = config.id;
+    std::thread::spawn(move || prober.probe_databases(id, vec!["postgres".into()]))
+        .join()
+        .map_err(|_| ("connection_probe_databases", serde_json::json!("panicked off the runtime")))?;
+    let probed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let live = engine.boot().live.into_iter().find(|c| c.id == config.id);
+            if let Some(ConnectionState { status: ConnStatus::Connected { instance, .. }, .. }) = live
+                && let Some(db) = instance.databases.iter().find(|d| d.name == "postgres")
+                && let SchemaCount::Known { count } = db.schema_count
+            {
+                return count;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| ("connection_probe_databases", serde_json::json!("no Known count within 10s")))?;
     let report = |c: &Catalog| {
         serde_json::json!({
             "version": c.version,
@@ -227,6 +247,7 @@ async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Valu
         "select1": { "rows": page.rows, "elapsedMs": finished.1 },
         "catalog": report(&catalog),
         "shownCatalog": report(&reporting),
+        "probedSchemas": { "postgres": probed },
     }))
 }
 
