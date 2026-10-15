@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AppEvent, BootSnapshot, ConnectionState, ConsoleState, DatabaseState, OutputEntry } from "../ipc/bindings";
-import { applyEvent, emptyLive, hydrateLive, OUTPUT_LIMIT, shownDatabases, wantedCatalogs } from "./live";
+import { applyEvent, emptyLive, hydrateLive, OUTPUT_LIMIT, shownSchemas, wantedCatalogs } from "./live";
 
 const CONN = "c0000000-0000-4000-8000-000000000001";
 const TAB = "t0000000-0000-4000-8000-000000000001";
@@ -89,14 +89,14 @@ describe("live.apply", () => {
     ]);
   });
 
-  it("lists the shown databases of connected instances, not every loaded one", () => {
-    const db = (name: string, shown: boolean): DatabaseState => ({ name, system: false, access: "Ok", shown, showSystemSchemas: false, shownSchemas: [], schemaCount: { kind: "Unknown" }, catalog: { kind: "Ready", version: 1 } });
+  it("lists the shown schemas of the shown databases of connected instances, not every loaded one", () => {
+    const db = (name: string, shown: boolean): DatabaseState => ({ name, system: false, access: "Ok", shown, showSystemSchemas: false, shownSchemas: ["audit", "public"], schemaCount: { kind: "Unknown" }, catalog: { kind: "Ready", version: 1 } });
     const server = { version: "16.4", versionNum: 160004, encoding: "UTF8" };
     const connections: Record<string, ConnectionState> = {
       [CONN]: { id: CONN, rev: 3, status: { kind: "Connected", server, instance: { home: "shop", showSystemDatabases: false, databases: [db("postgres", false), db("shop", true)] } } },
       down: { id: "down", rev: 9, status: { kind: "Lost", reason: "gone" } },
     };
-    expect([...shownDatabases(connections)]).toEqual([`${CONN}\u0000shop`]);
+    expect([...shownSchemas(connections)].map(([key, schemas]) => [key, [...schemas]])).toEqual([[`${CONN}\u0000shop`, ["audit", "public"]]]);
   });
 
   it("appends output and caps it per tab", () => {

@@ -115,7 +115,7 @@ export function exportErrorText(e: ExportError): string {
   return e.kind === "Gone" ? "This result is gone. Run the query again to export it." : e.message;
 }
 
-function catalogErrorText(e: CatalogError): string {
+export function catalogErrorText(e: CatalogError): string {
   switch (e.kind) {
     case "NotConnected":
       return "The connection is closed.";

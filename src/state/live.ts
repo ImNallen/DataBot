@@ -71,12 +71,12 @@ export function wantedCatalogs(connections: Record<ConnectionId, ConnectionState
   return wanted;
 }
 
-/** The databases the tree shows, across the connected instances: the user's working set, which ⌘P searches. */
-export function shownDatabases(connections: Record<ConnectionId, ConnectionState>): Set<DbKey> {
-  const shown = new Set<DbKey>();
+/** The schemas the tree shows, by database, across the connected instances: the user's working set, which ⌘P searches. */
+export function shownSchemas(connections: Record<ConnectionId, ConnectionState>): Map<DbKey, ReadonlySet<string>> {
+  const shown = new Map<DbKey, ReadonlySet<string>>();
   for (const conn of Object.values(connections)) {
     for (const db of instanceOf(conn)?.databases ?? []) {
-      if (db.shown) shown.add(dbKey({ connectionId: conn.id, database: db.name }));
+      if (db.shown) shown.set(dbKey({ connectionId: conn.id, database: db.name }), new Set(db.shownSchemas));
     }
   }
   return shown;
