@@ -45,7 +45,6 @@ export function rowResults(run: RunState): RowResult[] {
   return out;
 }
 
-/** A number picks a statement's row result. An Output pick belongs to the run it was made on. */
 export type ResultPick = number | { kind: "output"; runId: number };
 
 export function shownResult(run: RunState, picked: ResultPick | undefined): RowResult | undefined {

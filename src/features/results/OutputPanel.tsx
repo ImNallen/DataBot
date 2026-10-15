@@ -87,7 +87,6 @@ function Line({ time, runStart, kind, severity, children }: LineProps) {
   );
 }
 
-/** The tab's whole output log, oldest first. Stays at the bottom while lines arrive unless the user scrolled up. */
 export function OutputPanel({ entries }: { entries: readonly OutputEntry[] }) {
   const ref = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);

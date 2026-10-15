@@ -102,7 +102,6 @@ export function pluralRows(n: number): string {
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
-/** Local wall-clock time, `HH:MM:SS`. */
 export function formatClock(atMs: number): string {
   const d = new Date(atMs);
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
