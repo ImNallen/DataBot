@@ -171,10 +171,10 @@ impl Shared {
     }
 
     fn reconcile_instance(self: &Arc<Self>, instance: &Arc<Instance>) {
-        self.converge(instance, &self.wanted(instance));
+        self.converge(instance, || self.wanted(instance));
     }
 
-    fn converge(self: &Arc<Self>, instance: &Arc<Instance>, wanted: &Wanted) {
+    fn converge(self: &Arc<Self>, instance: &Arc<Instance>, wanted: impl FnOnce() -> Wanted) {
         let id = instance.config.id;
         let opened = instance.converge(id, wanted);
         self.republish_connection(id);
@@ -196,12 +196,14 @@ impl Shared {
             return Err(CatalogError::UnknownDatabase { database: db.database.clone() });
         }
         if instance.slot(&db.database).is_none() {
-            let mut wanted = self.wanted(&instance);
-            if !wanted.keep.contains(&db.database) {
+            if !self.wanted(&instance).keep.contains(&db.database) {
                 return Err(CatalogError::NotShown { database: db.database.clone() });
             }
-            wanted.open.insert(db.database.clone());
-            self.converge(&instance, &wanted);
+            self.converge(&instance, || {
+                let mut wanted = self.wanted(&instance);
+                wanted.open.insert(db.database.clone());
+                wanted
+            });
         }
         let slot = instance.slot(&db.database).ok_or_else(|| {
             if instance.knows(&db.database) { CatalogError::NotConnected } else { CatalogError::UnknownDatabase { database: db.database.clone() } }
@@ -280,6 +282,9 @@ impl Shared {
     /// is known, falls back to its default schema.
     async fn check_shown_schemas(self: &Arc<Self>, instance: &Arc<Instance>, database: &str, catalog: &Catalog) {
         let _edits = self.view_edits.lock().await;
+        if instance.is_closed() {
+            return;
+        }
         let view = instance.view();
         let entry = view.database(database, &instance.home);
         if !matches!(entry.schemas, Selection::Only { .. }) || !view::resolve_schemas(&entry, catalog).is_empty() {
@@ -293,13 +298,15 @@ impl Shared {
         *instance.view.write().unwrap() = next;
     }
 
-    /// Re-reads `pg_database` on the home session into the instance.
+    /// Re-reads `pg_database` on the home session into the instance and drops the probe cache,
+    /// since a database may have been dropped and recreated under the same name.
     async fn reread_databases(self: &Arc<Self>, instance: &Arc<Instance>) -> Result<(), CatalogError> {
         let failed = |message: String| CatalogError::Failed { message };
         let home = instance.slot(&instance.home).ok_or(CatalogError::NotConnected)?;
         let mut meta = home.meta.lock().await;
         let session = self.session_in(instance, &home, &mut meta).await.map_err(|e| failed(connection::connect_error_text(&e)))?;
         let (databases, _) = catalog::list_databases(&session.client).await.map_err(|e| failed(connection::error_text(&e)))?;
+        instance.probes.lock().unwrap().clear();
         *instance.databases.write().unwrap() = Arc::new(databases);
         Ok(())
     }
@@ -441,7 +448,11 @@ impl Shared {
         let (server, pid, closed) = (session.server.clone(), session.backend_pid, session.closed_watch());
         let slot = DbSlot::new(DatabaseRef { connection_id: id, database: home.clone() });
         *slot.meta.lock().await = Some(session);
-        let view = self.stored_view(id);
+        // An edit on the previous instance may still be persisting; its row is the one to read.
+        let view = {
+            let _edits = self.view_edits.lock().await;
+            self.stored_view(id)
+        };
         Ok((Arc::new(Instance::new(config, server, home, databases, view, slot)), pid, closed))
     }
 
@@ -717,7 +728,6 @@ impl Engine {
         let s = &self.shared;
         let instance = s.instance(id).ok_or(CatalogError::NotConnected)?;
         s.reread_databases(&instance).await?;
-        instance.probes.lock().unwrap().clear();
         s.reconcile_instance(&instance);
         for name in instance.slot_names() {
             let Some(slot) = instance.slot(&name) else { continue };
@@ -729,27 +739,38 @@ impl Engine {
     }
 
     /// Applies one picker edit to the connection's stored view: apply, persist, reconcile the
-    /// slots, reload the catalogs whose system schemas changed, republish. Works while
-    /// disconnected too, where it only persists.
+    /// slots, reload the catalogs whose system schemas changed, republish. Refused while
+    /// disconnected: a checkbox edit resolves against the instance's lists, which an edit without
+    /// one would materialize from nothing.
     pub async fn edit_view(&self, id: ConnectionId, edit: ViewEdit) -> Result<(), CatalogError> {
         let s = &self.shared;
         let _edits = s.view_edits.lock().await;
-        let config = s.config(id).ok_or(CatalogError::NotConnected)?;
-        let Some(instance) = s.instance(id) else {
-            let view = s.stored_view(id);
-            let known = Known { home: &config.database, databases: &[], catalogs: &HashMap::new() };
-            return s.store.set_view(id, &view.apply(&edit, &known)).map_err(|e| CatalogError::Failed { message: e.to_string() });
-        };
+        let instance = s.instance(id).ok_or(CatalogError::NotConnected)?;
         let view = instance.view();
         let databases = instance.databases.read().unwrap().clone();
+        // Showing a database whose catalog is unknown defers the empty-selection reset to its
+        // first load. The check is registered before the catalogs are read: a load that finishes
+        // in between is then seen here, and the check is withdrawn as `apply` covers it.
+        let deferred = match &edit {
+            ViewEdit::Database { name, shown: true } => Some(name.clone()),
+            _ => None,
+        };
+        if let Some(name) = &deferred {
+            instance.show_checks.lock().unwrap().insert(name.clone());
+        }
         let catalogs = instance.catalogs();
         let known = Known { home: &instance.home, databases: &databases, catalogs: &catalogs };
         let next = view.apply(&edit, &known);
         s.store.set_view(id, &next).map_err(|e| CatalogError::Failed { message: e.to_string() })?;
-        if let ViewEdit::Database { name, shown: true } = &edit
-            && !catalogs.contains_key(name)
-        {
-            instance.show_checks.lock().unwrap().insert(name.clone());
+        // A schema choice or a hide supersedes a pending check; the check must not later reset
+        // a selection the user made on purpose.
+        let settled = match &edit {
+            ViewEdit::Database { name, .. } if deferred.is_none() || catalogs.contains_key(name) => Some(name),
+            ViewEdit::Schemas { database, .. } | ViewEdit::Schema { database, .. } => Some(database),
+            _ => None,
+        };
+        if let Some(name) = settled {
+            instance.show_checks.lock().unwrap().remove(name);
         }
         let reload: Vec<String> = instance
             .slot_names()
@@ -770,15 +791,15 @@ impl Engine {
     pub fn probe_databases(&self, id: ConnectionId, databases: Vec<String>) {
         let s = &self.shared;
         let Some(instance) = s.instance(id) else { return };
+        let candidates: Vec<String> = databases.into_iter().filter(|name| instance.slot(name).is_none() && instance.knows(name)).collect();
         let mut fresh = Vec::new();
         {
             let mut probes = instance.probes.lock().unwrap();
-            for name in databases {
-                if instance.slot(&name).is_some() || probes.contains_key(&name) || !instance.knows(&name) {
-                    continue;
+            for name in candidates {
+                if !probes.contains_key(&name) {
+                    probes.insert(name.clone(), SchemaCount::Probing);
+                    fresh.push(name);
                 }
-                probes.insert(name.clone(), SchemaCount::Probing);
-                fresh.push(name);
             }
         }
         if fresh.is_empty() {
@@ -789,6 +810,9 @@ impl Engine {
             let (shared, instance) = (s.clone(), instance.clone());
             s.spawn(async move {
                 let _permit = instance.probe_gate.acquire().await;
+                if instance.is_closed() {
+                    return;
+                }
                 let probe = async {
                     let params = shared.params(&instance.config, &name).map_err(|e| connection::connect_error_text(&e))?;
                     let session = Session::open(&params, None, &shared.timezone).await.map_err(|e| connection::connect_error_text(&e))?;
@@ -802,7 +826,13 @@ impl Engine {
                 if instance.is_closed() {
                     return;
                 }
-                instance.probes.lock().unwrap().insert(name, count);
+                // A re-read cleared the cache while this probe ran; its count is of the old list.
+                let mut probes = instance.probes.lock().unwrap();
+                if probes.get(&name) != Some(&SchemaCount::Probing) {
+                    return;
+                }
+                probes.insert(name, count);
+                drop(probes);
                 shared.republish_connection(id);
             });
         }
@@ -1103,7 +1133,8 @@ impl Engine {
         console.closed.store(true, Ordering::Relaxed);
         console.drop_session(s).await;
         s.consoles.write().unwrap().remove(&tab);
-        s.reconcile(console.latest.lock().unwrap().config.connection_id);
+        let connection_id = console.latest.lock().unwrap().config.connection_id;
+        s.reconcile(connection_id);
         Ok(())
     }
 

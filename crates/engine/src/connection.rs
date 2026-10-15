@@ -203,6 +203,12 @@ pub struct PgDatabase {
 /// One connected instance. `slots[home]` lives as long as the instance and its session is the one
 /// whose death marks the connection `Lost`. Every other slot is opened for a database the tree
 /// shows or a console targets, and its session's death fails only that database.
+///
+/// Lock order, outermost first: `Shared::connections`, `slots`, `Shared::consoles`,
+/// `Console::latest`, `databases`, `view`, `probes`, `show_checks`. A thread that holds one of
+/// these takes only locks later in the list. `state()` walks the whole list under
+/// `connections`, so a path that takes `probes` or `view` first and then `slots` deadlocks
+/// against a snapshot.
 pub struct Instance {
     pub config: ConnectionConfig,
     pub server: ServerInfo,
@@ -383,12 +389,15 @@ impl Instance {
 
     /// Converges the slots to `wanted`: drops the ones outside `keep`, which closes their
     /// sessions, creates the missing ones in `open`, and returns every slot whose catalog has not
-    /// been loaded yet. Running it twice changes nothing.
-    pub fn converge(&self, id: ConnectionId, wanted: &Wanted) -> Vec<Arc<DbSlot>> {
+    /// been loaded yet. Running it twice changes nothing. `wanted` runs under the slot lock, so
+    /// a view written before this call is what it reads, and no converge can apply a set
+    /// computed from an older view after one computed from a newer one.
+    pub fn converge(&self, id: ConnectionId, wanted: impl FnOnce() -> Wanted) -> Vec<Arc<DbSlot>> {
         let mut slots = self.slots.lock().unwrap();
         if self.is_closed() {
             return Vec::new();
         }
+        let wanted = wanted();
         slots.retain(|name, _| wanted.keep.contains(name));
         for name in &wanted.open {
             if !slots.contains_key(name) && self.knows(name) {

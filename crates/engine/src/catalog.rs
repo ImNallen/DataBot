@@ -54,6 +54,19 @@ pub async fn count_schemas(client: &Client) -> Result<u32, tokio_postgres::Error
     Ok(row.get::<_, i64>(0) as u32)
 }
 
+/// The first non-system schema of the search path that exists, else `public`, else the first
+/// non-system schema by name. A search path that starts with `pg_catalog` must not make the
+/// default a system schema: "Default only" would then show a schema the picker hides.
+fn default_schema(search_path: &[String], schemas: &[SchemaInfo]) -> Option<String> {
+    let user = |name: &str| schemas.iter().find(|s| s.name == name && !s.system);
+    search_path
+        .iter()
+        .find_map(|s| user(s))
+        .or_else(|| user("public"))
+        .or_else(|| schemas.iter().find(|s| !s.system))
+        .map(|s| s.name.clone())
+}
+
 /// Five queries on one database's metadata session. Every schema is listed with its `system` flag
 /// and table count; relations and columns load for user schemas and for the system schemas in
 /// `extra_schemas`; functions load for user schemas only.
@@ -75,12 +88,7 @@ pub async fn load(client: &Client, db: DatabaseRef, version: u64, extra_schemas:
     let schema_index: HashMap<String, usize> = schemas.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
 
     let search_path: Vec<String> = client.query_one("SELECT current_schemas(false)::text[]", &[]).await?.get(0);
-    let default_schema = search_path
-        .iter()
-        .find(|s| schema_index.contains_key(*s))
-        .cloned()
-        .or_else(|| schema_index.contains_key("public").then(|| "public".to_owned()))
-        .or_else(|| schemas.iter().find(|s| !s.system).map(|s| s.name.clone()));
+    let default_schema = default_schema(&search_path, &schemas);
 
     let relation_rows = client
         .query(
@@ -187,5 +195,29 @@ impl Catalog {
 impl Relation {
     pub fn pk_columns(&self) -> Vec<String> {
         self.columns.iter().filter(|c| c.pk).map(|c| c.name.clone()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn schema(name: &str, system: bool) -> SchemaInfo {
+        SchemaInfo { name: name.into(), system, table_count: 0, relations: Vec::new(), functions: Vec::new() }
+    }
+
+    fn path(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_default_schema_is_never_a_system_schema() {
+        let schemas = [schema("audit", false), schema("information_schema", true), schema("pg_catalog", true), schema("public", false)];
+        assert_eq!(default_schema(&path(&["pg_catalog", "public"]), &schemas).as_deref(), Some("public"));
+        assert_eq!(default_schema(&path(&["pg_catalog", "audit"]), &schemas).as_deref(), Some("audit"));
+        assert_eq!(default_schema(&path(&["missing"]), &schemas).as_deref(), Some("public"), "a search path with nothing to show falls back to public");
+        let no_public = [schema("audit", false), schema("pg_catalog", true)];
+        assert_eq!(default_schema(&path(&["pg_catalog"]), &no_public).as_deref(), Some("audit"), "then the first user schema");
+        assert_eq!(default_schema(&path(&["pg_catalog"]), &[schema("pg_catalog", true)]), None, "a database with only system schemas has no default");
     }
 }
