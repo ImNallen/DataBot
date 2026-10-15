@@ -2,7 +2,7 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { IconCheck, IconChevronRight, IconX } from "@tabler/icons-react";
-import type { ButtonHTMLAttributes, ReactElement, ReactNode } from "react";
+import { useLayoutEffect, useRef, type ButtonHTMLAttributes, type ComponentProps, type ReactElement, type ReactNode, type RefObject } from "react";
 import type { TextRange } from "./textMatch";
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
@@ -60,7 +60,7 @@ export function Spinner() {
   );
 }
 
-type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "ghost" | "outline" | "primary" | "danger" };
+type ButtonProps = ComponentProps<"button"> & { variant?: "ghost" | "outline" | "primary" | "danger" };
 
 export function Button({ variant = "outline", className, ...rest }: ButtonProps) {
   const look = {
@@ -202,6 +202,7 @@ export function Modal({
   children,
   width = 440,
   testId,
+  initialFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -210,7 +211,14 @@ export function Modal({
   children: ReactNode;
   width?: number;
   testId?: string;
+  /** Radix focuses the first control (the close button) unless this names another. */
+  initialFocus?: RefObject<HTMLElement | null>;
 }) {
+  // Radix returns focus to a Dialog.Trigger on close. A Modal has none, so it returns focus to whatever had it at open.
+  const opener = useRef<Element | null>(null);
+  useLayoutEffect(() => {
+    if (open) opener.current = document.activeElement;
+  }, [open]);
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -218,6 +226,19 @@ export function Modal({
         <Dialog.Content
           data-testid={testId}
           style={{ width }}
+          onOpenAutoFocus={
+            initialFocus &&
+            ((e) => {
+              e.preventDefault();
+              initialFocus.current?.focus();
+            })
+          }
+          onCloseAutoFocus={(e) => {
+            if (opener.current instanceof HTMLElement && opener.current.isConnected) {
+              e.preventDefault();
+              opener.current.focus();
+            }
+          }}
           className="motion-pop fixed top-[18%] left-1/2 z-50 max-h-[72vh] -translate-x-1/2 overflow-auto rounded-xl border border-control bg-raised p-5 shadow-[var(--shadow-dialog)] outline-none"
         >
           <div className="mb-4 flex items-start justify-between gap-4">
