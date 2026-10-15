@@ -176,17 +176,28 @@ describe("namesToProbe", () => {
 
 describe("pickerBox", () => {
   const window_ = { width: 1280, height: 577 };
+  const row = (left: number, top: number, width: number) => ({ left, top, bottom: top + 24, width });
 
-  it("widens past a 256 px sidebar's 240 px row to 288 px, from the row's left edge", () => {
-    expect(pickerBox({ left: 8, bottom: 122, width: 240 }, window_)).toEqual({ top: 126, left: 8, width: 288, maxHeight: 443 });
+  it("widens past a 256 px sidebar's 240 px row to 288 px, from the row's left edge, under the row", () => {
+    expect(pickerBox(row(8, 98, 240), window_)).toEqual({ anchor: { top: 126 }, left: 8, width: 288, maxHeight: 443 });
   });
 
   it("matches a row wider than 288 px", () => {
-    expect(pickerBox({ left: 8, bottom: 122, width: 400 }, window_)).toEqual({ top: 126, left: 8, width: 400, maxHeight: 443 });
+    expect(pickerBox(row(8, 98, 400), window_)).toEqual({ anchor: { top: 126 }, left: 8, width: 400, maxHeight: 443 });
   });
 
   it("stays inside a narrow window", () => {
-    expect(pickerBox({ left: 8, bottom: 122, width: 240 }, { width: 280, height: 577 })).toEqual({ top: 126, left: 8, width: 264, maxHeight: 443 });
-    expect(pickerBox({ left: 120, bottom: 122, width: 240 }, { width: 400, height: 577 })).toEqual({ top: 126, left: 104, width: 288, maxHeight: 443 });
+    expect(pickerBox(row(8, 98, 240), { width: 280, height: 577 })).toEqual({ anchor: { top: 126 }, left: 8, width: 264, maxHeight: 443 });
+    expect(pickerBox(row(120, 98, 240), { width: 400, height: 577 })).toEqual({ anchor: { top: 126 }, left: 104, width: 288, maxHeight: 443 });
+  });
+
+  it("opens above a row near the bottom of the window, as tall as the room above it", () => {
+    expect(pickerBox(row(8, 500, 240), window_)).toEqual({ anchor: { bottom: 81 }, left: 8, width: 288, maxHeight: 488 });
+  });
+
+  it("stays below while the room below fits the picker, and otherwise takes the larger side", () => {
+    expect(pickerBox(row(8, 300, 240), window_)).toEqual({ anchor: { top: 328 }, left: 8, width: 288, maxHeight: 241 });
+    expect(pickerBox(row(8, 100, 240), { width: 1280, height: 300 })).toEqual({ anchor: { top: 128 }, left: 8, width: 288, maxHeight: 164 });
+    expect(pickerBox(row(8, 200, 240), { width: 1280, height: 300 })).toEqual({ anchor: { bottom: 104 }, left: 8, width: 288, maxHeight: 188 });
   });
 });
