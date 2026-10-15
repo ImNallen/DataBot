@@ -3,7 +3,7 @@ import { isViewKind, viewFor, type CatalogView } from "../../state/catalog";
 import type { DbKey } from "../../state/dbKey";
 import { instanceOf } from "../../state/live";
 import type { RelationRef } from "../../state/workspace";
-import { matchRanges, type TextRange } from "../../ui/textMatch";
+import { matchRanges, startsWords, type TextRange } from "../../ui/textMatch";
 
 export type FilteredColumn = { column: ColumnInfo; ranges: TextRange[] };
 /** `ranges` is null when the relation shows only as the parent of a matching column. */
@@ -65,15 +65,13 @@ export function filterTree(
   return { connections: filtered, count, searched };
 }
 
-/** The first table or view the filtered tree lists, which Enter in the search box opens. */
-export function firstRelation(filter: TreeFilter): RelationRef | null {
-  for (const { databases } of filter.connections) {
-    for (const { db, schemas } of databases) {
-      for (const schema of schemas) {
-        const rel = schema.relations[0];
-        if (rel) return { db, schema: schema.name, relation: rel.rel.name };
-      }
-    }
-  }
-  return null;
+/**
+ * The table or view Enter in the search box opens: the first the filtered tree lists whose name has every
+ * token at a word start, else the first it lists. "ord it" then opens `order_items`, not `order_audit`.
+ */
+export function firstRelation(filter: TreeFilter, tokens: readonly string[]): RelationRef | null {
+  const listed = filter.connections.flatMap(({ databases }) =>
+    databases.flatMap(({ db, schemas }) => schemas.flatMap((s) => s.relations.map(({ rel }) => ({ db, schema: s.name, relation: rel.name })))),
+  );
+  return listed.find((r) => startsWords(tokens, r.relation)) ?? listed[0] ?? null;
 }

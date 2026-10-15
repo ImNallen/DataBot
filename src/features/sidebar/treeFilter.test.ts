@@ -84,8 +84,11 @@ it("drops every container without a match and searches nothing before a catalog 
   expect(search("order", unloaded)).toEqual({ connections: [], count: 0, searched: 0 });
 });
 
-it("names the first table or view the filter lists, even one shown for its columns", () => {
-  expect(firstRelation(search("order", prodOnly))).toEqual({ db: { connectionId: "p", database: "shop" }, schema: "public", relation: "order_items" });
-  expect(firstRelation(search("customer_id", prodOnly))).toEqual({ db: { connectionId: "p", database: "shop" }, schema: "public", relation: "addresses" });
-  expect(firstRelation(search("touch", prodOnly))).toBeNull();
+it("names the first table or view whose name starts words of the query, else the first the filter lists", () => {
+  const first = (query: string) => firstRelation(search(query, prodOnly), parseQuery(query));
+  expect(first("order")).toEqual({ db: { connectionId: "p", database: "shop" }, schema: "public", relation: "order_items" });
+  expect(first("customer_id")).toEqual({ db: { connectionId: "p", database: "shop" }, schema: "public", relation: "addresses" });
+  expect(first("pa")).toEqual({ db: { connectionId: "p", database: "shop" }, schema: "public", relation: "payments" });
+  expect(first("rder")).toEqual({ db: { connectionId: "p", database: "shop" }, schema: "public", relation: "order_items" });
+  expect(first("touch")).toBeNull();
 });

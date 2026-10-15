@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
 import { Highlight } from "./primitives";
-import { matchRanges, parseQuery } from "./textMatch";
+import { matchRanges, parseQuery, startsWords } from "./textMatch";
 
 it("splits a query into lowercase words and reads blank text as no filter", () => {
   expect(parseQuery("  Order\tITEMS  id ")).toEqual(["order", "items", "id"]);
@@ -34,4 +34,10 @@ it("marks each matched range of a name and leaves the rest as text", () => {
     'audit_<mark class="rounded-[2px] bg-amber/20 text-inherit">order</mark>_log',
   );
   expect(renderToStaticMarkup(<Highlight text="orders" ranges={null} />)).toBe("orders");
+});
+
+it("tells a word-start match from one inside a word", () => {
+  expect(startsWords(parseQuery("ord it"), "order_items")).toBe(true);
+  expect(startsWords(parseQuery("ord it"), "order_audit")).toBe(false);
+  expect(startsWords(parseQuery("orders"), "paid_orders")).toBe(true);
 });

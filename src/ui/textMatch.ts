@@ -28,3 +28,16 @@ export function matchRanges(tokens: readonly string[], text: string): TextRange[
   }
   return merged;
 }
+
+const WORD_BREAK = /[\s._\-/(]/;
+
+/** Whether every token begins a word of `text`: at its start or after a space, `.`, `_`, `-`, `/`, or `(`. */
+export function startsWords(tokens: readonly string[], text: string): boolean {
+  const hay = text.toLowerCase();
+  return tokens.every((token) => {
+    for (let i = hay.indexOf(token); i !== -1; i = hay.indexOf(token, i + 1)) {
+      if (i === 0 || WORD_BREAK.test(hay[i - 1]!)) return true;
+    }
+    return false;
+  });
+}

@@ -64,7 +64,7 @@ function WorkspaceSidebarBody() {
   const setTreeQuery = useWorkspace((s) => s.setTreeQuery);
   const filter = useTreeFilter(query);
   const openFirst = () => {
-    const first = filter && firstRelation(filter);
+    const first = filter && firstRelation(filter, parseQuery(query));
     if (first) openTableTab(first);
   };
 

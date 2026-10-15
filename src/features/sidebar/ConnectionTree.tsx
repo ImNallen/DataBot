@@ -25,6 +25,7 @@ import {
   commands,
   type ColumnInfo,
   type ConnectionConfig,
+  type ConnectionId,
   type DatabaseRef,
   type DatabaseState,
   type FunctionInfo,
@@ -649,7 +650,9 @@ function ConnectionTrailing({
   }
 }
 
-function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expanded: Expanded }) {
+type Revealed = Map<ConnectionId, "database" | "schema">;
+
+function ConnectionNode({ config, expanded, revealed }: { config: ConnectionConfig; expanded: Expanded; revealed: Revealed }) {
   const state = useLive((s) => s.connections[config.id]);
   const instance = instanceOf(state);
   const tone = connectionTone(state);
@@ -669,20 +672,19 @@ function ConnectionNode({ config, expanded }: { config: ConnectionConfig; expand
         : null;
 
   // The first connect opens the connection and its home database, then that database's default schema once its catalog says which.
-  const revealed = useRef<"nothing" | "database" | "schema">("nothing");
   const { toggle } = expanded;
   useEffect(() => {
     if (!home) return;
-    if (revealed.current === "nothing") {
-      revealed.current = "database";
+    if (!revealed.has(config.id)) {
+      revealed.set(config.id, "database");
       toggle(path, true);
       toggle(`${path}/${home}`, true);
     }
-    if (revealed.current === "database" && homeDefault !== undefined) {
-      revealed.current = "schema";
+    if (revealed.get(config.id) === "database" && homeDefault !== undefined) {
+      revealed.set(config.id, "schema");
       if (homeDefault) toggle(`${path}/${home}/${homeDefault}`, true);
     }
-  }, [home, homeDefault, toggle, path]);
+  }, [home, homeDefault, toggle, path, revealed, config.id]);
 
   const onClick = () => {
     if (connected || state?.status.kind === "Connecting") expanded.toggle(path);
@@ -840,6 +842,8 @@ export function ConnectionTree({ filter, query }: { filter: TreeFilter | null; q
     [],
   );
   const expanded: Expanded = { has: (p) => open.has(p), toggle };
+  // Held here, not in each node, so a search that swaps the nodes out does not reopen what the user closed.
+  const revealed = useRef<Revealed>(new Map()).current;
   const list = Object.values(configs).sort((a, b) => a.name.localeCompare(b.name));
 
   return (
@@ -847,7 +851,7 @@ export function ConnectionTree({ filter, query }: { filter: TreeFilter | null; q
       {filter ? (
         <FilteredTree key={query} filter={filter} query={query.trim()} />
       ) : (
-        list.map((c) => <ConnectionNode key={c.id} config={c} expanded={expanded} />)
+        list.map((c) => <ConnectionNode key={c.id} config={c} expanded={expanded} revealed={revealed} />)
       )}
       <PickerHost />
     </div>
