@@ -3,7 +3,8 @@ import { Command } from "cmdk";
 import { IconBraces, IconColumns3, IconEye, IconSearch, IconTable } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { useCatalog, type SearchItem } from "../../state/catalog";
-import { dbKey } from "../../state/dbKey";
+import { dbKey, type DbKey } from "../../state/dbKey";
+import { shownDatabases, useLive } from "../../state/live";
 import { useWorkspace } from "../../state/workspace";
 import { DialogBackdrop } from "../../ui/primitives";
 import { insertAtCursor } from "../editor/editorStates";
@@ -52,9 +53,14 @@ export function SearchPalette() {
   const open = useWorkspace((s) => s.overlay.kind === "palette");
   const close = useWorkspace((s) => s.close);
   const views = useCatalog((s) => s.views);
+  const connections = useLive((s) => s.connections);
   const [query, setQuery] = useState("");
 
-  const items = useMemo(() => Object.values(views).flatMap((v) => v.searchItems), [views]);
+  // Only the databases the tree shows: a tab on another database loads its catalog for completion, not for search.
+  const items = useMemo(() => {
+    const shown = shownDatabases(connections);
+    return Object.entries(views).flatMap(([key, v]) => (shown.has(key as DbKey) ? v.searchItems : []));
+  }, [views, connections]);
   const results = useMemo(
     () => (query.trim() ? fuzzyRank(query, items, (i) => i.label, 60) : items.filter((i) => i.kind !== "column").slice(0, 60)),
     [query, items],
