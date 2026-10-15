@@ -365,10 +365,13 @@ impl Instance {
                 system: d.system,
                 access: d.access,
                 shown: d.name == self.home,
+                show_system_schemas: false,
+                shown_schemas: Vec::new(),
+                schema_count: SchemaCount::Unknown,
                 catalog: slots.get(&d.name).map_or(CatalogStatus::Idle, |s| s.status()),
             })
             .collect();
-        InstanceState { home: self.home.clone(), databases }
+        InstanceState { home: self.home.clone(), show_system_databases: false, databases }
     }
 }
 
@@ -417,7 +420,7 @@ mod tests {
         assert_eq!(slot.status(), CatalogStatus::Failed { message: "first load failed".into(), version: None });
         assert!(slot.last().is_none());
 
-        let catalog = Arc::new(Catalog { db, version: 7, schemas: Vec::new() });
+        let catalog = Arc::new(Catalog { db, version: 7, default_schema: None, schemas: Vec::new() });
         slot.set(CatalogSlot::Ready(catalog.clone()));
         slot.fail("statement timeout".into());
         assert_eq!(slot.status(), CatalogStatus::Failed { message: "statement timeout".into(), version: Some(7) });

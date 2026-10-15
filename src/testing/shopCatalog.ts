@@ -49,9 +49,10 @@ export function shopCatalog(connectionId: ConnectionId, version: number): Catalo
   return {
     db: { connectionId, database: "shop" },
     version,
+    defaultSchema: "public",
     schemas: [
-      { name: "lab", relations: LAB.map((s, i) => relation(s, 16_900 + i)), functions: [] },
-      { name: "public", relations: SHOP.map((s, i) => relation(s, 16_400 + i)), functions: SHOP_FUNCTIONS },
+      { name: "lab", system: false, relationCount: LAB.length, relations: LAB.map((s, i) => relation(s, 16_900 + i)), functions: [] },
+      { name: "public", system: false, relationCount: SHOP.length, relations: SHOP.map((s, i) => relation(s, 16_400 + i)), functions: SHOP_FUNCTIONS },
     ],
   };
 }

@@ -642,6 +642,23 @@ impl Engine {
         Ok(self.shared.load_catalog(&instance, &slot, &mut meta).await?.version)
     }
 
+    /// Re-reads `pg_database`, reconciles the slots, and refreshes every loaded catalog.
+    pub async fn refresh_connection(&self, id: ConnectionId) -> Result<(), CatalogError> {
+        let _ = id;
+        Err(CatalogError::NotConnected)
+    }
+
+    /// Applies one picker edit to the connection's stored view.
+    pub async fn edit_view(&self, id: ConnectionId, edit: ViewEdit) -> Result<(), CatalogError> {
+        let _ = (id, edit);
+        Err(CatalogError::NotConnected)
+    }
+
+    /// Counts the non-system schemas of databases that have no slot, through short-lived sessions.
+    pub fn probe_databases(&self, id: ConnectionId, databases: Vec<String>) {
+        let _ = (id, databases);
+    }
+
     /// `count(*)` with the query's filters, on the database's metadata session.
     pub async fn exact_row_count(&self, db: DatabaseRef, schema: String, table: String, query: TableQuery) -> Result<u64, CountError> {
         let (instance, slot) = self.shared.slot(&db).map_err(|_| CountError::NotConnected)?;

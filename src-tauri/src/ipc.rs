@@ -55,6 +55,24 @@ pub async fn catalog_refresh(engine: State<'_, Arc<Engine>>, db: DatabaseRef) ->
 
 #[tauri::command]
 #[specta::specta]
+pub async fn connection_refresh(engine: State<'_, Arc<Engine>>, id: ConnectionId) -> Result<(), CatalogError> {
+    engine.refresh_connection(id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn connection_edit_view(engine: State<'_, Arc<Engine>>, id: ConnectionId, edit: ViewEdit) -> Result<(), CatalogError> {
+    engine.edit_view(id, edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn connection_probe_databases(engine: State<'_, Arc<Engine>>, id: ConnectionId, databases: Vec<String>) {
+    engine.probe_databases(id, databases)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn relation_detail(engine: State<'_, Arc<Engine>>, db: DatabaseRef, oid: u32) -> Result<RelationDetail, DetailError> {
     engine.relation_detail(db, oid).await
 }

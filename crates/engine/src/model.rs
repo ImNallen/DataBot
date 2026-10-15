@@ -111,6 +111,8 @@ pub enum ConnStatus {
 pub struct InstanceState {
     /// `ConnectionConfig.database` as the server spells it.
     pub home: String,
+    /// The database picker lists system databases only while this is on.
+    pub show_system_databases: bool,
     /// Every row of `pg_database`, sorted by name.
     pub databases: Vec<DatabaseState>,
 }
@@ -122,9 +124,28 @@ pub struct DatabaseState {
     /// `datistemplate OR NOT datallowconn`. `postgres` is an ordinary database.
     pub system: bool,
     pub access: DbAccess,
-    /// Whether the tree shows this database.
+    /// Whether the tree shows this database, resolved from the stored view. Never true without
+    /// `DbAccess::Ok`.
     pub shown: bool,
+    /// The schema picker lists system schemas only while this is on.
+    pub show_system_schemas: bool,
+    /// The schemas the tree shows under this database, in name order. Empty until the catalog
+    /// serves a version.
+    pub shown_schemas: Vec<String>,
+    /// Non-system schema count for the database picker: from the catalog when one is served,
+    /// else from `connection_probe_databases`.
+    pub schema_count: SchemaCount,
     pub catalog: CatalogStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum SchemaCount {
+    Unknown,
+    Probing,
+    Known { count: u32 },
+    /// The probe session failed; `message` is the server's or the transport's text.
+    Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
@@ -175,6 +196,12 @@ pub enum ConnectError {
 pub struct Catalog {
     pub db: DatabaseRef,
     pub version: u64,
+    /// The first existing entry of `current_schemas(false)` on this database's metadata session,
+    /// else `public` when it exists, else the first non-system schema by name. `None` only when
+    /// the database has no non-system schema. "Default only" in the schema picker means this.
+    pub default_schema: Option<String>,
+    /// Every schema except `pg_toast` and temp schemas, in name order. A system schema carries
+    /// its relations only while the tree shows it, and never its functions.
     pub schemas: Vec<SchemaInfo>,
 }
 
@@ -182,6 +209,11 @@ pub struct Catalog {
 #[serde(rename_all = "camelCase")]
 pub struct SchemaInfo {
     pub name: String,
+    /// `information_schema` or a `pg_` prefix, which Postgres reserves for its own schemas.
+    pub system: bool,
+    /// Tables, views, materialized views, foreign and partitioned tables, counted by the schema
+    /// query itself, so it is right for a system schema whose `relations` are not loaded.
+    pub relation_count: u32,
     pub relations: Vec<Relation>,
     pub functions: Vec<FunctionInfo>,
 }
@@ -1024,6 +1056,31 @@ pub enum DetailError {
     /// The relation was dropped after the catalog the caller holds was read.
     Gone,
     Failed { message: String },
+}
+
+/// One edit to a connection's stored view, sent by the pickers. Each is an intent that the engine
+/// resolves against its own current database list and catalogs, so two quick clicks cannot lose
+/// an update the way a selection computed from a stale snapshot would. Every edit is idempotent.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ViewEdit {
+    Databases { preset: Preset },
+    /// One checkbox of the database picker. Showing a database whose stored schema selection
+    /// resolves to no schema resets that selection to `DefaultOnly`.
+    Database { name: String, shown: bool },
+    ShowSystemDatabases { show: bool },
+    Schemas { database: String, preset: Preset },
+    /// One checkbox of the schema picker.
+    Schema { database: String, name: String, shown: bool },
+    ShowSystemSchemas { database: String, show: bool },
+}
+
+/// The quick actions of a picker. `None` is an explicit empty selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Type)]
+pub enum Preset {
+    All,
+    DefaultOnly,
+    None,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]

@@ -42,7 +42,7 @@ describe("live.apply", () => {
       kind: "ConnectionChanged",
       id: CONN,
       rev: 9,
-      status: { kind: "Connected", server: { version: "16.4", versionNum: 160004, encoding: "UTF8" }, instance: { home: "shop", databases: [] } },
+      status: { kind: "Connected", server: { version: "16.4", versionNum: 160004, encoding: "UTF8" }, instance: { home: "shop", showSystemDatabases: false, databases: [] } },
     });
     const boot: BootSnapshot = {
       connections: [],
@@ -57,7 +57,7 @@ describe("live.apply", () => {
   });
 
   it("wants the Ready catalogs of connected instances and the last good one behind a failed reload", () => {
-    const db = (name: string, catalog: DatabaseState["catalog"]): DatabaseState => ({ name, system: false, access: "Ok", shown: name === "shop", catalog });
+    const db = (name: string, catalog: DatabaseState["catalog"]): DatabaseState => ({ name, system: false, access: "Ok", shown: name === "shop", showSystemSchemas: false, shownSchemas: [], schemaCount: { kind: "Unknown" }, catalog });
     const server = { version: "16.4", versionNum: 160004, encoding: "UTF8" };
     const connections: Record<string, ConnectionState> = {
       [CONN]: {
@@ -68,6 +68,7 @@ describe("live.apply", () => {
           server,
           instance: {
             home: "shop",
+            showSystemDatabases: false,
             databases: [
               db("postgres", { kind: "Idle" }),
               db("reporting", { kind: "Ready", version: 7 }),
@@ -78,7 +79,7 @@ describe("live.apply", () => {
           },
         },
       },
-      other: { id: "other", rev: 1, status: { kind: "Connected", server, instance: { home: "x", databases: [db("x", { kind: "Ready", version: 2 })] } } },
+      other: { id: "other", rev: 1, status: { kind: "Connected", server, instance: { home: "x", showSystemDatabases: false, databases: [db("x", { kind: "Ready", version: 2 })] } } },
       down: { id: "down", rev: 9, status: { kind: "Lost", reason: "gone" } },
     };
     expect([...wantedCatalogs(connections).entries()]).toEqual([
@@ -89,10 +90,10 @@ describe("live.apply", () => {
   });
 
   it("lists the shown databases of connected instances, not every loaded one", () => {
-    const db = (name: string, shown: boolean): DatabaseState => ({ name, system: false, access: "Ok", shown, catalog: { kind: "Ready", version: 1 } });
+    const db = (name: string, shown: boolean): DatabaseState => ({ name, system: false, access: "Ok", shown, showSystemSchemas: false, shownSchemas: [], schemaCount: { kind: "Unknown" }, catalog: { kind: "Ready", version: 1 } });
     const server = { version: "16.4", versionNum: 160004, encoding: "UTF8" };
     const connections: Record<string, ConnectionState> = {
-      [CONN]: { id: CONN, rev: 3, status: { kind: "Connected", server, instance: { home: "shop", databases: [db("postgres", false), db("shop", true)] } } },
+      [CONN]: { id: CONN, rev: 3, status: { kind: "Connected", server, instance: { home: "shop", showSystemDatabases: false, databases: [db("postgres", false), db("shop", true)] } } },
       down: { id: "down", rev: 9, status: { kind: "Lost", reason: "gone" } },
     };
     expect([...shownDatabases(connections)]).toEqual([`${CONN}\u0000shop`]);

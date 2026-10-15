@@ -42,9 +42,12 @@ it("looks primary keys up in the catalog of the database the rows came from", ()
   const reporting = buildCatalogView({
     db: { connectionId: "conn", database: "reporting" },
     version: 2,
+    defaultSchema: "public",
     schemas: [
       {
         name: "public",
+        system: false,
+        relationCount: 1,
         relations: [
           {
             ...orders,

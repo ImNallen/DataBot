@@ -12,6 +12,9 @@ export const commands = {
 	connectionDisconnect: (id: ConnectionId, force: boolean) => typedError<null, DisconnectError>(__TAURI_INVOKE("connection_disconnect", { id, force })),
 	catalogGet: (db: DatabaseRef) => typedError<Catalog, CatalogError>(__TAURI_INVOKE("catalog_get", { db })),
 	catalogRefresh: (db: DatabaseRef) => typedError<number, CatalogError>(__TAURI_INVOKE("catalog_refresh", { db })),
+	connectionRefresh: (id: ConnectionId) => typedError<null, CatalogError>(__TAURI_INVOKE("connection_refresh", { id })),
+	connectionEditView: (id: ConnectionId, edit: ViewEdit) => typedError<null, CatalogError>(__TAURI_INVOKE("connection_edit_view", { id, edit })),
+	connectionProbeDatabases: (id: ConnectionId, databases: string[]) => __TAURI_INVOKE<void>("connection_probe_databases", { id, databases }),
 	relationDetail: (db: DatabaseRef, oid: number) => typedError<RelationDetail, DetailError>(__TAURI_INVOKE("relation_detail", { db, oid })),
 	exactRowCount: (db: DatabaseRef, schema: string, table: string, query: TableQuery) => typedError<number, CountError>(__TAURI_INVOKE("exact_row_count", { db, schema, table, query })),
 	consoleConfigure: (tabId: TabId, config: ConsoleConfig) => typedError<ConsoleState, ConfigureError>(__TAURI_INVOKE("console_configure", { tabId, config })),
@@ -70,6 +73,16 @@ export type BootSnapshot = {
 export type Catalog = {
 	db: DatabaseRef,
 	version: number,
+	/**
+	 *  The first existing entry of `current_schemas(false)` on this database's metadata session,
+	 *  else `public` when it exists, else the first non-system schema by name. `None` only when
+	 *  the database has no non-system schema. "Default only" in the schema picker means this.
+	 */
+	defaultSchema: string | null,
+	/**
+	 *  Every schema except `pg_toast` and temp schemas, in name order. A system schema carries
+	 *  its relations only while the tree shows it, and never its functions.
+	 */
 	schemas: SchemaInfo[],
 };
 
@@ -265,8 +278,23 @@ export type DatabaseState = {
 	/**  `datistemplate OR NOT datallowconn`. `postgres` is an ordinary database. */
 	system: boolean,
 	access: DbAccess,
-	/**  Whether the tree shows this database. */
+	/**
+	 *  Whether the tree shows this database, resolved from the stored view. Never true without
+	 *  `DbAccess::Ok`.
+	 */
 	shown: boolean,
+	/**  The schema picker lists system schemas only while this is on. */
+	showSystemSchemas: boolean,
+	/**
+	 *  The schemas the tree shows under this database, in name order. Empty until the catalog
+	 *  serves a version.
+	 */
+	shownSchemas: string[],
+	/**
+	 *  Non-system schema count for the database picker: from the catalog when one is served,
+	 *  else from `connection_probe_databases`.
+	 */
+	schemaCount: SchemaCount,
 	catalog: CatalogStatus,
 };
 
@@ -374,6 +402,8 @@ export type IndexInfo = {
 export type InstanceState = {
 	/**  `ConnectionConfig.database` as the server spells it. */
 	home: string,
+	/**  The database picker lists system databases only while this is on. */
+	showSystemDatabases: boolean,
 	/**  Every row of `pg_database`, sorted by name. */
 	databases: DatabaseState[],
 };
@@ -430,6 +460,9 @@ export type PgTypeRef = {
 	display: string,
 	category: TypeCategory,
 };
+
+/**  The quick actions of a picker. `None` is an explicit empty selection. */
+export type Preset = "All" | "DefaultOnly" | "None";
 
 export type QueryError = {
 	severity: string,
@@ -533,8 +566,19 @@ export type RunTarget = { kind: "cursor"; offset: DocOffset } | { kind: "selecti
 
 export type SaveError = { kind: "Invalid"; message: string } | { kind: "Keychain"; message: string } | { kind: "Store"; message: string };
 
+export type SchemaCount = { kind: "Unknown" } | { kind: "Probing" } | { kind: "Known"; count: number } | 
+/**  The probe session failed; `message` is the server's or the transport's text. */
+{ kind: "Unavailable"; message: string };
+
 export type SchemaInfo = {
 	name: string,
+	/**  `information_schema` or a `pg_` prefix, which Postgres reserves for its own schemas. */
+	system: boolean,
+	/**
+	 *  Tables, views, materialized views, foreign and partitioned tables, counted by the schema
+	 *  query itself, so it is right for a system schema whose `relations` are not loaded.
+	 */
+	relationCount: number,
 	relations: Relation[],
 	functions: FunctionInfo[],
 };
@@ -642,6 +686,20 @@ export type TypeCategory =
 "Integer" | 
 /**  numeric, real, double precision, money. */
 "Numeric" | "Text" | "Bool" | "Temporal" | "Json" | "Binary" | "Uuid" | "Network" | "Array" | "Enum" | "Composite" | "Range" | "Other";
+
+/**
+ *  One edit to a connection's stored view, sent by the pickers. Each is an intent that the engine
+ *  resolves against its own current database list and catalogs, so two quick clicks cannot lose
+ *  an update the way a selection computed from a stale snapshot would. Every edit is idempotent.
+ */
+export type ViewEdit = { kind: "Databases"; preset: Preset } | 
+/**
+ *  One checkbox of the database picker. Showing a database whose stored schema selection
+ *  resolves to no schema resets that selection to `DefaultOnly`.
+ */
+{ kind: "Database"; name: string; shown: boolean } | { kind: "ShowSystemDatabases"; show: boolean } | { kind: "Schemas"; database: string; preset: Preset } | 
+/**  One checkbox of the schema picker. */
+{ kind: "Schema"; database: string; name: string; shown: boolean } | { kind: "ShowSystemSchemas"; database: string; show: boolean };
 
 /**  Owned by the frontend, stored verbatim by the engine (single writer: the UI). */
 export type Workspace = {

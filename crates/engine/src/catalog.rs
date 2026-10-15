@@ -46,7 +46,7 @@ pub async fn load(client: &Client, db: DatabaseRef, version: u64) -> Result<Cata
         .await?;
     let mut schemas: Vec<SchemaInfo> = schema_rows
         .iter()
-        .map(|r| SchemaInfo { name: r.get(0), relations: Vec::new(), functions: Vec::new() })
+        .map(|r| SchemaInfo { name: r.get(0), system: false, relation_count: 0, relations: Vec::new(), functions: Vec::new() })
         .collect();
     let schema_index: HashMap<String, usize> = schemas.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
 
@@ -143,7 +143,7 @@ pub async fn load(client: &Client, db: DatabaseRef, version: u64) -> Result<Cata
         });
     }
 
-    Ok(Catalog { db, version, schemas })
+    Ok(Catalog { db, version, default_schema: None, schemas })
 }
 
 impl Catalog {
