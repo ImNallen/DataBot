@@ -61,7 +61,6 @@ function MessageLine({ entry }: { entry: OutputEntry }) {
   }
 }
 
-/** Stays scrolled to the newest entry unless the user scrolled up. Rows skip paint off screen, so no virtualizer up to the cap. */
 export function MessagesPanel({ entries, dropped, tail }: { entries: OutputEntry[]; dropped: boolean; tail: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);

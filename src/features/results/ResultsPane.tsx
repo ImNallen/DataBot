@@ -21,9 +21,9 @@ import { exportErrorText } from "../../ipc/errors";
 import { OUTPUT_LIMIT, useLive } from "../../state/live";
 import {
   messagesLabel,
+  messagesSince,
   resultView,
   rowResults,
-  runMessages,
   runStatements,
   runSummary,
   shownResult,
@@ -285,7 +285,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
   const shown = shownResult(run, picked);
   const summary = runSummary(run, picked, now);
   const entries = useLive((s) => (tabId ? s.output[tabId] : undefined));
-  const messages = useMemo(() => runMessages(entries, run), [entries, run]);
+  const messages = useMemo(() => messagesSince(entries, run), [entries, run]);
   const view = resultView(run, picked, messages.length > 0);
   const label = messagesLabel(messages);
 

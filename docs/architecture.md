@@ -669,7 +669,7 @@ Stores (Zustand v5). Each has one owner, and derived data is never stored:
 type LiveData = {
   connections: Record<ConnectionId, ConnectionState>;
   consoles: Record<TabId, ConsoleState>;
-  output: Record<TabId, OutputEntry[]>;                // ring buffer, 5,000 per tab; ResultsPane reads runMessages(output, run)
+  output: Record<TabId, OutputEntry[]>;                // ring buffer, 5,000 per tab; ResultsPane reads messagesSince(output, run)
   catalogVersions: Record<ConnectionId, number>;       // highest version seen; boot.ts calls useCatalog.ensure
   historyTail: HistoryEntry[];                         // last 200 HistoryAppended entries, newest first
 };
@@ -959,7 +959,7 @@ Frontend phase (PRs #4 and #11 to #13). These PRs built the live store, the edit
 - **Keys.** ⌘W closes the active tab. The macOS menu in `main.rs` mirrors Tauri's default menu with Close Window moved to ⇧⌘W, so ⌘W reaches the webview. Global shortcuts live in `shell/commands.ts`.
 - **History is a palette, and the right panel is a placeholder.** The sidebar's clock button opens `HistoryPalette` (cmdk), which pages `history_list` and puts `historyTail` on top. The right panel draws only an Assistant placeholder.
 - **CSV export needs the desktop app.** `exportCsv` asks for a path with the native save dialog. In the dev-bridge browser that dialog throws, and the app shows a toast. Other export formats are disabled menu items marked "Soon", and Import shows a "coming soon" toast.
-- **Server messages render in the results pane, not an output log.** #11 removed `OutputLog`. `ConsoleOutput` now carries only notices, `Info` lines, and failures that no statement owns. Statement tags, row counts, and statement errors stay in `ConsoleState.run`. Every `OutputEntry` has a `runId`, and commit, rollback, and `table_apply` send the run id they take from the shared counter. `runMessages` in `state/status.ts` keeps the entries whose `runId` is at least the current run's, so a commit-time notice joins the run before it. The store is never cleared, and the scope is derived. `resultView` shows `MessagesPanel` in place of an empty body, or behind the **messages** button when the run has a grid. The pick `{ kind: "messages", runId }` in `activeResult` lapses on the next run. `output[tabId]` is never freed when a tab closes, which holds up to 5,000 entries per closed tab.
+- **Server messages render in the results pane, not an output log.** #11 removed `OutputLog`. `ConsoleOutput` now carries only notices, `Info` lines, and failures that no statement owns. Statement tags, row counts, and statement errors stay in `ConsoleState.run`. Every `OutputEntry` has a `runId`, and commit, rollback, and `table_apply` send the run id they take from the shared counter. `messagesSince` in `state/status.ts` keeps the entries whose `runId` is at least the current run's, so a commit-time notice joins the run before it. The store is never cleared, and the scope is derived. `resultView` shows `MessagesPanel` in place of an empty body, or behind the **messages** button when the run has a grid. The pick `{ kind: "messages", runId }` in `activeResult` lapses on the next run. `output[tabId]` is never freed when a tab closes, which holds up to 5,000 entries per closed tab.
 
 ## Open questions and risks
 
@@ -980,7 +980,7 @@ Still open:
 - **Risk:** `prepare` fails for statements the extended protocol can't Describe. The classifier rejects `CopyStdio` up front with `RunError::Unsupported`. Other failures surface as a normal `QueryError`.
 - **Risk:** table pages use `LIMIT n OFFSET m`. Postgres reads and discards every skipped row, so deep pages of a large table get slower.
 - **Risk:** the pager's total is the catalog's `reltuples` estimate (`of ~241,183`) until the user presses Last, which fetches the exact count. A filtered table shows only a lower bound (`of 500+`) until then.
-- **Risk:** notices raised by a table tab's **Submit** are hidden. `submitEdits` reloads the page after `table_apply`, and that reload is a newer run, so `runMessages` drops the apply's entries. They stay in the store.
+- **Risk:** notices raised by a table tab's **Submit** are hidden. `submitEdits` reloads the page after `table_apply`, and that reload is a newer run, so `messagesSince` drops the apply's entries. They stay in the store.
 - **Risk:** `RightPanel::Schema` and `RightPanel::History` stay in the contract with no UI. `restore` maps them to `Assistant`.
 
 ## Next implementation step

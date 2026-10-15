@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConsoleState, OutputEntry, QueryError, ResultMeta, RunState, StatementRun } from "../ipc/bindings";
-import { hasUncommittedWork, messagesLabel, resultView, rowResults, runMessages, runSummary, shownResult } from "./status";
+import { hasUncommittedWork, messagesLabel, messagesSince, resultView, rowResults, runSummary, shownResult } from "./status";
 import { nextUntitled, tabFromSnapshot, workspaceSnapshot, type Tab } from "./workspace";
 
 const meta = (index: number, rowCount: number, extra: Partial<ResultMeta> = {}): ResultMeta => ({
@@ -88,17 +88,17 @@ const failure: QueryError = { severity: "ERROR", sqlstate: "40001", message: "co
 const finishedRun = (runId: number, statements: StatementRun[] = []): RunState => ({ kind: "Finished", runId, elapsedMs: 5, statements, outcome: "Ok" });
 const rowsAt = (index: number) => stmt(index, { kind: "Rows", result: meta(index, 1), done: true });
 
-describe("runMessages", () => {
+describe("messagesSince", () => {
   const entries = [notice(5, "older run"), notice(7, "this run"), { atMs: 0, runId: 9, body: { kind: "Info", message: "after it" } } satisfies OutputEntry];
 
   it("keeps the run's entries and anything the session did after it", () => {
-    expect(runMessages(entries, finishedRun(7)).map((e) => e.runId)).toEqual([7, 9]);
+    expect(messagesSince(entries, finishedRun(7)).map((e) => e.runId)).toEqual([7, 9]);
   });
 
   it("is empty before anything ran or when the run raised nothing", () => {
-    expect(runMessages(entries, { kind: "Idle" })).toEqual([]);
-    expect(runMessages(undefined, finishedRun(7))).toEqual([]);
-    expect(runMessages(entries, finishedRun(10))).toEqual([]);
+    expect(messagesSince(entries, { kind: "Idle" })).toEqual([]);
+    expect(messagesSince(undefined, finishedRun(7))).toEqual([]);
+    expect(messagesSince(entries, finishedRun(10))).toEqual([]);
   });
 });
 

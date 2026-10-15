@@ -45,7 +45,6 @@ export function rowResults(run: RunState): RowResult[] {
   return out;
 }
 
-/** A statement index, or the messages of the run it was picked on, so the pick lapses on the next run. */
 export type ResultPick = number | { kind: "messages"; runId: number };
 
 export function shownResult(run: RunState, picked: ResultPick | undefined): RowResult | undefined {
@@ -53,8 +52,7 @@ export function shownResult(run: RunState, picked: ResultPick | undefined): RowR
   return results.find((r) => r.index === picked) ?? results.at(-1);
 }
 
-/** The run's entries plus whatever the session did after it, such as a commit. Run ids share one counter. */
-export function runMessages(entries: readonly OutputEntry[] | undefined, run: RunState): OutputEntry[] {
+export function messagesSince(entries: readonly OutputEntry[] | undefined, run: RunState): OutputEntry[] {
   if (run.kind === "Idle" || !entries) return [];
   return entries.filter((e) => e.runId >= run.runId);
 }
