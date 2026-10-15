@@ -24,17 +24,17 @@ it("opens the exact saved SQL and database in a new tab without changing the ori
   openHistoryQuery(group, "-- Revenue\nselect 42");
   const ws = useWorkspace.getState();
   const tab = ws.active ? ws.tabs[ws.active] : undefined;
-  expect(tab).toMatchObject({ kind: "sql", title: "Revenue", console: { db: { connectionId: "saved-connection", database: "reporting" } } });
+  expect(tab).toMatchObject({ title: "Revenue", console: { db: { connectionId: "saved-connection", database: "reporting" } }, table: null });
   expect(tab && textOf(tab.id)).toBe("-- Revenue\nselect 42");
   expect(textOf(original)).toBe("select 'untouched'");
 });
 
-it("inserts at the cursor only in the active SQL editor", () => {
+it("inserts at the cursor of the active tab's editor, a table tab's too, and needs an open tab", () => {
   expect(insertHistoryQuery("select 42")).toBe(false);
   openTableTab({ db: { connectionId: "c1", database: "shop" }, schema: "public", relation: "orders" });
-  const tableId = useWorkspace.getState().active;
-  expect(insertHistoryQuery("select 42")).toBe(false);
-  expect(tableId && textOf(tableId)).toBe("SELECT * FROM public.orders");
+  const tableId = useWorkspace.getState().active!;
+  expect(insertHistoryQuery("select 42;\n")).toBe(true);
+  expect(textOf(tableId)).toBe("select 42;\nSELECT * FROM public.orders");
   const id = openSqlTab({ text: "select 1;" });
   expect(insertHistoryQuery("select 42;\n")).toBe(true);
   expect(textOf(id)).toBe("select 42;\nselect 1;");

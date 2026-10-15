@@ -45,7 +45,7 @@ export async function boot(): Promise<void> {
   await listen<AppEvent>("app-event", (e) => useLive.getState().apply(e.payload));
   const snapshot = await commands.appBoot();
   useLive.getState().hydrate(snapshot);
-  for (const tab of snapshot.workspace.tabs) seedEditor(tab.id, tab.kind === "Sql" ? tab.text : browseQuery(tab.schema, tab.table));
+  for (const tab of snapshot.workspace.tabs) seedEditor(tab.id, tab.text ?? (tab.table ? browseQuery(tab.table.schema, tab.table.table) : ""));
   useWorkspace.getState().restore(snapshot.workspace, snapshot.connections, snapshot.settings);
   startTheme();
   startAppearance();

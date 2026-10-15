@@ -37,9 +37,8 @@ function choose(item: SearchItem) {
       openTableTab({ db: item.db, schema: item.schema, relation: item.relation });
       return;
     case "function": {
-      const tab = ws.active ? ws.tabs[ws.active] : undefined;
-      if (tab?.kind === "sql") insertAtCursor(tab.id, `${item.name}()`);
-      else ws.notify("Open a SQL tab to insert a function call.");
+      if (ws.active) insertAtCursor(ws.active, `${item.name}()`);
+      else ws.notify("Open a tab to insert a function call.");
       return;
     }
     default: {

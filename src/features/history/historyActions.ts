@@ -10,7 +10,7 @@ export function openHistoryQuery(group: HistoryGroupSummary, sql: string, run = 
 
 export function insertHistoryQuery(sql: string): boolean {
   const state = useWorkspace.getState();
-  if (!state.active || state.tabs[state.active]?.kind !== "sql") return false;
+  if (!state.active || !state.tabs[state.active]) return false;
   insertAtCursor(state.active, sql);
   focusEditor();
   return true;
