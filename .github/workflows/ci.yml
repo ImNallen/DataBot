@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.93"
+  NODE_VERSION: "26"
+  PNPM_VERSION: "11"
+  PGUSER: l1data
+  PGPASSWORD: l1data
+  PGDATABASE: shop
+
+jobs:
+  frontend:
+    name: pnpm typecheck, test, build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm typecheck
+        run: pnpm typecheck
+
+      - name: pnpm test
+        run: pnpm test
+
+      - name: pnpm build
+        run: pnpm build
+
+  workspace:
+    name: cargo test --workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri Linux packages
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: workspace
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  database:
+    name: pg-tests and bridge-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ${{ env.PGUSER }}
+          POSTGRES_PASSWORD: ${{ env.PGPASSWORD }}
+          POSTGRES_DB: ${{ env.PGDATABASE }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U l1data -d shop"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+          --shm-size=1g
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install linker, OpenSSL, and psql
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            postgresql-client
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: database
+
+      - name: Publish L1_DATA_TEST_PG
+        run: |
+          echo "shop database at 127.0.0.1:5432"
+          printf 'L1_DATA_TEST_PG=%s\n' "postgres://${PGUSER}:${PGPASSWORD}@127.0.0.1:5432/${PGDATABASE}" >> "$GITHUB_ENV"
+
+      - name: Apply dev/seed.sql
+        run: psql "$L1_DATA_TEST_PG" -v ON_ERROR_STOP=1 -f dev/seed.sql
+
+      - name: cargo build -p dev-bridge
+        run: cargo build -p dev-bridge
+
+      - name: dev/bridge-smoke.sh
+        run: dev/bridge-smoke.sh
+
+      - name: cargo test -p engine --features pg-tests
+        run: cargo test -p engine --features pg-tests
