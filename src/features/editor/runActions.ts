@@ -19,6 +19,7 @@ import { isRunning } from "../../state/status";
 import { pendingCount, toChanges, useTableEdits, type TableEdits } from "../../state/tableEdits";
 import { EMPTY_QUERY, nextUntitled, tabMode, tabTarget, useWorkspace, type ConsoleTarget, type RelationRef, type Tab, type TableTab } from "../../state/workspace";
 import {
+  cursorOf,
   dropEditor,
   editorStateOf,
   flashRanges,
@@ -350,11 +351,7 @@ export function installRunBehavior(): void {
     ),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) for (const l of docListeners) l();
-      if (u.docChanged || u.selectionSet) {
-        const head = u.state.selection.main.head;
-        const line = u.state.doc.lineAt(head);
-        ws().setCursor(line.number, head - line.from + 1);
-      }
+      if (u.docChanged || u.selectionSet) ws().setCursor(cursorOf(u.state));
     }),
   ]);
 }

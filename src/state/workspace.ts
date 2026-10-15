@@ -168,7 +168,7 @@ type WorkspaceActions = {
   openSettings(section?: SettingsSectionId, target?: SettingId): void;
   closeSettings(): void;
   notify(text: string): void;
-  setCursor(line: number, col: number): void;
+  setCursor(cursor: { line: number; col: number }): void;
 };
 
 let toastSeq = 0;
@@ -259,5 +259,5 @@ export const useWorkspace = create<WorkspaceData & WorkspaceActions>()((set) => 
   openSettings: (section = "appearance", target) => set({ screen: { kind: "settings", section, target }, overlay: { kind: "none" } }),
   closeSettings: () => set({ screen: { kind: "workspace" }, overlay: { kind: "none" } }),
   notify: (text) => set({ toast: { id: ++toastSeq, text } }),
-  setCursor: (line, col) => set({ cursor: { line, col } }),
+  setCursor: (cursor) => set({ cursor }),
 }));
