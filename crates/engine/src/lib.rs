@@ -1291,4 +1291,162 @@ mod tests {
         assert!(matches!(engine.console_run(tab, RunRequest::Script { text: "select 1".into(), target: RunTarget::All }).await, Err(RunError::NotConfigured)));
         assert!(matches!(engine.console_commit(tab).await, Err(TxnError::NoTransaction)));
     }
+
+    #[tokio::test]
+    async fn a_view_edit_while_disconnected_is_refused() {
+        let (engine, _dir) = engine().await;
+        let config = engine.save_connection(draft("x")).await.unwrap();
+        let edit = ViewEdit::Database { name: "reporting".into(), shown: true };
+        assert!(matches!(engine.edit_view(config.id, edit).await, Err(CatalogError::NotConnected)));
+        assert!(engine.shared.store.view(config.id).unwrap().is_none(), "nothing was persisted");
+    }
+
+    /// A listener that accepts and drops every connection, so a session open fails at once. The
+    /// count tells whether a task reached the network.
+    struct Refuser {
+        port: u16,
+        accepted: Arc<AtomicU64>,
+    }
+
+    impl Refuser {
+        fn start() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let accepted = Arc::new(AtomicU64::new(0));
+            let count = accepted.clone();
+            std::thread::spawn(move || {
+                for conn in listener.incoming() {
+                    drop(conn);
+                    count.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            Self { port, accepted }
+        }
+    }
+
+    /// A connected instance whose home catalog is Ready and whose other databases point at
+    /// `refuser`, without a server: every network path these tests take fails fast.
+    async fn fake_connected(engine: &Arc<Engine>, refuser: &Refuser, databases: &[&str]) -> (ConnectionId, Arc<Instance>) {
+        let config = engine
+            .save_connection(ConnectionDraft { host: "127.0.0.1".into(), port: refuser.port, password: PasswordInput::Clear, ..draft("fake") })
+            .await
+            .unwrap();
+        let home = config.database.clone();
+        let db = DatabaseRef { connection_id: config.id, database: home.clone() };
+        let slot = DbSlot::new(db.clone());
+        slot.set(CatalogSlot::Ready(Arc::new(Catalog { db, version: 1, default_schema: Some("public".into()), schemas: Vec::new() })));
+        let list = std::iter::once(home.as_str())
+            .chain(databases.iter().copied())
+            .map(|name| connection::PgDatabase { name: name.into(), system: false, access: DbAccess::Ok })
+            .collect();
+        let server = ServerInfo { version: "16.0".into(), version_num: 160000, encoding: "UTF8".into() };
+        let instance = Arc::new(Instance::new(config.clone(), server, home, list, ConnectionView::initial(), slot));
+        engine.shared.set_connection(config.id, ConnSlot::Connected(instance.clone()));
+        (config.id, instance)
+    }
+
+    fn probe_of(instance: &Instance, name: &str) -> Option<SchemaCount> {
+        instance.probes.lock().unwrap().get(name).cloned()
+    }
+
+    async fn wait_until(what: &str, done: impl Fn() -> bool) {
+        let started = std::time::Instant::now();
+        while !done() {
+            assert!(started.elapsed() < Duration::from_secs(5), "{what}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Tauri runs a sync command inline on the main thread, outside its tokio runtime. The
+    /// engine's fire-and-forget entry points must work from there.
+    #[tokio::test]
+    async fn probe_databases_works_from_a_thread_without_a_runtime() {
+        let (engine, _dir) = engine().await;
+        let refuser = Refuser::start();
+        let (id, instance) = fake_connected(&engine, &refuser, &["x"]).await;
+        let caller = engine.clone();
+        let joined = std::thread::spawn(move || caller.probe_databases(id, vec!["x".into()])).join();
+        assert!(joined.is_ok(), "probe_databases panicked off the runtime");
+        wait_until("the probe never finished", || matches!(probe_of(&instance, "x"), Some(SchemaCount::Unavailable { .. }))).await;
+        assert_eq!(refuser.accepted.load(Ordering::SeqCst), 1);
+    }
+
+    /// Probe bookkeeping and the connection snapshot take the instance's locks from opposite
+    /// ends unless both follow the documented order. Both paths hammer the same instance; a
+    /// deadlock shows as a timeout.
+    #[tokio::test]
+    async fn probes_and_snapshots_never_deadlock() {
+        let (engine, _dir) = engine().await;
+        let refuser = Refuser::start();
+        let (id, _instance) = fake_connected(&engine, &refuser, &["x"]).await;
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        for worker in 0..2 {
+            let (engine, done_tx) = (engine.clone(), done_tx.clone());
+            std::thread::spawn(move || {
+                while std::time::Instant::now() < deadline {
+                    if worker == 0 {
+                        engine.probe_databases(id, vec!["x".into()]);
+                    } else {
+                        engine.shared.republish_connection(id);
+                    }
+                }
+                done_tx.send(()).unwrap();
+            });
+        }
+        drop(done_tx);
+        for _ in 0..2 {
+            assert!(done_rx.recv_timeout(Duration::from_secs(5)).is_ok(), "a worker is deadlocked");
+        }
+    }
+
+    /// Up to four probes run at once; the rest wait for a permit. A disconnect while they wait
+    /// must not let them open sessions afterwards.
+    #[tokio::test]
+    async fn probes_queued_behind_the_gate_open_no_session_after_a_disconnect() {
+        let (engine, _dir) = engine().await;
+        let refuser = Refuser::start();
+        let (id, instance) = fake_connected(&engine, &refuser, &["x"]).await;
+        let held = instance.probe_gate.acquire_many(connection::PROBE_PERMITS as u32).await.unwrap();
+        engine.probe_databases(id, vec!["x".into()]);
+        assert_eq!(probe_of(&instance, "x"), Some(SchemaCount::Probing));
+        engine.disconnect(id, false).await.unwrap();
+        drop(held);
+        wait_until("the queued probe never took its permit", || instance.probe_gate.available_permits() == connection::PROBE_PERMITS).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(refuser.accepted.load(Ordering::SeqCst), 0, "a probe connected after the disconnect");
+    }
+
+    /// Another thread's reconcile that read the view before an edit must not undo the edit's
+    /// slot once the edit's own reconcile has run.
+    #[tokio::test]
+    async fn a_concurrent_reconcile_cannot_undo_a_shown_database() {
+        let (engine, _dir) = engine().await;
+        let refuser = Refuser::start();
+        let (id, instance) = fake_connected(&engine, &refuser, &["x"]).await;
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let churn = {
+            let engine = engine.clone();
+            std::thread::spawn(move || {
+                while std::time::Instant::now() < deadline {
+                    engine.shared.reconcile(id);
+                }
+            })
+        };
+        let known = Known { home: &instance.home, databases: &[], catalogs: &HashMap::new() };
+        let shown = ConnectionView::initial().apply(&ViewEdit::Database { name: "x".into(), shown: true }, &known);
+        let hidden = ConnectionView::initial();
+        let mut lost = 0;
+        while std::time::Instant::now() < deadline {
+            for (view, want_slot) in [(&shown, true), (&hidden, false)] {
+                *instance.view.write().unwrap() = view.clone();
+                engine.shared.reconcile(id);
+                if instance.slot("x").is_some() != want_slot {
+                    lost += 1;
+                }
+            }
+        }
+        churn.join().unwrap();
+        assert_eq!(lost, 0, "a stale reconcile undid an edit {lost} times");
+    }
 }
