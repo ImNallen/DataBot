@@ -25,6 +25,10 @@ export const SETTINGS_SECTIONS = [
         label: "Themes",
         keywords: "theme palette colours colors accent custom create import vs code open vsx dracula catppuccin nord tokyo night",
       },
+      { id: "density", label: "Density", keywords: "compact standard spacious spacing padding row height comfortable dense layout" },
+      { id: "panelMotion", label: "Panel animations", keywords: "motion animation speed duration reduce transitions sidebar panels open close" },
+      { id: "interfaceFont", label: "Interface font", keywords: "typography font family size text ui system sf pro inter zoom" },
+      { id: "codeFont", label: "Monospace font", keywords: "typography font family size code editor table grid results mono jetbrains sf mono menlo" },
     ],
   },
   {

@@ -49,7 +49,7 @@ function initialFields(c: ConnectionConfig | undefined): Fields {
 function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
     <label className={cx("block", className)}>
-      <span className="mb-1 block text-[12px] text-dim">{label}</span>
+      <span className="mb-1 block text-ui-12 text-dim">{label}</span>
       {children}
     </label>
   );
@@ -151,7 +151,7 @@ function ConnectionForm({ existing, onDone }: { existing: ConnectionConfig | und
               type="button"
               data-testid="conn-password-clear"
               onClick={() => setPassword(password.kind === "clear" ? { kind: "keep" } : { kind: "clear" })}
-              className="mt-1 text-[11.5px] text-dim hover:text-fg"
+              className="mt-1 text-ui-11.5 text-dim hover:text-fg"
             >
               {password.kind === "clear" ? "Keep the saved password" : "Remove the saved password"}
             </button>
@@ -168,7 +168,7 @@ function ConnectionForm({ existing, onDone }: { existing: ConnectionConfig | und
         </Field>
       </div>
 
-      <div data-testid="conn-test-result" data-state={probe.kind} className="min-h-5 text-[12.5px]">
+      <div data-testid="conn-test-result" data-state={probe.kind} className="min-h-5 text-ui-12.5">
         {probe.kind === "testing" && (
           <span className="flex items-center gap-2 text-dim">
             <Spinner /> Connecting

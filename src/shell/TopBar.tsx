@@ -32,7 +32,7 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
       <div className="flex min-w-0 flex-1 items-center gap-2">
         {sql ? (
           <Menu.Root modal={false}>
-            <Menu.Trigger data-testid="tab-connection" className="truncate rounded px-0.5 text-[14px] text-dim outline-none hover:text-fg">
+            <Menu.Trigger data-testid="tab-connection" className="truncate rounded px-0.5 text-ui-14 text-dim outline-none hover:text-fg">
               {config?.name ?? "No connection"}
             </Menu.Trigger>
             <MenuContent>
@@ -46,12 +46,12 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
             </MenuContent>
           </Menu.Root>
         ) : (
-          <span className="truncate text-[14px] text-dim">{config?.name ?? ""}</span>
+          <span className="truncate text-ui-14 text-dim">{config?.name ?? ""}</span>
         )}
         {tab && (
           <>
-            <span className="text-[14px] text-faint">/</span>
-            <span className="truncate text-[14px] font-medium text-fg">{tabLabel(tab)}</span>
+            <span className="text-ui-14 text-faint">/</span>
+            <span className="truncate text-ui-14 font-medium text-fg">{tabLabel(tab)}</span>
           </>
         )}
       </div>

@@ -12,7 +12,7 @@ export function SidebarSearch({ testId, label, onOpen, children }: { testId: str
         className="group flex h-full min-w-0 flex-1 items-center gap-2.5 rounded-md pr-1.5 pl-2.5 text-left text-muted outline-none hover:bg-hover hover:text-fg"
       >
         <IconSearch size={15} className="shrink-0" />
-        <span className="min-w-0 flex-1 truncate text-[13.5px]">{label}</span>
+        <span className="min-w-0 flex-1 truncate text-ui-13.5">{label}</span>
         <Kbd className="bg-border text-muted opacity-0 group-hover:opacity-100">⌘P</Kbd>
       </button>
       {children}

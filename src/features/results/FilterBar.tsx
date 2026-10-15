@@ -8,7 +8,7 @@ import { updateTableQuery } from "../editor/runActions";
 import { FILTER_OPS, takesValue, useFilterDrafts, type FilterDraft } from "./tableQuery";
 
 const NO_DRAFTS: FilterDraft[] = [];
-const CHIP = "flex h-[26px] shrink-0 items-center gap-1 rounded-md border border-control bg-raised pr-0.5 pl-2 text-[12.5px]";
+const CHIP = "flex h-[26px] shrink-0 items-center gap-1 rounded-md border border-control bg-raised pr-0.5 pl-2 text-ui-12.5";
 
 function FilterChip({
   filter,
@@ -73,7 +73,7 @@ function FilterChip({
             if (e.key === "Escape") setValue(filter.value);
           }}
           style={{ width: `${Math.max(5, Math.min(24, value.length + 1))}ch` }}
-          className="h-5 min-w-0 rounded bg-bg px-1 font-mono text-[12px] text-fg outline-none placeholder:text-faint focus:ring-1 focus:ring-accent-border"
+          className="h-5 min-w-0 rounded bg-bg px-1 font-mono text-ui-12 text-fg outline-none placeholder:text-faint focus:ring-1 focus:ring-accent-border"
         />
       )}
       <IconButton aria-label={`Remove ${filter.column} filter`} className="size-5" onClick={onRemove}>
@@ -103,7 +103,7 @@ function ClauseInput({
   const dirty = text.trim() !== applied.trim();
   return (
     <label className={cx("flex h-[26px] min-w-0 items-center gap-1.5 rounded-md px-1.5 focus-within:bg-bg focus-within:ring-1 focus-within:ring-accent-border", className)}>
-      <span className="shrink-0 font-mono text-[11.5px] font-medium text-keyword">{label}</span>
+      <span className="shrink-0 font-mono text-ui-11.5 font-medium text-keyword">{label}</span>
       <input
         data-testid={testId}
         value={text}
@@ -114,9 +114,9 @@ function ClauseInput({
           if (e.key === "Enter" && dirty) onApply(text);
           if (e.key === "Escape") setText(applied);
         }}
-        className="min-w-0 flex-1 bg-transparent font-mono text-[12.5px] text-fg outline-none placeholder:text-faint"
+        className="min-w-0 flex-1 bg-transparent font-mono text-ui-12.5 text-fg outline-none placeholder:text-faint"
       />
-      {dirty && <span className="shrink-0 text-[11px] text-dim">↵</span>}
+      {dirty && <span className="shrink-0 text-ui-11 text-dim">↵</span>}
     </label>
   );
 }
@@ -175,7 +175,7 @@ export function FilterBar({ tab }: { tab: TableTab }) {
           type="button"
           data-testid="filter-clear"
           onClick={() => update(() => ({ orderBy: "", filters: [], where: "" }))}
-          className="h-[26px] shrink-0 rounded-md px-2 text-[12.5px] text-dim hover:bg-hover hover:text-fg"
+          className="h-[26px] shrink-0 rounded-md px-2 text-ui-12.5 text-dim hover:bg-hover hover:text-fg"
         >
           Clear
         </button>

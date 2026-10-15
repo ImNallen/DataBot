@@ -3,22 +3,20 @@ import { RangeSetBuilder } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 
-const MONO = '"JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace';
-
 const panelControl = {
   height: "24px",
   margin: "0 6px 0 0",
   padding: "0 8px",
   borderRadius: "6px",
   border: "1px solid var(--color-control)",
-  fontSize: "12px",
+  fontSize: "var(--text-ui-12)",
   verticalAlign: "middle",
 };
 
 export const editorTheme = EditorView.theme({
-  "&": { height: "100%", backgroundColor: "var(--color-bg)", color: "var(--code)", fontSize: "13px" },
+  "&": { height: "100%", backgroundColor: "var(--color-bg)", color: "var(--code)", fontSize: "var(--code-size)" },
   "&.cm-focused": { outline: "none" },
-  ".cm-scroller": { fontFamily: MONO, lineHeight: "20px", overflow: "auto" },
+  ".cm-scroller": { fontFamily: "var(--code-font)", lineHeight: "var(--code-line-height)", overflow: "auto" },
   ".cm-content": { padding: "12px 0 24px", caretColor: "var(--color-fg)" },
   ".cm-line": { padding: "0 16px 0 18px" },
   ".cm-gutters": { backgroundColor: "var(--color-bg)", color: "var(--color-faint)", border: "none" },
@@ -47,10 +45,10 @@ export const editorTheme = EditorView.theme({
     overflow: "hidden",
   },
   ".cm-tooltip-lint": { padding: "0" },
-  ".cm-diagnostic": { padding: "6px 10px", fontFamily: "Inter Variable, sans-serif", fontSize: "12px" },
+  ".cm-diagnostic": { padding: "6px 10px", fontFamily: "var(--font-sans)", fontSize: "var(--text-ui-12)" },
   ".cm-diagnostic-error": { borderLeft: "2px solid var(--color-danger)" },
-  ".cm-tooltip-autocomplete > ul": { fontFamily: MONO, fontSize: "12.5px", maxHeight: "280px" },
-  ".cm-tooltip-autocomplete > ul > li": { padding: "3px 10px 3px 6px", lineHeight: "18px" },
+  ".cm-tooltip-autocomplete > ul": { fontFamily: "var(--code-font)", fontSize: "calc(var(--code-size) - 0.5px)", maxHeight: "280px" },
+  ".cm-tooltip-autocomplete > ul > li": { padding: "3px 10px 3px 6px" },
   ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "var(--color-selected)", color: "var(--color-fg)" },
   ".cm-completionDetail": { color: "var(--color-dim)", fontStyle: "normal", marginLeft: "12px" },
   ".cm-completionIcon": { opacity: "0.6", width: "18px" },
@@ -58,8 +56,8 @@ export const editorTheme = EditorView.theme({
   ".cm-panels": { backgroundColor: "var(--color-raised)", color: "var(--code)" },
   ".cm-panels-top": { borderBottom: "1px solid var(--color-border)" },
   ".cm-panels-bottom": { borderTop: "1px solid var(--color-border)" },
-  ".cm-panel.cm-search": { display: "flex", flexWrap: "wrap", alignItems: "center", rowGap: "6px", padding: "8px 32px 8px 12px", fontFamily: "Inter Variable, sans-serif" },
-  ".cm-panel.cm-search label": { display: "inline-flex", alignItems: "center", gap: "4px", margin: "0 10px 0 0", fontSize: "12px", color: "var(--color-muted)" },
+  ".cm-panel.cm-search": { display: "flex", flexWrap: "wrap", alignItems: "center", rowGap: "6px", padding: "8px 32px 8px 12px", fontFamily: "var(--font-sans)" },
+  ".cm-panel.cm-search label": { display: "inline-flex", alignItems: "center", gap: "4px", margin: "0 10px 0 0", fontSize: "var(--text-ui-12)", color: "var(--color-muted)" },
   ".cm-panel.cm-search input[type=checkbox]": { margin: "0", accentColor: "var(--color-run)" },
   ".cm-panel.cm-search [name=close]": {
     top: "6px",

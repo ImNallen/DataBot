@@ -25,7 +25,7 @@ export function SettingsSearchPalette() {
         <DialogBackdrop />
         <Dialog.Content
           aria-describedby={undefined}
-          className="fixed top-[14%] left-1/2 z-50 w-[560px] -translate-x-1/2 overflow-hidden rounded-xl border border-control bg-raised shadow-[var(--shadow-dialog)] outline-none"
+          className="motion-pop fixed top-[14%] left-1/2 z-50 w-[560px] -translate-x-1/2 overflow-hidden rounded-xl border border-control bg-raised shadow-[var(--shadow-dialog)] outline-none"
         >
           <Dialog.Title className="sr-only">Search settings</Dialog.Title>
           <Command shouldFilter={false} loop label="Search settings">
@@ -37,11 +37,11 @@ export function SettingsSearchPalette() {
                 value={query}
                 onValueChange={setQuery}
                 placeholder="Search settings"
-                className="h-full flex-1 bg-transparent text-[14px] text-fg outline-none placeholder:text-faint"
+                className="h-full flex-1 bg-transparent text-ui-14 text-fg outline-none placeholder:text-faint"
               />
             </div>
             <Command.List className="max-h-[360px] overflow-y-auto p-1.5">
-              <Command.Empty className="px-3 py-6 text-center text-[13px] text-dim">{`Nothing matches "${query}".`}</Command.Empty>
+              <Command.Empty className="px-3 py-6 text-center text-ui-13 text-dim">{`Nothing matches "${query}".`}</Command.Empty>
               {results.map(({ id, label, section, sectionLabel, icon: Icon }) => (
                 <Command.Item
                   key={id}
@@ -52,13 +52,13 @@ export function SettingsSearchPalette() {
                     setQuery("");
                     openSettings(section, id);
                   }}
-                  className="flex h-8 cursor-default items-center gap-2.5 rounded-md px-2.5 text-[13.5px] text-fg data-[selected=true]:bg-selected"
+                  className="flex h-8 cursor-default items-center gap-2.5 rounded-md px-2.5 text-ui-13.5 text-fg data-[selected=true]:bg-selected"
                 >
                   <span className="grid w-[18px] place-items-center">
                     <Icon size={15} className="text-muted" />
                   </span>
                   <span className="truncate">{label}</span>
-                  <span className="ml-auto truncate pl-4 font-mono text-[11.5px] text-dim">{sectionLabel}</span>
+                  <span className="ml-auto truncate pl-4 font-mono text-ui-11.5 text-dim">{sectionLabel}</span>
                 </Command.Item>
               ))}
             </Command.List>

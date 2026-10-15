@@ -35,7 +35,7 @@ function TabItem({ id }: { id: TabId }) {
       )}
     >
       {tab.kind === "sql" ? (
-        <span className="font-mono text-[9.5px] font-bold tracking-tight text-badge">SQL</span>
+        <span className="font-mono text-ui-9.5 font-bold tracking-tight text-badge">SQL</span>
       ) : (
         <IconTable size={14} className="shrink-0 text-muted" />
       )}
@@ -53,10 +53,10 @@ function TabItem({ id }: { id: TabId }) {
             if (e.key === "Enter") e.currentTarget.blur();
             if (e.key === "Escape") setEditing(false);
           }}
-          className="w-36 bg-transparent text-[13.5px] text-fg outline-none"
+          className="w-36 bg-transparent text-ui-13.5 text-fg outline-none"
         />
       ) : (
-        <span className="truncate text-[13.5px]">{tabLabel(tab)}</span>
+        <span className="truncate text-ui-13.5">{tabLabel(tab)}</span>
       )}
       <span className="relative grid size-5 shrink-0 place-items-center">
         {dirty && (

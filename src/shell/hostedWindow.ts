@@ -12,7 +12,7 @@ export type ResizeEdge =
   | "SouthEast"
   | "SouthWest";
 
-function isMac(userAgent: string): boolean {
+export function isMac(userAgent: string): boolean {
   return /Macintosh|Mac OS X/.test(userAgent);
 }
 

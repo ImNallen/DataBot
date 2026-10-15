@@ -44,7 +44,7 @@ function StartCommands() {
               type="button"
               data-testid={`start-${c.id}`}
               onClick={c.run}
-              className="flex h-8 w-full items-center justify-between rounded-md px-2.5 text-[13.5px] text-muted hover:bg-hover hover:text-fg"
+              className="flex h-8 w-full items-center justify-between rounded-md px-2.5 text-ui-13.5 text-muted hover:bg-hover hover:text-fg"
             >
               {c.label}
               <Kbd className="bg-border text-muted">{shortcutLabel(c)}</Kbd>
@@ -135,19 +135,15 @@ export function AppLayout() {
   return (
     <div className="relative flex h-full">
       {hosted?.chrome === "custom" && <ResizeEdges hosted={hosted} />}
-      {sidebar && (
-        <PixelColumn column="sidebar">
-          <Sidebar hosted={hosted} />
-        </PixelColumn>
-      )}
+      <PixelColumn column="sidebar" open={sidebar}>
+        <Sidebar hosted={hosted} />
+      </PixelColumn>
       <div data-testid="main" className="flex min-w-80 flex-1 flex-col bg-bg">
         {panels.main}
       </div>
-      {panels.right && rightPanel && (
-        <PixelColumn column="right">
-          <RightPanel hosted={hosted} />
-        </PixelColumn>
-      )}
+      <PixelColumn column="right" open={panels.right && rightPanel !== null}>
+        <RightPanel hosted={hosted} />
+      </PixelColumn>
       <SearchPalette />
       <SettingsSearchPalette />
       <HistoryPalette />

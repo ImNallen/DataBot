@@ -20,27 +20,27 @@ import {
 } from "@tabler/icons-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type Ref } from "react";
-import type { ColumnMeta, ResultMeta, TypeCategory } from "../../ipc/bindings";
+import type { ColumnMeta, Density, FontSetting, ResultMeta, TypeCategory } from "../../ipc/bindings";
+import { DENSITY_FACTOR, gridRowHeight } from "../../shell/appearance";
 import { rowCacheFor, type RowCache } from "../../state/rowCache";
 import { isPrimaryKey, useCatalog } from "../../state/catalog";
 import { NO_EDITS, markDeleted, removeNewRows, resetNewCell, rowKey, setCell, setNewCell, useTableEdits, type CellValue, type RowId, type TableEdits } from "../../state/tableEdits";
 import { tabConnectionId, useWorkspace } from "../../state/workspace";
+import { fontStack } from "../../themes/fonts";
 import { ContextMenuArea, ContextMenuItem, cx } from "../../ui/primitives";
 import { submitEdits } from "../editor/runActions";
 import { groupDigits, isRightAligned, toTsv } from "./format";
 import type { SortKey } from "./tableQuery";
 
-const ROW_H = 24;
 const HEADER_H = 28;
 const ROWNUM_W = 36;
 const MIN_COL = 56;
 const RESIZE_MIN = 40;
 const CELL_PAD_X = 8;
 const CELL_BORDER = 1;
-const CELL_CHROME = 2 * CELL_PAD_X + CELL_BORDER;
 const MAX_COL = 320;
-const MONO_CHAR = 7.8;
-const SANS_CHAR = 7.2;
+const MONO_EM = 0.6;
+const SANS_EM = 0.576;
 const PREFETCH = 64;
 const COPY_ROW_LIMIT = 50_000;
 
@@ -90,15 +90,26 @@ export function HeaderIcon({ column, primaryKey }: { column: ColumnMeta; primary
 
 let measurer: CanvasRenderingContext2D | null | undefined;
 
-function headerTextWidth(name: string): number {
-  if (measurer === undefined) {
-    measurer = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
-    if (measurer) measurer.font = `500 12.5px ${getComputedStyle(document.documentElement).getPropertyValue("--font-sans")}`;
-  }
-  return measurer ? measurer.measureText(name).width : name.length * SANS_CHAR;
+function textWidth(text: string, size: number, family: string, weight: number, em: number): number {
+  if (measurer === undefined) measurer = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
+  if (!measurer) return text.length * size * em;
+  measurer.font = `${weight} ${size}px ${family}`;
+  return measurer.measureText(text).width;
 }
 
-function naturalWidths(columns: ColumnMeta[], cache: RowCache, sampleRows: number, headerExtra: number): number[] {
+type GridLook = { codeFont: FontSetting; interfaceFont: FontSetting; density: Density };
+
+const codeCharWidth = ({ codeFont }: GridLook) => textWidth("0", codeFont.size, fontStack("code", codeFont.family), 400, MONO_EM);
+
+// The header label is text-ui-12.5, medium weight.
+const headerTextWidth = (name: string, { interfaceFont }: GridLook) =>
+  textWidth(name, (12.5 * interfaceFont.size) / 13, fontStack("interface", interfaceFont.family), 500, SANS_EM);
+
+function naturalWidths(columns: ColumnMeta[], cache: RowCache, sampleRows: number, headerExtra: number, look: GridLook): number[] {
+  const charW = codeCharWidth(look);
+  // Padding, gaps, and header controls are spacing utilities, so they follow the density's scale.
+  const factor = DENSITY_FACTOR[look.density];
+  const chrome = 2 * CELL_PAD_X * factor + CELL_BORDER;
   return columns.map((c, i) => {
     let longest = 0;
     for (let r = 0; r < sampleRows; r++) {
@@ -106,9 +117,9 @@ function naturalWidths(columns: ColumnMeta[], cache: RowCache, sampleRows: numbe
       const shown = v == null ? 4 : isRightAligned(c.type.category) ? groupDigits(v).length : Math.min(v.length, 60);
       longest = Math.max(longest, shown);
     }
-    const header = headerTextWidth(c.name) + HEADER_ICON + 6 + headerExtra;
-    const content = Math.max(header, longest * MONO_CHAR);
-    return Math.min(MAX_COL, Math.max(MIN_COL, Math.ceil(content) + CELL_CHROME));
+    const header = headerTextWidth(c.name, look) + HEADER_ICON + (HEADER_GAP + headerExtra) * factor;
+    const content = Math.max(header, longest * charW);
+    return Math.min(MAX_COL, Math.max(MIN_COL, Math.ceil(content + chrome)));
   });
 }
 
@@ -258,16 +269,22 @@ export function ResultGrid({
     const changed = id ? edits.updates[id.key]?.values : undefined;
     return changed && name in changed ? changed[name]! : cache.get(row)?.[col];
   };
-  const rowNumW = Math.max(ROWNUM_W, String(total).length * MONO_CHAR + 14);
+  const codeFont = useWorkspace((s) => s.settings.codeFont);
+  const interfaceFont = useWorkspace((s) => s.settings.interfaceFont);
+  const density = useWorkspace((s) => s.settings.density);
+  const look = useMemo(() => ({ codeFont, interfaceFont, density }), [codeFont, interfaceFont, density]);
+  const rowH = gridRowHeight(codeFont.size, density);
+  const headerH = Math.round(HEADER_H * DENSITY_FACTOR[density]);
+  const rowNumW = Math.max(ROWNUM_W, String(total).length * codeCharWidth(look) + 14);
 
-  const [measured, setMeasured] = useState<number[] | null>(null);
+  const [measured, setMeasured] = useState<{ look: GridLook; widths: number[] } | null>(null);
   const sampled = Math.min(rowCount, 64);
   const sampleReady = sampled > 0 ? cache.get(sampled - 1) !== undefined : done;
   useEffect(() => {
-    if (!measured && sampleReady) setMeasured(naturalWidths(columns, cache, sampled, query ? QUERY_CONTROLS : 0));
-  }, [measured, sampleReady, columns, cache, sampled, query]);
+    if (measured?.look !== look && sampleReady) setMeasured({ look, widths: naturalWidths(columns, cache, sampled, query ? QUERY_CONTROLS : 0, look) });
+  }, [measured, look, sampleReady, columns, cache, sampled, query]);
   const [resized, setResized] = useState<Record<number, number>>({});
-  const widths = useMemo(() => columns.map((_, i) => resized[i] ?? measured?.[i] ?? MIN_COL), [columns, measured, resized]);
+  const widths = useMemo(() => columns.map((_, i) => resized[i] ?? measured?.widths[i] ?? MIN_COL), [columns, measured, resized]);
 
   const startResize = (e: React.MouseEvent, col: number) => {
     e.preventDefault();
@@ -291,9 +308,9 @@ export function ResultGrid({
   const rows = useVirtualizer({
     count: total,
     getScrollElement: () => scroller.current,
-    estimateSize: () => ROW_H,
-    paddingStart: HEADER_H,
-    scrollPaddingStart: HEADER_H,
+    estimateSize: () => rowH,
+    paddingStart: headerH,
+    scrollPaddingStart: headerH,
     paddingEnd: bottomInset,
     overscan: 12,
   });
@@ -309,6 +326,9 @@ export function ResultGrid({
   useLayoutEffect(() => {
     cols.measure();
   }, [cols, widths, rowNumW]);
+  useLayoutEffect(() => {
+    rows.measure();
+  }, [rows, rowH, headerH]);
 
   const virtualRows = rows.getVirtualItems();
   const firstRow = virtualRows[0]?.index ?? 0;
@@ -466,9 +486,9 @@ export function ResultGrid({
       className="relative min-h-0 flex-1 overflow-auto bg-results outline-none"
     >
       <div style={{ width: totalWidth, height: rows.getTotalSize(), position: "relative" }}>
-        <div className="sticky top-0 z-20 border-b border-grid bg-results" style={{ height: HEADER_H, width: totalWidth }}>
+        <div className="sticky top-0 z-20 border-b border-grid bg-results" style={{ height: headerH, width: totalWidth }}>
           <div
-            className="sticky left-0 z-10 flex h-full items-center justify-center border-r border-grid bg-results font-mono text-[12px] text-faint"
+            className="sticky left-0 z-10 flex h-full items-center justify-center border-r border-grid bg-results font-mono text-code-sm text-faint"
             style={{ width: rowNumW }}
           >
             #
@@ -492,11 +512,11 @@ export function ResultGrid({
                 style={{ left: vc.start, width: vc.size }}
               >
                 <HeaderIcon column={c} primaryKey={pk[vc.index]!} />
-                <span className="min-w-0 truncate text-[12.5px] font-medium">{c.name}</span>
+                <span className="min-w-0 truncate text-ui-12.5 font-medium">{c.name}</span>
                 {sortKey && (
                   <span data-testid={`grid-sort-${vc.index}`} className="flex shrink-0 items-center text-keyword">
                     {sortKey.desc ? <IconArrowNarrowDown size={13} /> : <IconArrowNarrowUp size={13} />}
-                    {query!.sort.length > 1 && <span className="font-mono text-[10px]">{sortAt + 1}</span>}
+                    {query!.sort.length > 1 && <span className="font-mono text-ui-10">{sortAt + 1}</span>}
                   </span>
                 )}
                 {query && (
@@ -545,7 +565,7 @@ export function ResultGrid({
                 added ? "bg-green/10" : deleted ? "bg-danger/10" : "hover:bg-hover",
                 failed && "outline outline-1 -outline-offset-1 outline-danger",
               )}
-              style={{ top: vr.start, height: ROW_H, width: totalWidth }}
+              style={{ top: vr.start, height: rowH, width: totalWidth }}
             >
               <div
                 data-testid={`grid-rownum-${vr.index}`}
@@ -558,7 +578,7 @@ export function ResultGrid({
                   if (dragging.current === "rows") setSelection((sel) => (sel ? selectRows(sel.anchor.row, vr.index, columns.length) : sel));
                 }}
                 className={cx(
-                  "sticky left-0 z-10 flex h-full items-center justify-center border-r border-grid font-mono text-[12px] tabular-nums",
+                  "sticky left-0 z-10 flex h-full items-center justify-center border-r border-grid font-mono text-code-sm tabular-nums",
                   fullRows && vr.index >= fullRows[0] && vr.index <= fullRows[1]
                     ? "bg-cell-select text-fg"
                     : focus?.row === vr.index
@@ -598,7 +618,7 @@ export function ResultGrid({
                       if (!inSelection(selection, cell.row, cell.col)) setSelection({ anchor: cell, focus: cell });
                     }}
                     className={cx(
-                      "absolute top-0 flex h-full items-center gap-1 border-r border-grid px-2 font-mono text-[13px]",
+                      "absolute top-0 flex h-full items-center gap-1 border-r border-grid px-2 font-mono text-code",
                       right && "justify-end",
                       changed && c.name in changed && "bg-amber/15",
                       selected && "bg-cell-select",
@@ -628,7 +648,7 @@ export function ResultGrid({
                           }
                         }}
                         onBlur={() => finishEdit(true)}
-                        className="absolute inset-0 z-10 bg-bg px-2 font-mono text-[13px] text-fg outline outline-1 -outline-offset-1 outline-focus"
+                        className="absolute inset-0 z-10 bg-bg px-2 font-mono text-code text-fg outline outline-1 -outline-offset-1 outline-focus"
                       />
                     ) : value === DEFAULT ? (
                       <span className="text-faint italic">DEFAULT</span>
@@ -644,7 +664,7 @@ export function ResultGrid({
                             title="Show the full value"
                             onMouseDown={(e) => e.stopPropagation()}
                             onClick={() => void openCell(vr.index, vc.index)}
-                            className="shrink-0 rounded bg-control px-1 font-sans text-[11px] leading-4 text-muted hover:text-fg"
+                            className="shrink-0 rounded bg-control px-1 font-sans text-ui-11 leading-4 text-muted hover:text-fg"
                           >
                             …
                           </button>

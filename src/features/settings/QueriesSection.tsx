@@ -8,8 +8,8 @@ function SettingRow({ setting, id, label, hint, children }: { setting: SettingId
   return (
     <div data-setting={setting} className="flex items-center justify-between gap-6 border-b border-border py-4 first:pt-0 last:border-b-0">
       <label htmlFor={id} className="min-w-0">
-        <span className="block text-[13px] text-fg">{label}</span>
-        <span className="mt-0.5 block text-[12px] text-dim">{hint}</span>
+        <span className="block text-ui-13 text-fg">{label}</span>
+        <span className="mt-0.5 block text-ui-12 text-dim">{hint}</span>
       </label>
       {children}
     </div>

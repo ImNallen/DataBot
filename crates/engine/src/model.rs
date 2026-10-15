@@ -645,6 +645,32 @@ pub struct CustomThemeVariant {
     pub colors: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum Density {
+    Compact,
+    #[default]
+    Standard,
+    Spacious,
+}
+
+/// `family` is a name the frontend's font registry resolves to a CSS stack; unknown names pass through.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FontSetting {
+    pub family: String,
+    pub size: u16,
+}
+
+impl FontSetting {
+    fn interface_default() -> Self {
+        Self { family: "Inter".into(), size: 13 }
+    }
+
+    fn code_default() -> Self {
+        Self { family: "JetBrains Mono".into(), size: 13 }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -658,13 +684,21 @@ pub struct Settings {
     /// Theme id painted while the scheme resolves to dark.
     pub dark_theme: String,
     pub custom_themes: Vec<CustomTheme>,
+    pub interface_font: FontSetting,
+    /// Used by the SQL editor and the result grid.
+    pub code_font: FontSetting,
+    pub density: Density,
+    /// 0 turns panel animation off.
+    pub panel_motion_ms: u16,
 }
+
+const DEFAULT_PANEL_MOTION_MS: u16 = 150;
 
 const DEFAULT_LIGHT_THEME: &str = "l1-light";
 const DEFAULT_DARK_THEME: &str = "l1-dark";
 
 // Hand-written for the same reason as `TableQuery`: settings saved by older builds still load
-// (`theme` became `colorScheme`; the theme fields came later), and the TS binding keeps every field required.
+// (`theme` became `colorScheme`; the theme, font, density, and motion fields came later), and the TS binding keeps every field required.
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -680,6 +714,11 @@ impl<'de> Deserialize<'de> for Settings {
             dark_theme: Option<String>,
             #[serde(default)]
             custom_themes: Vec<CustomTheme>,
+            interface_font: Option<FontSetting>,
+            code_font: Option<FontSetting>,
+            #[serde(default)]
+            density: Density,
+            panel_motion_ms: Option<u16>,
         }
         let s = Stored::deserialize(d)?;
         Ok(Settings {
@@ -691,6 +730,10 @@ impl<'de> Deserialize<'de> for Settings {
             light_theme: s.light_theme.unwrap_or_else(|| DEFAULT_LIGHT_THEME.into()),
             dark_theme: s.dark_theme.unwrap_or_else(|| DEFAULT_DARK_THEME.into()),
             custom_themes: s.custom_themes,
+            interface_font: s.interface_font.unwrap_or_else(FontSetting::interface_default),
+            code_font: s.code_font.unwrap_or_else(FontSetting::code_default),
+            density: s.density,
+            panel_motion_ms: s.panel_motion_ms.unwrap_or(DEFAULT_PANEL_MOTION_MS),
         })
     }
 }
@@ -706,6 +749,10 @@ impl Default for Settings {
             light_theme: DEFAULT_LIGHT_THEME.into(),
             dark_theme: DEFAULT_DARK_THEME.into(),
             custom_themes: Vec::new(),
+            interface_font: FontSetting::interface_default(),
+            code_font: FontSetting::code_default(),
+            density: Density::Standard,
+            panel_motion_ms: DEFAULT_PANEL_MOTION_MS,
         }
     }
 }
@@ -911,6 +958,31 @@ mod tests {
         .unwrap();
         assert_eq!((s.max_rows, s.table_page_size, s.stop_on_error, s.color_scheme), (10, 30, false, ColorScheme::System));
         assert_eq!((s.light_theme.as_str(), s.dark_theme.as_str(), s.custom_themes.len()), ("l1-light", "l1-dark", 0));
+        assert_eq!(
+            (s.interface_font, s.code_font, s.density, s.panel_motion_ms),
+            (
+                FontSetting { family: "Inter".into(), size: 13 },
+                FontSetting { family: "JetBrains Mono".into(), size: 13 },
+                Density::Standard,
+                150
+            )
+        );
+    }
+
+    #[test]
+    fn settings_round_trip_appearance_fields() {
+        let s = Settings {
+            interface_font: FontSetting { family: "System".into(), size: 15 },
+            code_font: FontSetting { family: "Menlo".into(), size: 11 },
+            density: Density::Compact,
+            panel_motion_ms: 0,
+            ..Settings::default()
+        };
+        let value = serde_json::to_value(&s).unwrap();
+        assert_eq!(value["interfaceFont"], json!({ "family": "System", "size": 15 }));
+        assert_eq!((value["density"].clone(), value["panelMotionMs"].clone()), (json!("Compact"), json!(0)));
+        let round: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!((round.code_font, round.density, round.panel_motion_ms), (FontSetting { family: "Menlo".into(), size: 11 }, Density::Compact, 0));
     }
 
     #[test]

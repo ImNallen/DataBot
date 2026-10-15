@@ -16,7 +16,7 @@ function Toast() {
     <div
       role="status"
       data-testid="toast"
-      className="fixed bottom-10 left-1/2 z-50 max-w-[520px] -translate-x-1/2 rounded-lg border border-control bg-raised px-3.5 py-2 text-[13px] text-fg shadow-[var(--shadow-popover)]"
+      className="fixed bottom-10 left-1/2 z-50 max-w-[520px] -translate-x-1/2 rounded-lg border border-control bg-raised px-3.5 py-2 text-ui-13 text-fg shadow-[var(--shadow-popover)]"
     >
       {toast.text}
     </div>
@@ -56,7 +56,7 @@ export function Overlays() {
       </Modal>
       <Modal open={overlay.kind === "cell"} onOpenChange={onOpenChange} title={overlay.kind === "cell" ? overlay.title : ""} width={720} testId="cell-dialog">
         {overlay.kind === "cell" && (
-          <pre className="selectable max-h-[52vh] overflow-auto rounded-lg border border-control bg-bg p-3 font-mono text-[12.5px] leading-5 whitespace-pre-wrap text-fg">
+          <pre className="selectable max-h-[52vh] overflow-auto rounded-lg border border-control bg-bg p-3 font-mono text-ui-12.5 leading-5 whitespace-pre-wrap text-fg">
             {overlay.value ?? <span className="text-faint">NULL</span>}
           </pre>
         )}

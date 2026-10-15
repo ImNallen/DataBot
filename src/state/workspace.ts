@@ -60,7 +60,20 @@ export type WorkspaceData = {
 };
 
 const DEFAULT_LAYOUT: Layout = { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341 };
-const DEFAULT_SETTINGS: Settings = { maxRows: 200_000, maxResultBytes: 512 * 1024 * 1024, tablePageSize: 500, stopOnError: true, colorScheme: "System", lightTheme: "l1-light", darkTheme: "l1-dark", customThemes: [] };
+export const DEFAULT_SETTINGS: Settings = {
+  maxRows: 200_000,
+  maxResultBytes: 512 * 1024 * 1024,
+  tablePageSize: 500,
+  stopOnError: true,
+  colorScheme: "System",
+  lightTheme: "l1-light",
+  darkTheme: "l1-dark",
+  customThemes: [],
+  interfaceFont: { family: "Inter", size: 13 },
+  codeFont: { family: "JetBrains Mono", size: 13 },
+  density: "Standard",
+  panelMotionMs: 150,
+};
 
 export function tabFromSnapshot(t: TabSnapshot): Tab {
   switch (t.kind) {
