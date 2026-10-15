@@ -1061,6 +1061,8 @@ pub struct Settings {
     pub density: Density,
     /// 0 turns panel animation off.
     pub panel_motion_ms: u16,
+    /// Shade each colored connection in the sidebar tree instead of drawing its dot.
+    pub tint_connections: bool,
 }
 
 const DEFAULT_PANEL_MOTION_MS: u16 = 150;
@@ -1069,7 +1071,7 @@ const DEFAULT_LIGHT_THEME: &str = "l1-light";
 const DEFAULT_DARK_THEME: &str = "l1-dark";
 
 // Hand-written for the same reason as `TableQuery`: settings saved by older builds still load
-// (`theme` became `colorScheme`; the theme, font, density, and motion fields came later), and the TS binding keeps every field required.
+// (`theme` became `colorScheme`; the theme, font, density, motion, and tint fields came later), and the TS binding keeps every field required.
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -1090,6 +1092,8 @@ impl<'de> Deserialize<'de> for Settings {
             #[serde(default)]
             density: Density,
             panel_motion_ms: Option<u16>,
+            #[serde(default)]
+            tint_connections: bool,
         }
         let s = Stored::deserialize(d)?;
         Ok(Settings {
@@ -1105,6 +1109,7 @@ impl<'de> Deserialize<'de> for Settings {
             code_font: s.code_font.unwrap_or_else(FontSetting::code_default),
             density: s.density,
             panel_motion_ms: s.panel_motion_ms.unwrap_or(DEFAULT_PANEL_MOTION_MS),
+            tint_connections: s.tint_connections,
         })
     }
 }
@@ -1124,6 +1129,7 @@ impl Default for Settings {
             code_font: FontSetting::code_default(),
             density: Density::Standard,
             panel_motion_ms: DEFAULT_PANEL_MOTION_MS,
+            tint_connections: false,
         }
     }
 }
@@ -1439,6 +1445,7 @@ mod tests {
                 150
             )
         );
+        assert!(!s.tint_connections);
     }
 
     #[test]
@@ -1448,13 +1455,16 @@ mod tests {
             code_font: FontSetting { family: "Menlo".into(), size: 11 },
             density: Density::Compact,
             panel_motion_ms: 0,
+            tint_connections: true,
             ..Settings::default()
         };
         let value = serde_json::to_value(&s).unwrap();
         assert_eq!(value["interfaceFont"], json!({ "family": "System", "size": 15 }));
         assert_eq!((value["density"].clone(), value["panelMotionMs"].clone()), (json!("Compact"), json!(0)));
+        assert_eq!(value["tintConnections"], json!(true));
         let round: Settings = serde_json::from_value(value).unwrap();
         assert_eq!((round.code_font, round.density, round.panel_motion_ms), (FontSetting { family: "Menlo".into(), size: 11 }, Density::Compact, 0));
+        assert!(round.tint_connections);
     }
 
     #[test]

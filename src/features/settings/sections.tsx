@@ -1,7 +1,7 @@
 import { IconPalette, IconSql, type Icon } from "@tabler/icons-react";
 import type { ComponentType } from "react";
 import { useWorkspace } from "../../state/workspace";
-import { CodeFontSetting, DensitySetting, InterfaceFontSetting, PanelMotionSetting } from "./AppearanceControls";
+import { CodeFontSetting, DensitySetting, InterfaceFontSetting, PanelMotionSetting, TintConnectionsSetting } from "./AppearanceControls";
 import { ColorSchemeSetting, ThemesSetting } from "./AppearanceSection";
 import { MaxRowsSetting, StopOnErrorSetting, TablePageSizeSetting } from "./QueriesSection";
 import { Card } from "./SettingLayout";
@@ -14,6 +14,7 @@ const SETTING_VIEWS = {
   themes: ThemesSetting,
   density: DensitySetting,
   panelMotion: PanelMotionSetting,
+  tintConnections: TintConnectionsSetting,
   interfaceFont: InterfaceFontSetting,
   codeFont: CodeFontSetting,
   maxRows: MaxRowsSetting,

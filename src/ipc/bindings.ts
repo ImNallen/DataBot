@@ -678,6 +678,8 @@ export type Settings = {
 	density: Density,
 	/**  0 turns panel animation off. */
 	panelMotionMs: number,
+	/**  Shade each colored connection in the sidebar tree instead of drawing its dot. */
+	tintConnections: boolean,
 };
 
 export type SslMode = "Disable" | "Prefer" | "Require" | "VerifyCa" | "VerifyFull";

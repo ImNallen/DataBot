@@ -17,8 +17,12 @@ afterEach(() => {
 });
 
 // Static rendering reads each store's initial state, so the fixtures go there.
-function render(treeQuery: string, loaded = true) {
-  Object.assign(useWorkspace.getInitialState(), { treeQuery, configs: { p: connectionConfig("p", "prod") } });
+function render(treeQuery: string, loaded = true, tint?: { tintConnections: boolean }) {
+  const configs = tint
+    ? { p: { ...connectionConfig("p", "prod"), color: "red" }, d: connectionConfig("d", "dev") }
+    : { p: connectionConfig("p", "prod") };
+  const settings = { ...initial.workspace.settings, ...tint };
+  Object.assign(useWorkspace.getInitialState(), { treeQuery, configs, settings });
   Object.assign(useLive.getInitialState(), { connections: { p: connectedState("p", [databaseState("shop", true, ["public"])]) } });
   const view = buildCatalogView(shopCatalog("p", 1));
   Object.assign(useCatalog.getInitialState(), { views: loaded ? { [dbKey(view.catalog.db)]: view } : {} });
@@ -65,4 +69,37 @@ it("draws the whole tree with no count or clear button while the search box is e
   expect(rows(html)).toEqual(["prod -"]);
   expect(html).not.toContain('data-testid="sidebar-search-count"');
   expect(html).toMatch(/<input[^>]*data-testid="sidebar-search"[^>]*value=""/);
+});
+
+/** The markup inside the element marked `data-testid={id}`, up to its closing tag. */
+function inside(html: string, id: string): string | undefined {
+  const start = html.indexOf(`data-testid="${id}"`);
+  if (start < 0) return undefined;
+  let depth = 0;
+  for (const m of html.slice(start).matchAll(/<(\/?)div\b/g)) {
+    depth += m[1] ? -1 : 1;
+    if (depth < 0) return html.slice(start, start + m.index);
+  }
+}
+
+const RED_DOT = "background-color:#ef4444";
+
+it("shades a colored connection and every row open under it as one block, without its dot, while tinting is on", () => {
+  const searched = render("order", true, { tintConnections: true });
+  expect(searched).toMatch(/data-testid="conn-tint-prod"[^>]*style="background-color:color-mix\(in srgb, #ef4444 10%, transparent\)"/);
+  expect(rows(inside(searched, "conn-tint-prod") ?? "")).toEqual(rows(searched));
+  expect(rows(searched)).toHaveLength(14);
+
+  const whole = render("", true, { tintConnections: true });
+  expect(rows(whole)).toEqual(["dev -", "prod -"]);
+  expect(rows(inside(whole, "conn-tint-prod") ?? "")).toEqual(["prod -"]);
+  expect(whole).not.toContain("conn-tint-dev");
+  expect(whole).not.toContain(RED_DOT);
+});
+
+it("keeps the color dot and draws no shading while tinting is off", () => {
+  const html = render("", true, { tintConnections: false });
+  expect(rows(html)).toEqual(["dev -", "prod -"]);
+  expect(html).not.toContain("conn-tint-");
+  expect(html).toContain(RED_DOT);
 });

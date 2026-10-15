@@ -79,6 +79,7 @@ export const DEFAULT_SETTINGS: Settings = {
   codeFont: { family: "JetBrains Mono", size: 13 },
   density: "Standard",
   panelMotionMs: 150,
+  tintConnections: false,
 };
 
 /**

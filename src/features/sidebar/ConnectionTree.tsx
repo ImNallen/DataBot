@@ -56,7 +56,7 @@ import {
 } from "../../ui/primitives";
 import type { TextRange } from "../../ui/textMatch";
 import { connect, confirmDelete, disconnect, refreshCatalog, refreshConnection } from "../connections/connectionActions";
-import { ConnectionColorDot } from "../connections/connectionColors";
+import { ConnectionColorDot, connectionColor } from "../connections/connectionColors";
 import { insertAtCursor } from "../editor/editorStates";
 import { openSqlTab, openTableTab } from "../editor/runActions";
 import { columnType, defaultText, indexText, keyText, triggerText, type RowText } from "./detailText";
@@ -653,6 +653,22 @@ function ConnectionTrailing({
 
 type Revealed = Map<ConnectionId, "database" | "schema">;
 
+function useConnectionTint(color: string | null): string | null {
+  const tint = useWorkspace((s) => s.settings.tintConnections);
+  return tint ? connectionColor(color) : null;
+}
+
+// Rows carry their own `mx-2`. `*:mx-0` cancels it so they fill the block and keep their left edge.
+function ConnectionGroup({ name, color, children }: { name: string; color: string | null; children: ReactNode }) {
+  const hex = useConnectionTint(color);
+  if (!hex) return children;
+  return (
+    <div data-testid={`conn-tint-${name}`} className="mx-2 mb-1 rounded-lg *:mx-0" style={{ backgroundColor: `color-mix(in srgb, ${hex} 10%, transparent)` }}>
+      {children}
+    </div>
+  );
+}
+
 function ConnectionNode({ config, expanded, revealed }: { config: ConnectionConfig; expanded: Expanded; revealed: Revealed }) {
   const state = useLive((s) => s.connections[config.id]);
   const instance = instanceOf(state);
@@ -687,13 +703,14 @@ function ConnectionNode({ config, expanded, revealed }: { config: ConnectionConf
     }
   }, [home, homeDefault, toggle, path, revealed, config.id]);
 
+  const tinted = useConnectionTint(config.color) !== null;
   const onClick = () => {
     if (connected || state?.status.kind === "Connecting") expanded.toggle(path);
     else void connect(config.id);
   };
 
   return (
-    <>
+    <ConnectionGroup name={config.name} color={config.color}>
       <Row
         path={path}
         depth={0}
@@ -709,7 +726,7 @@ function ConnectionNode({ config, expanded, revealed }: { config: ConnectionConf
         label={
           <>
             <span className={cx("font-medium", tone === "off" && "text-muted")}>{config.name}</span>
-            <ConnectionColorDot color={config.color} className="ml-1.5 align-middle" />
+            {!tinted && <ConnectionColorDot color={config.color} className="ml-1.5 align-middle" />}
           </>
         }
         trailing={<ConnectionTrailing config={config} tone={tone} instance={instance} target={target} active={picking} />}
@@ -723,7 +740,7 @@ function ConnectionNode({ config, expanded, revealed }: { config: ConnectionConf
       {open &&
         connected &&
         shown.map((d) => <DatabaseNode key={d.name} path={path} db={{ connectionId: config.id, database: d.name }} state={d} expanded={expanded} />)}
-    </>
+    </ConnectionGroup>
   );
 }
 
@@ -817,7 +834,7 @@ function FilteredTree({ filter, query }: { filter: TreeFilter; query: string }) 
   if (filter.searched === 0) return <TreeNote>Connect to a database to search its catalog.</TreeNote>;
   if (filter.connections.length === 0) return <TreeNote>No matches for “{query}”.</TreeNote>;
   return filter.connections.map(({ config, databases }) => (
-    <Fragment key={config.id}>
+    <ConnectionGroup key={config.id} name={config.name} color={config.color}>
       <FoldRow path={config.name} depth={0} icon={<PgBadge />} label={<span className="font-medium">{config.name}</span>} expanded={expanded} />
       {expanded.has(config.name) &&
         databases.map(({ db, schemas }) => {
@@ -829,7 +846,7 @@ function FilteredTree({ filter, query }: { filter: TreeFilter; query: string }) 
             </Fragment>
           );
         })}
-    </Fragment>
+    </ConnectionGroup>
   ));
 }
 
