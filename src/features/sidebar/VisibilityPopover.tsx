@@ -1,6 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { IconCheck, IconSearch, IconX } from "@tabler/icons-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { create } from "zustand";
 import type { ConnectionId, DatabaseRef, ViewEdit } from "../../ipc/bindings";
@@ -122,7 +122,28 @@ function SchemasPicker({ db, trigger }: { db: DatabaseRef; trigger: HTMLElement 
   );
 }
 
-/** Placed by `pickerBox` under the trigger's row. Escape and a click outside close it. */
+const FOCUSABLE = 'input:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Tab wraps inside the dialog, so the keyboard cannot wander into the page behind it. */
+function wrapTab(e: ReactKeyboardEvent<HTMLElement>) {
+  if (e.key !== "Tab") return;
+  const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE));
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (!first || !last) return;
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+/**
+ * Placed by `pickerBox` beside the trigger's row. Escape and a click outside close it. It holds keyboard focus while open
+ * and gives it back to the pill when it closes.
+ */
 function Popover({ testId, trigger, title, subtitle, children }: { testId: string; trigger: HTMLElement; title: string; subtitle: string; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const close = usePicker((s) => s.close);
@@ -132,7 +153,8 @@ function Popover({ testId, trigger, title, subtitle, children }: { testId: strin
     const row = trigger.closest<HTMLElement>('[role="treeitem"]');
     if (!el || !row) return;
     const box = pickerBox(row.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
-    el.style.top = `${box.top}px`;
+    el.style.top = "top" in box.anchor ? `${box.anchor.top}px` : "";
+    el.style.bottom = "bottom" in box.anchor ? `${box.anchor.bottom}px` : "";
     el.style.left = `${box.left}px`;
     el.style.width = `${box.width}px`;
     el.style.maxHeight = `${box.maxHeight}px`;
@@ -140,6 +162,15 @@ function Popover({ testId, trigger, title, subtitle, children }: { testId: strin
 
   // Every render: a snapshot can move the row.
   useLayoutEffect(place);
+
+  // The filter takes focus; the loading view has none, so the dialog itself does.
+  useEffect(() => {
+    const el = ref.current;
+    if (el) (el.querySelector<HTMLElement>("[data-autofocus]") ?? el).focus();
+    return () => {
+      if (trigger.isConnected) trigger.focus();
+    };
+  }, [trigger]);
 
   useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
@@ -169,7 +200,9 @@ function Popover({ testId, trigger, title, subtitle, children }: { testId: strin
       data-testid={testId}
       role="dialog"
       aria-label={title}
-      className="motion-pop fixed z-30 flex flex-col overflow-hidden rounded-xl border border-control bg-raised shadow-[var(--shadow-popover)]"
+      tabIndex={-1}
+      onKeyDown={wrapTab}
+      className="motion-pop fixed z-30 flex flex-col overflow-hidden rounded-xl border border-control bg-raised shadow-[var(--shadow-popover)] outline-none"
     >
       <div className="relative shrink-0 px-3 pt-2.5 pb-2">
         <div title={title} className="truncate pr-7 text-ui-14 font-semibold text-fg">
@@ -244,7 +277,7 @@ function PickerBody({
         <IconSearch size={15} className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-muted" />
         <input
           data-testid="picker-filter"
-          autoFocus
+          data-autofocus
           value={query}
           onChange={(e) => onQuery(e.target.value)}
           placeholder={model.placeholder}

@@ -135,17 +135,23 @@ export function schemaPicker(state: DatabaseState, catalog: Catalog, query: stri
   };
 }
 
-type Box = { top: number; left: number; width: number; maxHeight: number };
+/** `anchor` is the CSS edge the box hangs from: `top` under the row, `bottom` above it. */
+type Box = { anchor: { top: number } | { bottom: number }; left: number; width: number; maxHeight: number };
 
-/** Under the row and from its left edge, as wide as the row but never under 288 px, so it may overlap the editor; kept 8 px inside the window. */
-export function pickerBox(row: { left: number; bottom: number; width: number }, viewport: { width: number; height: number }): Box {
+/** Header, filter, presets, footer, and a few rows. Below this much room the picker goes to the roomier side. */
+const PICKER_FITS = 240;
+
+/**
+ * From the row's left edge, as wide as the row but never under 288 px, so it may overlap the editor; kept 8 px inside the
+ * window. Under the row while the room below fits a picker, else on whichever side has more room, never past the window.
+ */
+export function pickerBox(row: { left: number; top: number; bottom: number; width: number }, viewport: { width: number; height: number }): Box {
   const width = Math.min(Math.max(288, row.width), viewport.width - 16);
-  return {
-    top: row.bottom + 4,
-    left: Math.max(8, Math.min(row.left, viewport.width - 8 - width)),
-    width,
-    maxHeight: Math.max(160, viewport.height - row.bottom - 12),
-  };
+  const left = Math.max(8, Math.min(row.left, viewport.width - 8 - width));
+  const below = viewport.height - row.bottom - 12;
+  const above = row.top - 12;
+  if (below >= PICKER_FITS || below >= above) return { anchor: { top: row.bottom + 4 }, left, width, maxHeight: below };
+  return { anchor: { bottom: viewport.height - row.top + 4 }, left, width, maxHeight: above };
 }
 
 /** The rows on screen whose schema count nobody has asked for yet. */
