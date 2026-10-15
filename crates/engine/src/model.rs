@@ -50,14 +50,14 @@ pub struct ConnectionConfig {
     pub color: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub enum PasswordInput {
     Keep,
     Set(String),
     Clear,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionDraft {
     /// `None` creates a new connection.

@@ -508,5 +508,6 @@ mod tests {
         assert_eq!((bare.port, bare.ssl_mode), (5432, SslMode::Prefer));
         assert!(matches!(bare.password, PasswordInput::Clear));
         assert!(draft_from_url("not a url", "x").is_err());
+        assert_eq!(draft_from_url("postgres://:::", "").unwrap_err(), "invalid connection string: invalid value for option `port`");
     }
 }

@@ -8,6 +8,7 @@ export const commands = {
 	connectionSave: (draft: ConnectionDraft) => typedError<ConnectionConfig, SaveError>(__TAURI_INVOKE("connection_save", { draft })),
 	connectionDelete: (id: ConnectionId) => typedError<null, DisconnectError>(__TAURI_INVOKE("connection_delete", { id })),
 	connectionTest: (draft: ConnectionDraft) => typedError<ServerInfo, ConnectError>(__TAURI_INVOKE("connection_test", { draft })),
+	connectionParseUrl: (url: string) => typedError<ConnectionDraft, string>(__TAURI_INVOKE("connection_parse_url", { url })),
 	connectionConnect: (id: ConnectionId) => typedError<ServerInfo, ConnectError>(__TAURI_INVOKE("connection_connect", { id })),
 	connectionDisconnect: (id: ConnectionId, force: boolean) => typedError<null, DisconnectError>(__TAURI_INVOKE("connection_disconnect", { id, force })),
 	catalogGet: (db: DatabaseRef) => typedError<Catalog, CatalogError>(__TAURI_INVOKE("catalog_get", { db })),

@@ -31,6 +31,12 @@ pub async fn connection_test(engine: State<'_, Arc<Engine>>, draft: ConnectionDr
 
 #[tauri::command]
 #[specta::specta]
+pub fn connection_parse_url(engine: State<'_, Arc<Engine>>, url: String) -> Result<ConnectionDraft, String> {
+    engine.parse_connection_url(&url)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn connection_connect(engine: State<'_, Arc<Engine>>, id: ConnectionId) -> Result<ServerInfo, ConnectError> {
     engine.connect(id).await
 }

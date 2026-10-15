@@ -664,6 +664,11 @@ impl Engine {
         Ok(())
     }
 
+    /// The dialog's URL field. Pure, so the sync command never needs the runtime.
+    pub fn parse_connection_url(&self, url: &str) -> Result<ConnectionDraft, String> {
+        draft_from_url(url, "")
+    }
+
     pub async fn test_connection(&self, d: ConnectionDraft) -> Result<ServerInfo, ConnectError> {
         let s = &self.shared;
         let password = match (&d.password, d.id) {

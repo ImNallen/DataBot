@@ -102,6 +102,7 @@ routes! { e;
     connection_save(draft: ConnectionDraft) => e.save_connection(draft).await;
     connection_delete(id: ConnectionId) => e.delete_connection(id).await;
     connection_test(draft: ConnectionDraft) => e.test_connection(draft).await;
+    connection_parse_url(url: String) => e.parse_connection_url(&url);
     connection_connect(id: ConnectionId) => e.connect(id).await;
     connection_disconnect(id: ConnectionId, force: bool) => e.disconnect(id, force).await;
     catalog_get(db: DatabaseRef) => e.catalog(db).await;

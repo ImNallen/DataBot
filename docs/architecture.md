@@ -159,10 +159,11 @@ pub struct ConnectionConfig {
     pub database: String, pub user: String, pub ssl_mode: SslMode,
     pub ca_cert_path: Option<String>, pub has_password: bool, pub color: Option<String>,
 }
-/// Edit semantics for the secret are explicit; the frontend never reads a password back.
-#[derive(Deserialize, Type)]
+/// Edit semantics for the secret are explicit; the frontend never reads a saved password back.
+/// `connection_parse_url` serializes a draft, so its `Set` only echoes a password the user typed in a URL.
+#[derive(Serialize, Deserialize, Type)]
 pub enum PasswordInput { Keep, Set(String), Clear }
-#[derive(Deserialize, Type)]
+#[derive(Serialize, Deserialize, Type)]
 pub struct ConnectionDraft {
     pub id: Option<ConnectionId>,      // None = create
     pub name: String, pub host: String, pub port: u16, pub database: String,
@@ -402,6 +403,7 @@ Each command is one line delegating to `Engine`. tauri-specta uses `ErrorHandlin
 | `connection_save` | `ConnectionDraft` | `Result<ConnectionConfig, SaveError>` | Upsert. Seals a set password and writes it before the config row. Reads the keychain only when a password is set. |
 | `connection_delete` | `ConnectionId` | `Result<(), DisconnectError>` | Disconnects (refuses on open txns), deletes the config row and sealed password together. Never touches the keychain. |
 | `connection_test` | `ConnectionDraft` | `Result<ServerInfo, ConnectError>` | `PasswordInput::Keep` opens the sealed password, if one is stored. |
+| `connection_parse_url` | `url: String` | `Result<ConnectionDraft, String>` | Pure parse of a `postgres://` URL or a `key=value` string into a draft with an empty name. A password in the URL comes back as `PasswordInput::Set`, otherwise `Clear`. The connection dialog's URL field calls it on each edit. Sync, and it never touches the runtime. |
 | `connection_connect` | `ConnectionId` | `Result<ServerInfo, ConnectError>` | Idempotent. Opens the home session and reads `pg_database`; catalogs load afterwards, each with its own status. |
 | `connection_disconnect` | `ConnectionId, force: bool` | `Result<(), DisconnectError>` | `OpenTransactions { tabs: Vec<OpenTxn> }` unless forced. |
 | `catalog_get` | `DatabaseRef` | `Result<Catalog, CatalogError>` | Whole snapshot of one database, loaded on first use. `NotShown` for a database neither shown nor targeted by a console. |
