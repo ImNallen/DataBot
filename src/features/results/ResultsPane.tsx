@@ -133,6 +133,15 @@ function SummaryText({ summary }: { summary: Summary }) {
   );
 }
 
+function CursorPosition() {
+  const { line, col } = useWorkspace((s) => s.cursor);
+  return (
+    <span data-testid="cursor-position" className="text-ui-12.5 whitespace-nowrap text-dim tabular-nums">
+      Ln {line}, Col {col}
+    </span>
+  );
+}
+
 async function exportCsv(meta: ResultMeta) {
   const notify = useWorkspace.getState().notify;
   let path: string | null;
@@ -150,14 +159,14 @@ async function exportCsv(meta: ResultMeta) {
 
 function ErrorPanel({ error }: { error: QueryError }) {
   return (
-    <div className="selectable flex-1 overflow-auto bg-results px-5 py-4 text-ui-13 leading-6">
+    <div className="selectable flex-1 overflow-auto bg-bg px-5 py-4 text-ui-13 leading-6">
       <ErrorBlock error={error} />
     </div>
   );
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="grid flex-1 place-items-center bg-results text-ui-13 text-dim">{children}</div>;
+  return <div className="grid flex-1 place-items-center bg-bg text-ui-13 text-dim">{children}</div>;
 }
 
 function EditBar({ tabId, editable, actions }: { tabId: TabId | null; editable: boolean; actions: RefObject<GridActions | null> }) {
@@ -317,7 +326,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
   const actions = useRef<GridActions | null>(null);
 
   return (
-    <section className="flex h-full min-h-0 flex-col border-b border-border bg-results">
+    <section className="flex h-full min-h-0 flex-col bg-bg">
       <div className="flex h-[41px] shrink-0 items-center gap-3 border-b border-grid pr-2 pl-2.5">
         <EditBar tabId={tabId} editable={editing !== null && tabId !== null} actions={actions} />
         {results.length > 1 && (
@@ -343,6 +352,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
         <div className="flex-1" />
 
         {summary && <SummaryText summary={summary} />}
+        {tab?.kind === "sql" && <CursorPosition />}
 
         <div className="flex items-center gap-0.5">
           <Menu.Root modal={false}>

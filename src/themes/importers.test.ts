@@ -49,7 +49,6 @@ it("maps a VS Code theme onto L1 tokens, flattening translucent surfaces onto th
             foreground: "#f8f8f2",
             code: "#f8f8f2",
             sidebar: "#21222c",
-            results: "#282a36",
             raised: "#21222c",
             hover: "#353747",
             selected: "#44475a",

@@ -22,7 +22,6 @@
 
   --color-bg: #0a0a0a;
   --color-sidebar: #000000;
-  --color-results: #0d0d0d;
   --color-raised: #111111;
   --color-hover: #141414;
   --color-selected: #1a1b1b;
@@ -81,7 +80,6 @@
 :root[data-theme="light"] {
   --color-bg: #ffffff;
   --color-sidebar: #f7f7f8;
-  --color-results: #fbfbfb;
   --color-raised: #ffffff;
   --color-hover: #f0f0f1;
   --color-selected: #e8e9eb;

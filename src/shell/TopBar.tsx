@@ -1,13 +1,16 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { IconPlayerPlayFilled, IconPlayerStopFilled } from "@tabler/icons-react";
-import { cancelActive, endTransaction, runActive, setTabTarget } from "../features/editor/runActions";
+import { IconChevronDown, IconPlayerPlayFilled, IconPlayerStopFilled } from "@tabler/icons-react";
+import { cancelActive, endTransaction, runActive, setTabMode, setTabTarget } from "../features/editor/runActions";
+import type { TxnMode } from "../ipc/bindings";
 import { homeDb } from "../state/dbKey";
 import { useLive } from "../state/live";
-import { connectionStatus, hasUncommittedWork, isRunning } from "../state/status";
+import { connectionTone, hasUncommittedWork, isRunning } from "../state/status";
 import { tabLabel, tabTarget, useWorkspace } from "../state/workspace";
 import { Button, Kbd, MenuContent, MenuItem, MenuLabel, StatusDot, cx } from "../ui/primitives";
 import { SidebarToggle, WindowEdgeActions, windowEdgeInset, windowLeadingInset } from "./WindowEdgeActions";
 import type { HostedWindow } from "./hostedWindow";
+
+const MODE_LABEL: Record<TxnMode, string> = { AutoCommit: "Auto-commit", Manual: "Manual" };
 
 export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
   const tab = useWorkspace((s) => (s.active ? s.tabs[s.active] : undefined));
@@ -19,6 +22,8 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
   const config = connectionId ? configs[connectionId] : undefined;
   const running = isRunning(liveConsole);
   const sql = tab?.kind === "sql" ? tab : undefined;
+  const txn = liveConsole?.txn;
+  const txnLost = liveConsole?.session.kind === "Lost" && liveConsole.session.txnLost;
 
   return (
     <header
@@ -40,7 +45,7 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
               <MenuLabel>Connection for this tab</MenuLabel>
               {Object.values(configs).map((c) => (
                 <MenuItem key={c.id} checked={c.id === connectionId} onSelect={() => void setTabTarget(sql.id, homeDb(c))}>
-                  <StatusDot tone={connectionStatus(connections[c.id]).tone} />
+                  <StatusDot tone={connectionTone(connections[c.id])} />
                   {c.name}
                 </MenuItem>
               ))}
@@ -57,6 +62,29 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
         )}
       </div>
 
+      {sql && (
+        <Menu.Root modal={false}>
+          <Menu.Trigger
+            data-testid="tx-mode"
+            title={txnLost ? "Transaction rolled back: connection lost" : undefined}
+            className="inline-flex h-7 items-center gap-1 rounded-md pr-1.5 pl-2 text-ui-12.5 text-muted outline-none hover:bg-hover hover:text-fg data-[state=open]:bg-hover data-[state=open]:text-fg"
+          >
+            {MODE_LABEL[sql.console.mode]}
+            {sql.console.mode === "Manual" && txn && txn !== "Idle" && (
+              <span className={txn === "Aborted" ? "text-danger" : "text-fg"}> · {txn === "Aborted" ? "aborted" : "in transaction"}</span>
+            )}
+            {txnLost && <span className="text-danger"> · rolled back</span>}
+            <IconChevronDown size={13} />
+          </Menu.Trigger>
+          <MenuContent align="end">
+            {(["AutoCommit", "Manual"] as const).map((m) => (
+              <MenuItem key={m} testId={`tx-mode-${m}`} checked={m === sql.console.mode} onSelect={() => void setTabMode(sql.id, m)}>
+                {MODE_LABEL[m]}
+              </MenuItem>
+            ))}
+          </MenuContent>
+        </Menu.Root>
+      )}
 
       {sql && hasUncommittedWork(liveConsole) && (
         <>

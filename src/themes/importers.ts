@@ -87,7 +87,6 @@ const VS_CODE_SOURCES: Partial<Record<Token, Source>> = {
   background: { keys: ["editor.background"] },
   foreground: { keys: ["editor.foreground", "foreground"] },
   sidebar: { keys: ["sideBar.background", "activityBar.background"] },
-  results: { keys: ["panel.background"] },
   raised: { keys: ["editorWidget.background", "dropdown.background", "menu.background"] },
   hover: { keys: ["list.hoverBackground"] },
   selected: { keys: ["list.activeSelectionBackground", "list.inactiveSelectionBackground"] },

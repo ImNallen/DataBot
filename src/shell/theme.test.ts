@@ -69,7 +69,7 @@ it("paints a theme's palette inline and clears it when the pick returns to L1", 
 
   setSettings({ darkTheme: "grove-dark" });
   expect([root.dataset.theme, bg(), root.style.vars.get("--color-run")]).toEqual(["dark", "#0c1310", "#2f9e6e"]);
-  expect(root.style.vars.size).toBe(42);
+  expect(root.style.vars.size).toBe(41);
 
   setSettings({ darkTheme: "l1-dark" });
   expect(root.dataset.theme).toBe("dark");
@@ -98,7 +98,7 @@ it("paints a saved custom theme with its stored colours over the derived ones, i
         id: "custom-1",
         name: "Dusk",
         variants: [
-          { id: "custom-1-0", name: "Dusk", appearance: "dark", colors: { background: "#202020", accent: "#ff0000", keyword: "#123456", bogus: "#ffffff", muted: "red" } },
+          { id: "custom-1-0", name: "Dusk", appearance: "dark", colors: { background: "#202020", accent: "#ff0000", keyword: "#123456", results: "#0d0d0d", bogus: "#ffffff", muted: "red" } },
         ],
       },
     ],
@@ -108,7 +108,7 @@ it("paints a saved custom theme with its stored colours over the derived ones, i
   expect([bg(), root.style.vars.get("--color-run"), root.style.vars.get("--color-keyword")]).toEqual(["#202020", "#ff0000", "#123456"]);
   expect(root.style.vars.get("--color-muted")).toMatch(/^#[0-9a-f]{6}$/);
   expect([...root.style.vars.keys()].every((k) => k.startsWith("--"))).toBe(true);
-  expect(root.style.vars.size).toBe(42);
+  expect(root.style.vars.size).toBe(41);
 });
 
 it("paints a previewed theme over the saved one and restores the saved one when the preview ends", () => {

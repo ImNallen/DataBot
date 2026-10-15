@@ -490,12 +490,12 @@ export function ResultGrid({
       onContextMenu={(e) => {
         if (!(e.target as Element).closest("[data-testid^='grid-cell-']")) e.preventDefault();
       }}
-      className="relative min-h-0 flex-1 overflow-auto bg-results outline-none"
+      className="relative min-h-0 flex-1 overflow-auto bg-bg outline-none"
     >
       <div style={{ width: totalWidth, height: rows.getTotalSize(), position: "relative" }}>
-        <div className="sticky top-0 z-20 border-b border-grid bg-results" style={{ height: headerH, width: totalWidth }}>
+        <div className="sticky top-0 z-20 border-b border-grid bg-bg" style={{ height: headerH, width: totalWidth }}>
           <div
-            className="sticky left-0 z-10 flex h-full items-center justify-center border-r border-grid bg-results font-mono text-code-sm text-faint"
+            className="sticky left-0 z-10 flex h-full items-center justify-center border-r border-grid bg-bg font-mono text-code-sm text-faint"
             style={{ width: rowNumW }}
           >
             #
@@ -590,7 +590,7 @@ export function ResultGrid({
                     ? "bg-cell-select text-fg"
                     : focus?.row === vr.index
                       ? "bg-hover text-fg"
-                      : "bg-results text-faint group-hover:bg-hover",
+                      : "bg-bg text-faint group-hover:bg-hover",
                 )}
                 style={{ width: rowNumW }}
               >

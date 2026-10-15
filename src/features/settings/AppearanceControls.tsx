@@ -127,7 +127,7 @@ function CodeSample({ font, density }: { font: FontSetting; density: Density }) 
         {kw("from")} orders {kw("where")} status &lt;&gt; <span className="text-green">'refunded'</span>{"\n"}
         {kw("order by")} total {kw("desc")} {kw("limit")} <span className="text-amber">3</span>;
       </pre>
-      <table className="w-full border-t border-grid bg-results tabular-nums" style={{ lineHeight: 1 }}>
+      <table className="w-full border-t border-grid bg-bg tabular-nums" style={{ lineHeight: 1 }}>
         <thead>
           <tr style={{ height: rowH }} className="border-b border-grid font-sans text-ui-12.5 text-muted">
             {SAMPLE_COLUMNS.map((c, i) => (

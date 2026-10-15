@@ -143,11 +143,6 @@ export function tabTarget(tab: Tab | undefined): DatabaseRef | null {
   return tab.kind === "sql" ? tab.console.db : tab.db;
 }
 
-/** `prod-postgres · shop`, for the status bar. */
-export function targetLabel(ref: DatabaseRef, configs: Record<ConnectionId, ConnectionConfig>): string {
-  return `${configs[ref.connectionId]?.name ?? "Unknown connection"} · ${ref.database}`;
-}
-
 type WorkspaceActions = {
   restore(w: Workspace, connections: ConnectionConfig[], settings: Settings): void;
   addTab(tab: Tab): void;

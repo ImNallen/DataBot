@@ -15,7 +15,6 @@ import { Overlays } from "./Overlays";
 import { PixelColumn } from "./PixelColumn";
 import { ResizeHandle } from "./ResizeHandle";
 import { RightPanel } from "./RightPanel";
-import { StatusBar } from "./StatusBar";
 import { TabBar } from "./TabBar";
 import { ResizeEdges } from "./WindowChrome";
 import { hostedWindow, type HostedWindow } from "./hostedWindow";
@@ -107,7 +106,6 @@ function screenPanels(screen: Screen, hosted: HostedWindow | null): ScreenPanels
             <TopBar hosted={hosted} />
             <TabBar />
             <MainArea />
-            <StatusBar />
           </>
         ),
         right: true,
