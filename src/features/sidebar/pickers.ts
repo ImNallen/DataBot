@@ -135,6 +135,19 @@ export function schemaPicker(state: DatabaseState, catalog: Catalog, query: stri
   };
 }
 
+type Box = { top: number; left: number; width: number; maxHeight: number };
+
+/** Under the row and from its left edge, as wide as the row but never under 288 px, so it may overlap the editor; kept 8 px inside the window. */
+export function pickerBox(row: { left: number; bottom: number; width: number }, viewport: { width: number; height: number }): Box {
+  const width = Math.min(Math.max(288, row.width), viewport.width - 16);
+  return {
+    top: row.bottom + 4,
+    left: Math.max(8, Math.min(row.left, viewport.width - 8 - width)),
+    width,
+    maxHeight: Math.max(160, viewport.height - row.bottom - 12),
+  };
+}
+
 /** The rows on screen whose schema count nobody has asked for yet. */
 export function namesToProbe(instance: InstanceState, visible: readonly PickerItem[]): string[] {
   const counts = new Map(instance.databases.map((d) => [d.name, d.schemaCount.kind]));

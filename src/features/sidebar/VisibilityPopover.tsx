@@ -10,7 +10,7 @@ import { instanceOf, useLive } from "../../state/live";
 import { useWorkspace } from "../../state/workspace";
 import { Button, cx, IconButton, inputClass, Spinner } from "../../ui/primitives";
 import { editView, probeDatabases } from "../connections/connectionActions";
-import { countText, databasePicker, namesToProbe, schemaPicker, type PickerItem, type PickerModel, type ShownCount } from "./pickers";
+import { countText, databasePicker, namesToProbe, pickerBox, schemaPicker, type PickerItem, type PickerModel, type ShownCount } from "./pickers";
 
 export type PickerTarget = { kind: "databases"; id: ConnectionId } | { kind: "schemas"; db: DatabaseRef };
 
@@ -122,7 +122,7 @@ function SchemasPicker({ db, trigger }: { db: DatabaseRef; trigger: HTMLElement 
   );
 }
 
-/** Anchored under the trigger's row, as wide as the tree less 8 px each side. Escape and a click outside close it. */
+/** Placed by `pickerBox` under the trigger's row. Escape and a click outside close it. */
 function Popover({ testId, trigger, title, subtitle, children }: { testId: string; trigger: HTMLElement; title: string; subtitle: string; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const close = usePicker((s) => s.close);
@@ -130,14 +130,12 @@ function Popover({ testId, trigger, title, subtitle, children }: { testId: strin
   const place = useCallback(() => {
     const el = ref.current;
     const row = trigger.closest<HTMLElement>('[role="treeitem"]');
-    const tree = trigger.closest<HTMLElement>('[role="tree"]');
-    if (!el || !row || !tree) return;
-    const r = row.getBoundingClientRect();
-    const t = tree.getBoundingClientRect();
-    el.style.top = `${r.bottom + 4}px`;
-    el.style.left = `${t.left + 8}px`;
-    el.style.width = `${t.width - 16}px`;
-    el.style.maxHeight = `${Math.max(160, window.innerHeight - r.bottom - 12)}px`;
+    if (!el || !row) return;
+    const box = pickerBox(row.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
+    el.style.top = `${box.top}px`;
+    el.style.left = `${box.left}px`;
+    el.style.width = `${box.width}px`;
+    el.style.maxHeight = `${box.maxHeight}px`;
   }, [trigger]);
 
   // Every render: a snapshot can move the row.
@@ -174,7 +172,9 @@ function Popover({ testId, trigger, title, subtitle, children }: { testId: strin
       className="motion-pop fixed z-30 flex flex-col overflow-hidden rounded-xl border border-control bg-raised shadow-[var(--shadow-popover)]"
     >
       <div className="relative shrink-0 px-3 pt-2.5 pb-2">
-        <div className="truncate pr-7 text-ui-14 font-semibold text-fg">{title}</div>
+        <div title={title} className="truncate pr-7 text-ui-14 font-semibold text-fg">
+          {title}
+        </div>
         <div className="truncate text-ui-12 text-muted">{subtitle}</div>
         <IconButton data-testid="picker-close" aria-label="Close" onClick={close} className="absolute top-2 right-2 size-6">
           <IconX size={15} />
@@ -300,7 +300,9 @@ function PickerBody({
       <div className="flex shrink-0 items-center justify-between gap-2 border-t border-control px-3 py-2.5">
         <label className="flex min-w-0 items-center gap-2.5 text-ui-13 text-muted">
           <Check testId="picker-system" checked={model.showSystem} onChange={(on) => onEdit(model.setShowSystem(on))} />
-          <span className="truncate">{model.systemLabel}</span>
+          <span title={model.systemLabel} className="truncate">
+            {model.systemLabel}
+          </span>
         </label>
         <Button data-testid="picker-done" onClick={close}>
           Done

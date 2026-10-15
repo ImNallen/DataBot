@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Catalog, ConnectionConfig, DatabaseState, InstanceState, SchemaInfo } from "../../ipc/bindings";
-import { countText, databaseCount, databasePicker, namesToProbe, schemaCount, schemaPicker } from "./pickers";
+import { countText, databaseCount, databasePicker, namesToProbe, pickerBox, schemaCount, schemaPicker } from "./pickers";
 
 const config: ConnectionConfig = {
   id: "c1",
@@ -171,5 +171,22 @@ describe("namesToProbe", () => {
     const visible = databasePicker(config, more, "").items.filter((i) => i.name !== "zeta");
     expect(namesToProbe(more, visible)).toEqual(["archive"]);
     expect(namesToProbe(more, databasePicker(config, more, "").items)).toEqual(["archive", "zeta"]);
+  });
+});
+
+describe("pickerBox", () => {
+  const window_ = { width: 1280, height: 577 };
+
+  it("widens past a 256 px sidebar's 240 px row to 288 px, from the row's left edge", () => {
+    expect(pickerBox({ left: 8, bottom: 122, width: 240 }, window_)).toEqual({ top: 126, left: 8, width: 288, maxHeight: 443 });
+  });
+
+  it("matches a row wider than 288 px", () => {
+    expect(pickerBox({ left: 8, bottom: 122, width: 400 }, window_)).toEqual({ top: 126, left: 8, width: 400, maxHeight: 443 });
+  });
+
+  it("stays inside a narrow window", () => {
+    expect(pickerBox({ left: 8, bottom: 122, width: 240 }, { width: 280, height: 577 })).toEqual({ top: 126, left: 8, width: 264, maxHeight: 443 });
+    expect(pickerBox({ left: 120, bottom: 122, width: 240 }, { width: 400, height: 577 })).toEqual({ top: 126, left: 104, width: 288, maxHeight: 443 });
   });
 });
