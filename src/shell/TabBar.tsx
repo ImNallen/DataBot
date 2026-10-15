@@ -4,7 +4,7 @@ import { closeTab } from "../features/editor/runActions";
 import type { TabId } from "../ipc/bindings";
 import { useLive } from "../state/live";
 import { hasUncommittedWork } from "../state/status";
-import { tabLabel, useWorkspace } from "../state/workspace";
+import { useWorkspace } from "../state/workspace";
 import { cx } from "../ui/primitives";
 
 function TabItem({ id }: { id: TabId }) {
@@ -28,21 +28,21 @@ function TabItem({ id }: { id: TabId }) {
           void closeTab(id);
         } else setActive(id);
       }}
-      onDoubleClick={() => tab.kind === "sql" && setEditing(true)}
+      onDoubleClick={() => setEditing(true)}
       className={cx(
         "group relative flex h-7 max-w-[240px] min-w-0 shrink-0 cursor-default items-center gap-2 rounded-md pr-1 pl-2.5",
         active ? "bg-pill text-fg" : "text-dim hover:bg-hover hover:text-muted",
       )}
     >
-      {tab.kind === "sql" ? (
-        <span className="font-mono text-ui-9.5 font-bold tracking-tight text-badge">SQL</span>
-      ) : (
+      {tab.table ? (
         <IconTable size={14} className="shrink-0 text-muted" />
+      ) : (
+        <span className="font-mono text-ui-9.5 font-bold tracking-tight text-badge">SQL</span>
       )}
       {editing ? (
         <input
           autoFocus
-          defaultValue={tab.kind === "sql" ? tab.title : ""}
+          defaultValue={tab.title}
           onFocus={(e) => e.currentTarget.select()}
           onBlur={(e) => {
             const title = e.currentTarget.value.trim();
@@ -56,7 +56,7 @@ function TabItem({ id }: { id: TabId }) {
           className="w-36 bg-transparent text-ui-13.5 text-fg outline-none"
         />
       ) : (
-        <span className="truncate text-ui-13.5">{tabLabel(tab)}</span>
+        <span className="truncate text-ui-13.5">{tab.title}</span>
       )}
       <span className="relative grid size-5 shrink-0 place-items-center">
         {dirty && (

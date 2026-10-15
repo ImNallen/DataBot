@@ -842,34 +842,85 @@ pub struct Workspace {
     pub layout: Layout,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-#[serde(tag = "kind", rename_all_fields = "camelCase")]
-pub enum TabSnapshot {
-    Sql {
-        id: TabId,
-        title: String,
-        text: String,
-        console: ConsoleConfigSnapshot,
-    },
-    Table {
-        id: TabId,
-        connection_id: ConnectionId,
-        /// `None` only in workspaces written before tabs carried a database; the frontend resolves
-        /// it to the connection's configured database, the only one such a tab could have used.
-        database: Option<String>,
-        schema: String,
-        table: String,
-        page: u32,
-        #[serde(default)]
-        query: TableQuery,
-    },
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TabSnapshot {
+    pub id: TabId,
+    pub title: String,
+    /// `None` only in workspaces written before table tabs saved their text; the frontend seeds the browse query.
+    pub text: Option<String>,
+    pub console: ConsoleConfigSnapshot,
+    pub table: Option<TableSnapshot>,
+}
+
+/// The table a tab opened from the sidebar browses, in the tab's console database.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TableSnapshot {
+    pub schema: String,
+    pub table: String,
+    pub page: u32,
+    pub query: TableQuery,
+}
+
+// Hand-written so workspaces saved while tabs were a `Sql` or `Table` enum still load.
+impl<'de> Deserialize<'de> for TabSnapshot {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all_fields = "camelCase")]
+        enum Legacy {
+            Sql {
+                id: TabId,
+                title: String,
+                text: String,
+                console: ConsoleConfigSnapshot,
+            },
+            Table {
+                id: TabId,
+                connection_id: ConnectionId,
+                database: Option<String>,
+                schema: String,
+                table: String,
+                page: u32,
+                #[serde(default)]
+                query: TableQuery,
+            },
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Current {
+            id: TabId,
+            title: String,
+            text: Option<String>,
+            console: ConsoleConfigSnapshot,
+            table: Option<TableSnapshot>,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Saved {
+            Legacy(Legacy),
+            Current(Current),
+        }
+        Ok(match Saved::deserialize(d)? {
+            Saved::Current(Current { id, title, text, console, table }) => Self { id, title, text, console, table },
+            Saved::Legacy(Legacy::Sql { id, title, text, console }) => Self { id, title, text: Some(text), console, table: None },
+            Saved::Legacy(Legacy::Table { id, connection_id, database, schema, table, page, query }) => Self {
+                id,
+                title: table.clone(),
+                text: None,
+                console: ConsoleConfigSnapshot { connection_id: Some(connection_id), database, schema: None, mode: TxnMode::AutoCommit },
+                table: Some(TableSnapshot { schema, table, page, query }),
+            },
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsoleConfigSnapshot {
     pub connection_id: Option<ConnectionId>,
-    /// `None` only in workspaces written before tabs carried a database (see `TabSnapshot::Table`).
+    /// `None` only in workspaces written before tabs carried a database; the frontend resolves it to the
+    /// connection's configured database, the only one such a tab could have used.
     pub database: Option<String>,
     pub schema: Option<String>,
     pub mode: TxnMode,
@@ -1310,10 +1361,65 @@ mod tests {
             "schema": "public", "table": "orders", "page": 0
         }))
         .unwrap();
-        assert!(matches!(tab, TabSnapshot::Table { database: None, .. }));
+        assert_eq!(tab.console.database, None);
         let console: ConsoleConfigSnapshot =
             serde_json::from_value(json!({ "connectionId": "00000000-0000-0000-0000-000000000002", "schema": null, "mode": "Manual" })).unwrap();
         assert_eq!((console.database, console.mode), (None, TxnMode::Manual));
+    }
+
+    const TAB: &str = "00000000-0000-0000-0000-000000000001";
+    const CONN: &str = "00000000-0000-0000-0000-000000000002";
+
+    fn uuid(s: &str) -> Uuid {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn an_old_table_tab_loads_as_an_auto_commit_tab_bound_to_its_table() {
+        let tab: TabSnapshot = serde_json::from_value(json!({
+            "kind": "Table", "id": TAB, "connectionId": CONN, "database": "shop",
+            "schema": "public", "table": "orders", "page": 2, "query": { "orderBy": "id", "filters": [], "where": "" }
+        }))
+        .unwrap();
+        assert_eq!((tab.id, tab.title.as_str(), tab.text), (TabId(uuid(TAB)), "orders", None));
+        assert_eq!(
+            (tab.console.connection_id, tab.console.database.as_deref(), tab.console.schema, tab.console.mode),
+            (Some(ConnectionId(uuid(CONN))), Some("shop"), None, TxnMode::AutoCommit)
+        );
+        let query = TableQuery { order_by: "id".into(), ..Default::default() };
+        assert_eq!(tab.table, Some(TableSnapshot { schema: "public".into(), table: "orders".into(), page: 2, query }));
+    }
+
+    #[test]
+    fn an_old_sql_tab_loads_with_its_text_and_no_table() {
+        let tab: TabSnapshot = serde_json::from_value(json!({
+            "kind": "Sql", "id": TAB, "title": "q.sql", "text": "select 1",
+            "console": { "connectionId": CONN, "database": "reporting", "schema": null, "mode": "Manual" }
+        }))
+        .unwrap();
+        assert_eq!((tab.title.as_str(), tab.text.as_deref(), tab.table), ("q.sql", Some("select 1"), None));
+        assert_eq!((tab.console.database.as_deref(), tab.console.mode), (Some("reporting"), TxnMode::Manual));
+    }
+
+    #[test]
+    fn a_tab_round_trips_its_text_mode_and_table() {
+        let value = json!({
+            "id": TAB, "title": "orders", "text": "select * from orders",
+            "console": { "connectionId": CONN, "database": "shop", "schema": null, "mode": "Manual" },
+            "table": { "schema": "public", "table": "orders", "page": 1, "query": { "orderBy": "", "filters": [], "where": "total > 0" } }
+        });
+        let tab: TabSnapshot = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!((tab.text.as_deref(), tab.console.mode), (Some("select * from orders"), TxnMode::Manual));
+        assert_eq!(tab.table.as_ref().map(|t| (t.page, t.query.r#where.as_str())), Some((1, "total > 0")));
+        assert_eq!(serde_json::to_value(&tab).unwrap(), value);
+
+        let plain = json!({
+            "id": TAB, "title": "Untitled-1.sql", "text": "",
+            "console": { "connectionId": null, "database": null, "schema": null, "mode": "AutoCommit" }, "table": null
+        });
+        let tab: TabSnapshot = serde_json::from_value(plain.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&tab).unwrap(), plain);
+        assert_eq!(tab.table, None);
     }
 
     #[test]
@@ -1416,7 +1522,7 @@ mod tests {
         }))
         .unwrap();
         let kept = TableQuery { r#where: "x".into(), ..Default::default() };
-        assert!(matches!(tab, TabSnapshot::Table { page: 3, query, .. } if query == kept), "an old query shape keeps what still fits");
+        assert_eq!(tab.table.map(|t| (t.page, t.query)), Some((3, kept)), "an old query shape keeps what still fits");
 
         let layout: Layout = serde_json::from_value(json!({
             "sidebar": false, "results": false, "rightPanel": "History", "resultsHeight": 280

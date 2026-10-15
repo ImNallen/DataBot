@@ -148,15 +148,17 @@ describe("workspace snapshot", () => {
     c: { id: "c", name: "dev", host: "localhost", port: 5433, database: "shop", user: "l1data", sslMode: "Prefer", caCertPath: null, hasPassword: true, color: null },
   };
   const tabs: Tab[] = [
-    { kind: "sql", id: "a", title: "Untitled-2.sql", console: { db: { connectionId: "c", database: "reporting" }, mode: "Manual" } },
+    { id: "a", title: "Untitled-2.sql", console: { db: { connectionId: "c", database: "reporting" }, mode: "Manual" }, table: null },
     {
-      kind: "table",
       id: "b",
-      db: { connectionId: "c", database: "shop" },
-      schema: "public",
-      table: "orders",
-      page: 3,
-      query: { orderBy: "total DESC", filters: [{ column: "status", op: "Eq", value: "paid" }], where: "total > 10" },
+      title: "orders",
+      console: { db: { connectionId: "c", database: "shop" }, mode: "Manual" },
+      table: {
+        schema: "public",
+        table: "orders",
+        page: 3,
+        query: { orderBy: "total DESC", filters: [{ column: "status", op: "Eq", value: "paid" }], where: "total > 10" },
+      },
     },
   ];
   const state = {
@@ -166,41 +168,64 @@ describe("workspace snapshot", () => {
     layout: { sidebar: true, results: false, rightPanel: "History" as const, resultsHeight: 280, sidebarWidth: 256, rightPanelWidth: 341 },
   };
 
-  it("round-trips tabs in order with text read from the editor", () => {
+  it("round-trips every tab's text and mode, and a table tab's binding", () => {
     const snap = workspaceSnapshot(state, (id) => `-- text of ${id}`);
-    expect(snap.tabs.map((t) => t.id)).toEqual(["b", "a"]);
-    expect(snap.tabs[1]).toMatchObject({ kind: "Sql", text: "-- text of a", console: { connectionId: "c", database: "reporting", schema: null, mode: "Manual" } });
-    expect(snap.tabs[0]).toMatchObject({ kind: "Table", connectionId: "c", database: "shop", table: "orders" });
+    expect(snap.tabs).toEqual([
+      {
+        id: "b",
+        title: "orders",
+        text: "-- text of b",
+        console: { connectionId: "c", database: "shop", schema: null, mode: "Manual" },
+        table: {
+          schema: "public",
+          table: "orders",
+          page: 3,
+          query: { orderBy: "total DESC", filters: [{ column: "status", op: "Eq", value: "paid" }], where: "total > 10" },
+        },
+      },
+      { id: "a", title: "Untitled-2.sql", text: "-- text of a", console: { connectionId: "c", database: "reporting", schema: null, mode: "Manual" }, table: null },
+    ]);
     expect(snap.tabs.map((t) => tabFromSnapshot(t, configs))).toEqual([tabs[1], tabs[0]]);
     expect(snap.layout).toEqual(state.layout);
   });
 
-  it("restores a table tab saved before tabs had a query with no sort or filter", () => {
-    expect(tabFromSnapshot({ kind: "Table", id: "b", connectionId: "c", database: "shop", schema: "public", table: "orders", page: 0 }, configs)).toMatchObject({
-      query: { orderBy: "", filters: [], where: "" },
+  it("restores a table tab saved before tabs were one shape as an auto-commit tab named after its table", () => {
+    // What the engine reads from an old `{"kind":"Table", ...}` row.
+    const saved = {
+      id: "b",
+      title: "orders",
+      text: null,
+      console: { connectionId: "c", database: "shop", schema: null, mode: "AutoCommit" as const },
+      table: { schema: "public", table: "orders", page: 2, query: { orderBy: "", filters: [], where: "" } },
+    };
+    expect(tabFromSnapshot(saved, configs)).toEqual({
+      id: "b",
+      title: "orders",
+      console: { db: { connectionId: "c", database: "shop" }, mode: "AutoCommit" },
+      table: { schema: "public", table: "orders", page: 2, query: { orderBy: "", filters: [], where: "" } },
     });
   });
 
-  it("restores a workspace saved before tabs carried a database onto the connection's configured database", () => {
-    // Exactly what workspace_save wrote before this version: no `database` on either tab kind, and a per-tab schema.
-    const saved = JSON.parse(
-      '{"tabs":[{"kind":"Sql","id":"a","title":"q.sql","text":"select 1","console":{"connectionId":"c","schema":"lab","mode":"AutoCommit"}},' +
-        '{"kind":"Table","id":"b","connectionId":"c","schema":"public","table":"orders","page":2,"query":{"orderBy":"","filters":[],"where":""}},' +
-        '{"kind":"Sql","id":"d","title":"free.sql","text":"","console":{"connectionId":null,"schema":null,"mode":"Manual"}}],' +
-        '"active":"b","layout":{"sidebar":true,"results":true,"rightPanel":null,"resultsHeight":320,"sidebarWidth":256,"rightPanelWidth":341}}',
-    ) as Workspace;
-    expect(saved.tabs.map((t) => tabFromSnapshot(t, configs))).toEqual([
-      { kind: "sql", id: "a", title: "q.sql", console: { db: { connectionId: "c", database: "shop" }, mode: "AutoCommit" } },
-      { kind: "table", id: "b", db: { connectionId: "c", database: "shop" }, schema: "public", table: "orders", page: 2, query: { orderBy: "", filters: [], where: "" } },
-      { kind: "sql", id: "d", title: "free.sql", console: { db: null, mode: "Manual" } },
+  it("restores a tab saved before tabs carried a database onto the connection's configured database", () => {
+    const saved: Workspace["tabs"] = [
+      { id: "a", title: "q.sql", text: "select 1", console: { connectionId: "c", database: null, schema: "lab", mode: "AutoCommit" }, table: null },
+      { id: "d", title: "free.sql", text: "", console: { connectionId: null, database: null, schema: null, mode: "Manual" }, table: null },
+    ];
+    expect(saved.map((t) => tabFromSnapshot(t, configs))).toEqual([
+      { id: "a", title: "q.sql", console: { db: { connectionId: "c", database: "shop" }, mode: "AutoCommit" }, table: null },
+      { id: "d", title: "free.sql", console: { db: null, mode: "Manual" }, table: null },
     ]);
   });
 
-  it("drops a table tab whose connection is gone and unbinds a SQL tab", () => {
-    const table = { kind: "Table" as const, id: "b", connectionId: "gone", database: "shop", schema: "public", table: "orders", page: 0, query: { orderBy: "", filters: [], where: "" } };
-    const sql = { kind: "Sql" as const, id: "a", title: "q.sql", text: "", console: { connectionId: "gone", database: "shop", schema: null, mode: "AutoCommit" as const } };
-    expect(tabFromSnapshot(table, configs)).toBeNull();
-    expect(tabFromSnapshot(sql, configs)).toEqual({ kind: "sql", id: "a", title: "q.sql", console: { db: null, mode: "AutoCommit" } });
+  it("keeps a tab whose connection is gone as a plain query tab with no target", () => {
+    const saved = {
+      id: "b",
+      title: "orders",
+      text: "select * from orders",
+      console: { connectionId: "gone", database: "shop", schema: null, mode: "Manual" as const },
+      table: { schema: "public", table: "orders", page: 0, query: { orderBy: "", filters: [], where: "" } },
+    };
+    expect(tabFromSnapshot(saved, configs)).toEqual({ id: "b", title: "orders", console: { db: null, mode: "Manual" }, table: null });
   });
 
   it("numbers new tabs after the highest Untitled", () => {

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import type { TabId } from "../../ipc/bindings";
 import { useCatalog, viewFor } from "../../state/catalog";
 import { tabTarget, useWorkspace } from "../../state/workspace";
-import { activateEditor, configureSql, focusEditor, mountEditor } from "./editorStates";
+import { activateEditor, configureSql, cursorOf, editorStateOf, focusEditor, mountEditor } from "./editorStates";
 
 export function SqlEditor({ tabId }: { tabId: TabId }) {
   const host = useRef<HTMLDivElement>(null);
@@ -12,6 +12,7 @@ export function SqlEditor({ tabId }: { tabId: TabId }) {
 
   useLayoutEffect(() => {
     activateEditor(tabId);
+    useWorkspace.getState().setCursor(cursorOf(editorStateOf(tabId)));
   }, [tabId]);
 
   useEffect(() => {

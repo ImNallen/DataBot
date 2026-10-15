@@ -62,7 +62,7 @@ function HistoryBrowser({ close, restoreEditorFocus }: { close: () => void; rest
   const searchRef = useRef<HTMLInputElement>(null);
   const active = useWorkspace((s) => s.active ? s.tabs[s.active] : undefined);
   const activeDb = active ? tabTarget(active) : null;
-  const insertEnabled = active?.kind === "sql";
+  const insertEnabled = active !== undefined;
   const mod = isMac(navigator.userAgent) ? "⌘" : "Ctrl+";
   const now = new Date();
   const count = list ? { All: list.counts.all, Failed: list.counts.failed, Writes: list.counts.writes }[filter] : null;
@@ -202,7 +202,7 @@ function HistoryBrowser({ close, restoreEditorFocus }: { close: () => void; rest
             <div className="flex shrink-0 flex-wrap items-center gap-2">
               <Button variant="primary" data-testid="history-open" disabled={!detail} onClick={() => act("open")}>Open in new tab<Kbd className="bg-white/15">↵</Kbd></Button>
               <Button data-testid="history-run-again" disabled={!detail} onClick={() => act("run")}><IconPlayerPlayFilled size={12} className="text-run-icon" />Run again<Kbd className="bg-pill text-dim">{mod}↵</Kbd></Button>
-              <Button variant="ghost" data-testid="history-insert" disabled={!detail || !insertEnabled} title={insertEnabled ? "Insert into the active SQL tab" : "Select a SQL tab to insert this query"} onClick={() => act("insert")}>Insert at cursor<Kbd className="bg-pill text-dim">Alt+↵</Kbd></Button>
+              <Button variant="ghost" data-testid="history-insert" disabled={!detail || !insertEnabled} title={insertEnabled ? "Insert into the active tab" : "Open a tab to insert this query"} onClick={() => act("insert")}>Insert at cursor<Kbd className="bg-pill text-dim">Alt+↵</Kbd></Button>
             </div>
           </>}
         </section>

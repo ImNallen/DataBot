@@ -49,7 +49,7 @@ it("searches settings, not the catalog, while settings is open", () => {
 });
 
 it("closes settings, not the active tab, on the close-tab shortcut", () => {
-  useWorkspace.getState().addTab({ kind: "sql", id: "t1", title: "a.sql", console: { db: null, mode: "AutoCommit" } });
+  useWorkspace.getState().addTab({ id: "t1", title: "a.sql", console: { db: null, mode: "AutoCommit" }, table: null });
   useWorkspace.getState().openSettings();
   press("w")?.run();
   expect([useWorkspace.getState().screen, useWorkspace.getState().order]).toEqual([{ kind: "workspace" }, ["t1"]]);

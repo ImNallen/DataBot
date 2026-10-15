@@ -31,7 +31,7 @@ import {
 } from "../../state/status";
 import { useCatalog, viewFor } from "../../state/catalog";
 import { NO_EDITS, pendingCount, useTableEdits } from "../../state/tableEdits";
-import { isFiltered, useWorkspace, type TableTab } from "../../state/workspace";
+import { isFiltered, isTableTab, useWorkspace, type TableTab } from "../../state/workspace";
 import { cx, IconButton, MenuContent, MenuItem, Spinner } from "../../ui/primitives";
 import {
   isBrowsing,
@@ -64,21 +64,22 @@ const PAGER_INSET = 52;
 
 function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
   const size = useWorkspace((s) => s.settings.tablePageSize);
+  const { schema, table, page, query, exactRowCount } = tab.table;
   const estimate = useCatalog(
     (s) =>
-      viewFor(s.views, tab.db)?.catalog.schemas.find((sc) => sc.name === tab.schema)?.relations.find((r) => r.name === tab.table)
+      viewFor(s.views, tab.console.db)?.catalog.schemas.find((sc) => sc.name === schema)?.relations.find((r) => r.name === table)
         ?.rowEstimate ?? null,
   );
-  const { label, isLast } = pageStatus(tab.page, size, rows, isFiltered(tab.query) ? null : estimate, tab.exactRowCount);
+  const { label, isLast } = pageStatus(page, size, rows, isFiltered(query) ? null : estimate, exactRowCount);
   return (
     <div
       data-testid="table-pager"
       className="absolute bottom-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-control bg-raised p-1 text-ui-12.5 text-muted shadow-[var(--shadow-float)]"
     >
-      <IconButton aria-label="First page" disabled={tab.page === 0} onClick={() => setTablePage(tab.id, 0)}>
+      <IconButton aria-label="First page" disabled={page === 0} onClick={() => setTablePage(tab.id, 0)}>
         <IconChevronLeftPipe size={15} />
       </IconButton>
-      <IconButton aria-label="Previous page" disabled={tab.page === 0} onClick={() => setTablePage(tab.id, tab.page - 1)}>
+      <IconButton aria-label="Previous page" disabled={page === 0} onClick={() => setTablePage(tab.id, page - 1)}>
         <IconChevronLeft size={15} />
       </IconButton>
       <Menu.Root modal={false}>
@@ -98,7 +99,7 @@ function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
           ))}
         </MenuContent>
       </Menu.Root>
-      <IconButton aria-label="Next page" disabled={isLast} onClick={() => setTablePage(tab.id, tab.page + 1)}>
+      <IconButton aria-label="Next page" disabled={isLast} onClick={() => setTablePage(tab.id, page + 1)}>
         <IconChevronRight size={15} />
       </IconButton>
       <IconButton aria-label="Last page" disabled={isLast} onClick={() => void lastTablePage(tab.id)}>
@@ -300,15 +301,15 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
   const tone = outputTone(output);
   const outputPick = run.kind === "Idle" ? undefined : { kind: "output" as const, runId: run.runId, result: shown?.index };
 
-  const isTable = tab?.kind === "table";
-  const browsingNow = () => tab?.kind === "table" && isBrowsing(tab);
+  const isTable = isTableTab(tab);
+  const browsingNow = () => tab !== undefined && isBrowsing(tab);
   const browsing = useSyncExternalStore(onEditorDocChanged, browsingNow, browsingNow);
-  const browsingTable = tab?.kind === "table" && browsing ? tab : null;
+  const browsingTable = browsing && isTableTab(tab) ? tab : null;
   const pager = browsingTable && view.kind === "rows" ? browsingTable : null;
   const addDraft = useFilterDrafts((s) => s.add);
   const gridQuery: GridQuery | null = browsingTable && {
-    sort: parseOrderBy(browsingTable.query.orderBy) ?? [],
-    filtered: new Set(browsingTable.query.filters.map((f) => f.column)),
+    sort: parseOrderBy(browsingTable.table.query.orderBy) ?? [],
+    filtered: new Set(browsingTable.table.query.filters.map((f) => f.column)),
     onSort: (column, additive) =>
       updateTableQuery(browsingTable.id, (q) => ({ ...q, orderBy: formatOrderBy(nextSort(parseOrderBy(q.orderBy) ?? [], column, additive)) })),
     onFilterColumn: (column) => addDraft(browsingTable.id, column),
@@ -318,11 +319,11 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
   useEffect(() => {
     if (tabId && isTable) loadTableOnce(tabId);
   }, [tabId, isTable]);
-  const catalogView = useCatalog((s) => viewFor(s.views, browsingTable?.db));
+  const catalogView = useCatalog((s) => viewFor(s.views, browsingTable?.console.db));
   const editing = useMemo<GridEditing | null>(() => {
     const pkColumns = browsingTable && catalogView ? tablePrimaryKey(browsingTable) : [];
     return pkColumns.length ? { pkColumns } : null;
-  }, [browsingTable?.db, browsingTable?.schema, browsingTable?.table, catalogView]);
+  }, [browsingTable?.console.db, browsingTable?.table.schema, browsingTable?.table.table, catalogView]);
   const actions = useRef<GridActions | null>(null);
 
   return (
@@ -352,7 +353,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
         <div className="flex-1" />
 
         {summary && <SummaryText summary={summary} />}
-        {tab?.kind === "sql" && <CursorPosition />}
+        {tab && <CursorPosition />}
 
         <div className="flex items-center gap-0.5">
           <Menu.Root modal={false}>

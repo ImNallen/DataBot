@@ -228,7 +228,10 @@ export type ConsoleConfig = {
 
 export type ConsoleConfigSnapshot = {
 	connectionId: ConnectionId | null,
-	/**  `None` only in workspaces written before tabs carried a database (see `TabSnapshot::Table`). */
+	/**
+	 *  `None` only in workspaces written before tabs carried a database; the frontend resolves it to the
+	 *  connection's configured database, the only one such a tab could have used.
+	 */
 	database: string | null,
 	schema: string | null,
 	mode: TxnMode,
@@ -693,12 +696,14 @@ export type StmtStatus = { kind: "Pending" } | { kind: "Preparing" } | { kind: "
 /**  Minted by the frontend (`crypto.randomUUID()`). */
 export type TabId = string;
 
-export type TabSnapshot = { kind: "Sql"; id: TabId; title: string; text: string; console: ConsoleConfigSnapshot } | { kind: "Table"; id: TabId; connectionId: ConnectionId; 
-/**
- *  `None` only in workspaces written before tabs carried a database; the frontend resolves
- *  it to the connection's configured database, the only one such a tab could have used.
- */
-database: string | null; schema: string; table: string; page: number; query?: TableQuery };
+export type TabSnapshot = {
+	id: TabId,
+	title: string,
+	/**  `None` only in workspaces written before table tabs saved their text; the frontend seeds the browse query. */
+	text: string | null,
+	console: ConsoleConfigSnapshot,
+	table: TableSnapshot | null,
+};
 
 /**  Staged edits to one table, applied together by `table_apply`. Rows to update or delete are found by primary key. */
 export type TableChanges = {
@@ -717,6 +722,14 @@ export type TableQuery = {
 	filters: ColumnFilter[],
 	/**  A boolean SQL expression ANDed with `filters`; empty means none. */
 	where: string,
+};
+
+/**  The table a tab opened from the sidebar browses, in the tab's console database. */
+export type TableSnapshot = {
+	schema: string,
+	table: string,
+	page: number,
+	query: TableQuery,
 };
 
 export type TriggerEvent = "Insert" | "Update" | "Delete" | "Truncate";

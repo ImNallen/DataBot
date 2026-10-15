@@ -122,7 +122,7 @@ function ClauseInput({
 }
 
 export function FilterBar({ tab }: { tab: TableTab }) {
-  const { query } = tab;
+  const { query } = tab.table;
   const drafts = useFilterDrafts((s) => s.drafts[tab.id] ?? NO_DRAFTS);
   const removeDraft = useFilterDrafts((s) => s.remove);
   const update = (f: (q: TableQuery) => TableQuery) => updateTableQuery(tab.id, f);

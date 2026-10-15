@@ -393,8 +393,7 @@ function FunctionRow({ path, depth, fn }: { path: string; depth: number; fn: Fun
       expandable={false}
       onDoubleClick={() => {
         const active = useWorkspace.getState().active;
-        const tab = active ? useWorkspace.getState().tabs[active] : undefined;
-        if (tab?.kind === "sql") insertAtCursor(tab.id, `${fn.name}()`);
+        if (active) insertAtCursor(active, `${fn.name}()`);
       }}
       label={
         <span title={`${fn.name}(${fn.args}) → ${fn.returns}`} className="text-ui-13.5">

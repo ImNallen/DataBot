@@ -119,6 +119,12 @@ export function editorStateOf(id: TabId): EditorState {
   return state;
 }
 
+export function cursorOf(state: EditorState): { line: number; col: number } {
+  const head = state.selection.main.head;
+  const line = state.doc.lineAt(head);
+  return { line: line.number, col: head - line.from + 1 };
+}
+
 export function textOf(id: TabId): string {
   return editorStateOf(id).doc.toString();
 }

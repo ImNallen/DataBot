@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
 import { Sidebar } from "../features/sidebar/Sidebar";
-import { useWorkspace } from "../state/workspace";
+import type { ConnectionConfig, TxnMode } from "../ipc/bindings";
+import { EMPTY_QUERY, useWorkspace, type Tab } from "../state/workspace";
 import { AppLayout } from "./AppLayout";
 import { RightPanel } from "./RightPanel";
 import { ResizeEdges, WindowControlButtons } from "./WindowChrome";
@@ -28,11 +29,11 @@ function inTauri(userAgent: string) {
   vi.stubGlobal("navigator", { userAgent });
 }
 
-const { layout: initialLayout, tabs: initialTabs, active: initialActive } = useWorkspace.getInitialState();
+const { layout: initialLayout, tabs: initialTabs, active: initialActive, configs: initialConfigs } = useWorkspace.getInitialState();
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  Object.assign(useWorkspace.getInitialState(), { layout: initialLayout, tabs: initialTabs, active: initialActive });
+  Object.assign(useWorkspace.getInitialState(), { layout: initialLayout, tabs: initialTabs, active: initialActive, configs: initialConfigs });
 });
 
 // Static rendering reads zustand's server snapshot, which is the store's initial state, so setState can't reach it.
@@ -221,13 +222,13 @@ it("drops the sidebar resize handle while the sidebar is hidden", () => {
 const handle = (html: string, id: string) =>
   html.match(new RegExp(`<div[^>]*data-testid="${id}"[^>]*>(.*?)</div></div>`));
 
-function withSqlTab() {
-  const tab = { kind: "sql", id: "t1", title: "Untitled-1.sql", console: { db: null, mode: "AutoCommit" } } as const;
+function withQueryTab() {
+  const tab: Tab = { id: "t1", title: "Untitled-1.sql", console: { db: null, mode: "AutoCommit" }, table: null };
   Object.assign(useWorkspace.getInitialState(), { tabs: { t1: tab }, active: "t1" });
 }
 
 it("puts the same pill handle on the line above the results, laid flat", () => {
-  withSqlTab();
+  withQueryTab();
   withLayout({ results: true });
   const html = renderToStaticMarkup(<AppLayout />);
   const results = handle(html, "results-resize");
@@ -239,7 +240,7 @@ it("puts the same pill handle on the line above the results, laid flat", () => {
 });
 
 it("drops the results handle along with the results", () => {
-  withSqlTab();
+  withQueryTab();
   withLayout({ results: false });
   const html = renderToStaticMarkup(<AppLayout />);
   expect(html).toContain('data-testid="editor"');
@@ -292,4 +293,42 @@ it("drops the right panel and its handle while the panel is closed", () => {
   expect(html).not.toContain('data-testid="right-panel-resize"');
   expect(html).not.toContain('aria-label="Resize right panel"');
   expect(html).not.toContain('data-testid="right-panel"');
+});
+
+function withTableTab(mode: TxnMode = "AutoCommit") {
+  const tab: Tab = {
+    id: "t2",
+    title: "orders",
+    console: { db: { connectionId: "c", database: "shop" }, mode },
+    table: { schema: "public", table: "orders", page: 0, query: EMPTY_QUERY },
+  };
+  const config: ConnectionConfig = {
+    id: "c",
+    name: "dev",
+    host: "localhost",
+    port: 5433,
+    database: "shop",
+    user: "l1data",
+    sslMode: "Prefer",
+    caCertPath: null,
+    hasPassword: true,
+    color: null,
+  };
+  Object.assign(useWorkspace.getInitialState(), { tabs: { t2: tab }, active: "t2", configs: { c: config } });
+}
+
+it("shows the transaction mode and cursor position on a table tab", () => {
+  withTableTab();
+  withLayout({ results: true });
+  const html = renderToStaticMarkup(<AppLayout />);
+  expect(html).toMatch(/data-testid="tx-mode"[^>]*>Auto-commit</);
+  expect(html).toMatch(/data-testid="cursor-position"[^>]*>Ln 1, Col 1</);
+});
+
+it("gives a table tab the connection menu and the transaction mode menu a query tab has", () => {
+  withTableTab("Manual");
+  const html = renderToStaticMarkup(<TopBar hosted={null} />);
+  expect(html).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*data-testid="tab-connection"[^>]*>dev</);
+  expect(html).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*data-testid="tx-mode"[^>]*>Manual</);
+  expect(html).toMatch(/text-fg">orders</);
 });
