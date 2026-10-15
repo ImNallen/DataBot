@@ -271,7 +271,7 @@ pub enum DefaultValue {
     Expr { sql: String },
     /// `GENERATED ALWAYS` (`always`) or `BY DEFAULT AS IDENTITY`.
     Identity { always: bool },
-    /// `GENERATED ALWAYS AS (sql) STORED`.
+    /// `GENERATED ALWAYS AS (sql) STORED`, or `VIRTUAL` on PG 18.
     Generated { sql: String },
 }
 

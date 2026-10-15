@@ -27,6 +27,8 @@ pub async fn load(client: &Client, db: DatabaseRef, oid: u32, catalog_version: u
              FROM pg_constraint k
              LEFT JOIN pg_class fc ON fc.oid = k.confrelid LEFT JOIN pg_namespace fn ON fn.oid = fc.relnamespace
              WHERE k.conrelid = $1 AND k.contype IN ('p', 'f', 'u', 'c')
+               -- A foreign key into a partitioned table also gets one clone per referenced partition.
+               AND NOT EXISTS (SELECT 1 FROM pg_constraint p WHERE p.oid = k.conparentid AND p.conrelid = k.conrelid)
              ORDER BY position(k.contype IN 'pfuc'), k.conname",
             params,
         ),
@@ -41,7 +43,11 @@ pub async fn load(client: &Client, db: DatabaseRef, oid: u32, catalog_version: u
         client.query(
             "SELECT t.tgname, t.tgtype, t.tgenabled::text, t.tgfoid::regproc::text
              FROM pg_trigger t
-             WHERE t.tgrelid = $1 AND NOT t.tgisinternal
+             WHERE t.tgrelid = $1
+               -- PG 12-14 mark a partition's clone of its parent's trigger internal; psql shows it the same way.
+               AND (NOT t.tgisinternal OR EXISTS (SELECT 1 FROM pg_depend d
+                    WHERE d.classid = 'pg_trigger'::regclass AND d.objid = t.oid
+                      AND d.refclassid = 'pg_trigger'::regclass AND d.deptype = 'P'))
              ORDER BY t.tgname",
             params,
         ),
@@ -53,16 +59,7 @@ pub async fn load(client: &Client, db: DatabaseRef, oid: u32, catalog_version: u
     let defaults = defaults
         .iter()
         .map(|r| {
-            let identity: String = r.get(1);
-            let generated: String = r.get(2);
-            let expr: Option<String> = r.get(3);
-            let value = match (identity.as_str(), generated.as_str(), expr) {
-                ("a", _, _) => DefaultValue::Identity { always: true },
-                ("d", _, _) => DefaultValue::Identity { always: false },
-                (_, "s", Some(sql)) => DefaultValue::Generated { sql },
-                (_, _, sql) => DefaultValue::Expr { sql: strip_literal_cast(&sql.unwrap_or_default()).to_owned() },
-            };
-            ColumnDefault { column: r.get(0), value }
+            ColumnDefault { column: r.get(0), value: default_value(r.get(1), r.get(2), r.get(3)) }
         })
         .collect();
 
@@ -102,11 +99,21 @@ pub async fn load(client: &Client, db: DatabaseRef, oid: u32, catalog_version: u
         .iter()
         .map(|r| {
             let (timing, events, per_row) = decode_tgtype(r.get(1));
-            TriggerInfo { name: r.get(0), timing, events, per_row, enabled: r.get::<_, String>(2) != "D", function: r.get(3) }
+            TriggerInfo { name: r.get(0), timing, events, per_row, enabled: matches!(r.get::<_, &str>(2), "O" | "A"), function: r.get(3) }
         })
         .collect();
 
     Ok(Some(RelationDetail { db, oid, catalog_version, defaults, keys, indexes, triggers }))
+}
+
+/// From `pg_attribute.attidentity`, `pg_attribute.attgenerated`, and the `pg_attrdef` expression.
+fn default_value(identity: &str, generated: &str, expr: Option<String>) -> DefaultValue {
+    match (identity, generated, expr) {
+        ("a", _, _) => DefaultValue::Identity { always: true },
+        ("d", _, _) => DefaultValue::Identity { always: false },
+        (_, "s" | "v", Some(sql)) => DefaultValue::Generated { sql },
+        (_, _, sql) => DefaultValue::Expr { sql: strip_literal_cast(&sql.unwrap_or_default()).to_owned() },
+    }
 }
 
 fn fk_action(code: &str) -> FkAction {
@@ -237,6 +244,15 @@ mod tests {
         assert_eq!(strip_literal_cast("('a'::text || 'b'::text)"), "('a'::text || 'b'::text)");
         assert_eq!(strip_literal_cast("'a'::text || 'b'::text"), "'a'::text || 'b'::text");
         assert_eq!(strip_literal_cast("'2026-01-01'::date + 1"), "'2026-01-01'::date + 1");
+    }
+
+    #[test]
+    fn stored_and_virtual_generated_columns_are_generated() {
+        let generated = |kind| default_value("", kind, Some("(a * 2)".into()));
+        assert_eq!(generated("s"), DefaultValue::Generated { sql: "(a * 2)".into() });
+        assert_eq!(generated("v"), DefaultValue::Generated { sql: "(a * 2)".into() });
+        assert_eq!(default_value("", "", Some("'x'::text".into())), DefaultValue::Expr { sql: "'x'".into() });
+        assert_eq!(default_value("d", "", None), DefaultValue::Identity { always: false });
     }
 
     #[test]

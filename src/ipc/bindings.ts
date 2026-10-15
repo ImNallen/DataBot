@@ -281,7 +281,7 @@ export type DefaultValue =
 { kind: "Expr"; sql: string } | 
 /**  `GENERATED ALWAYS` (`always`) or `BY DEFAULT AS IDENTITY`. */
 { kind: "Identity"; always: boolean } | 
-/**  `GENERATED ALWAYS AS (sql) STORED`. */
+/**  `GENERATED ALWAYS AS (sql) STORED`, or `VIRTUAL` on PG 18. */
 { kind: "Generated"; sql: string };
 
 export type Density = "Compact" | "Standard" | "Spacious";

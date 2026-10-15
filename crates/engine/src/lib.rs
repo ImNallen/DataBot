@@ -659,7 +659,11 @@ impl Engine {
     /// session when the tree opens the relation. The engine keeps no copy.
     pub async fn relation_detail(&self, db: DatabaseRef, oid: u32) -> Result<RelationDetail, DetailError> {
         let (instance, slot) = self.shared.slot(&db).map_err(|error| DetailError::Catalog { error })?;
-        let version = self.shared.ensure_catalog(&instance, &slot).await.map_err(|error| DetailError::Catalog { error })?.version;
+        // A `Failed` slot still serves its last catalog; reloading here would retry on every expand.
+        let version = match slot.last() {
+            Some(catalog) => catalog.version,
+            None => self.shared.ensure_catalog(&instance, &slot).await.map_err(|error| DetailError::Catalog { error })?.version,
+        };
         let mut meta = slot.meta.lock().await;
         let session = self.shared.session_in(&instance, &slot, &mut meta).await.map_err(|e| DetailError::Failed { message: connection::connect_error_text(&e) })?;
         detail::load(&session.client, db, oid, version)

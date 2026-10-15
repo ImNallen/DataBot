@@ -1171,7 +1171,9 @@ async fn a_dead_metadata_session_keeps_the_last_catalog_until_the_next_load() {
     let state = h.run_ok(tab, "select 1").await;
     let SessionState::Open { backend_pid: console_pid } = state.session else { panic!("{:?}", state.session) };
     let reporting = h.db_named("reporting");
-    let before = h.catalog_when(&reporting, |_| true).await.version;
+    let before_catalog = h.catalog_when(&reporting, |_| true).await;
+    let before = before_catalog.version;
+    let daily = before_catalog.relation("public", "daily").unwrap().oid;
     let meta: Vec<i32> = role.backends().await.into_iter().filter(|(db, pid)| db == "reporting" && *pid != console_pid).map(|(_, pid)| pid).collect();
     let [meta_pid] = meta[..] else { panic!("one reporting metadata session, found {meta:?}") };
 
@@ -1184,6 +1186,10 @@ async fn a_dead_metadata_session_keeps_the_last_catalog_until_the_next_load() {
     let CatalogStatus::Failed { version, message } = h.catalog_status("reporting") else { unreachable!() };
     assert_eq!(version, Some(before), "the last good version stays on the wire: {message}");
     assert!(matches!(h.status(), ConnStatus::Connected { .. }), "another database's session is not the home session");
+
+    let detail = h.engine.relation_detail(reporting.clone(), daily).await.unwrap();
+    assert_eq!(detail.catalog_version, before, "a detail read is not a catalog load");
+    assert_eq!(h.catalog_status("reporting"), CatalogStatus::Failed { message, version: Some(before) });
 
     let reloaded = h.engine.catalog(reporting.clone()).await.unwrap();
     assert!(reloaded.version > before, "the next load reopened the session: {} > {before}", reloaded.version);
@@ -1295,4 +1301,61 @@ async fn relation_detail_reads_orders() {
         h.engine.relation_detail(h.db_named("postgres"), orders.oid).await,
         Err(DetailError::Catalog { error: CatalogError::NotShown { .. } })
     ));
+}
+
+#[tokio::test]
+async fn relation_detail_hides_partition_clones_and_shows_inherited_triggers() {
+    let h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    let (oracle, connection) = tokio_postgres::connect(&url(), NoTls).await.unwrap();
+    tokio::spawn(connection);
+    let s = unique("t_detail");
+    oracle
+        .batch_execute(&format!(
+            "create schema {s};
+             create table {s}.ptarget (id int, region text, primary key (id, region)) partition by list (region);
+             create table {s}.ptarget_eu partition of {s}.ptarget for values in ('eu');
+             create table {s}.ptarget_us partition of {s}.ptarget for values in ('us');
+             create table {s}.t (a int, region text, constraint fk_part foreign key (a, region) references {s}.ptarget);
+             create function {s}.noop() returns trigger language plpgsql as $$ begin return new; end $$;
+             create trigger t_replica after insert on {s}.t for each row execute function {s}.noop();
+             alter table {s}.t enable replica trigger t_replica;
+             create table {s}.parted (id int) partition by range (id);
+             create table {s}.parted_1 partition of {s}.parted for values from (0) to (10);
+             create trigger t_parent after insert on {s}.parted for each row execute function {s}.noop();"
+        ))
+        .await
+        .unwrap();
+    let oid = async |table: &str| oracle.query_one(&format!("select '{s}.{table}'::regclass::oid"), &[]).await.unwrap().get::<_, u32>(0);
+
+    let t = h.engine.relation_detail(h.db(), oid("t").await).await.unwrap();
+    let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        t.keys,
+        [KeyInfo {
+            name: "fk_part".into(),
+            columns: names(&["a", "region"]),
+            kind: KeyKind::Foreign {
+                ref_schema: s.clone(),
+                ref_table: "ptarget".into(),
+                ref_columns: names(&["id", "region"]),
+                on_delete: FkAction::NoAction,
+                on_update: FkAction::NoAction,
+            },
+        }]
+    );
+    let trigger = |name: &str, enabled| TriggerInfo {
+        name: name.into(),
+        timing: TriggerTiming::After,
+        events: vec![TriggerEvent::Insert],
+        per_row: true,
+        enabled,
+        function: format!("{s}.noop"),
+    };
+    assert_eq!(t.triggers, [trigger("t_replica", false)], "a replica trigger does not fire in a normal session, and RI triggers stay hidden");
+
+    let parted_1 = h.engine.relation_detail(h.db(), oid("parted_1").await).await.unwrap();
+    assert_eq!(parted_1.triggers, [trigger("t_parent", true)], "a partition shows the row trigger it inherits");
+
+    oracle.batch_execute(&format!("drop schema {s} cascade")).await.unwrap();
 }
