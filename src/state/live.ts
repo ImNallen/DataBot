@@ -5,10 +5,14 @@ import type {
   ConnectionId,
   ConnectionState,
   ConsoleState,
+  DatabaseRef,
+  DatabaseState,
   HistoryEntry,
+  InstanceState,
   OutputEntry,
   TabId,
 } from "../ipc/bindings";
+import { dbKey, type DbKey } from "./dbKey";
 
 export const OUTPUT_LIMIT = 5_000;
 const HISTORY_TAIL_LIMIT = 200;
@@ -17,7 +21,6 @@ export type LiveData = {
   connections: Record<ConnectionId, ConnectionState>;
   consoles: Record<TabId, ConsoleState>;
   output: Record<TabId, OutputEntry[]>;
-  catalogVersions: Record<ConnectionId, number>;
   historyTail: HistoryEntry[];
 };
 
@@ -26,38 +29,65 @@ type LiveState = LiveData & {
   apply(e: AppEvent): void;
 };
 
-export const emptyLive: LiveData = { connections: {}, consoles: {}, output: {}, catalogVersions: {}, historyTail: [] };
+export const emptyLive: LiveData = { connections: {}, consoles: {}, output: {}, historyTail: [] };
 
 function keepHigher<K extends string, V extends { rev: number }>(map: Record<K, V>, key: K, next: V): Record<K, V> {
   const prev = map[key];
   return prev && prev.rev >= next.rev ? map : { ...map, [key]: next };
 }
 
-function bumpVersion(versions: Record<ConnectionId, number>, id: ConnectionId, version: number) {
-  return (versions[id] ?? -1) >= version ? versions : { ...versions, [id]: version };
+export function instanceOf(state: ConnectionState | undefined): InstanceState | null {
+  return state?.status.kind === "Connected" ? state.status.instance : null;
 }
 
-function connectionVersion(state: ConnectionState): number | null {
-  return state.status.kind === "Connected" ? state.status.catalogVersion : null;
+/** The version `catalog_get` serves for a database: the Ready one, or the last good one behind a failed reload. */
+function servedVersion(catalog: DatabaseState["catalog"]): number | null {
+  switch (catalog.kind) {
+    case "Ready":
+      return catalog.version;
+    case "Failed":
+      return catalog.version;
+    case "Idle":
+    case "Loading":
+      return null;
+    default: {
+      const unreachable: never = catalog;
+      return unreachable;
+    }
+  }
 }
 
-function withConnection(s: LiveData, state: ConnectionState): Partial<LiveData> {
-  const connections = keepHigher(s.connections, state.id, state);
-  const version = connectionVersion(state);
-  return {
-    connections,
-    catalogVersions: version === null ? s.catalogVersions : bumpVersion(s.catalogVersions, state.id, version),
-  };
+/** Every served catalog across the connected instances: what the catalog store must hold, and at which version. */
+export function wantedCatalogs(connections: Record<ConnectionId, ConnectionState>): Map<DbKey, { ref: DatabaseRef; version: number }> {
+  const wanted = new Map<DbKey, { ref: DatabaseRef; version: number }>();
+  for (const conn of Object.values(connections)) {
+    for (const db of instanceOf(conn)?.databases ?? []) {
+      const version = servedVersion(db.catalog);
+      if (version === null) continue;
+      const ref = { connectionId: conn.id, database: db.name };
+      wanted.set(dbKey(ref), { ref, version });
+    }
+  }
+  return wanted;
+}
+
+/** The schemas the tree shows, by database, across the connected instances: the user's working set, which ⌘P searches. */
+export function shownSchemas(connections: Record<ConnectionId, ConnectionState>): Map<DbKey, ReadonlySet<string>> {
+  const shown = new Map<DbKey, ReadonlySet<string>>();
+  for (const conn of Object.values(connections)) {
+    for (const db of instanceOf(conn)?.databases ?? []) {
+      if (db.shown) shown.set(dbKey({ connectionId: conn.id, database: db.name }), new Set(db.shownSchemas));
+    }
+  }
+  return shown;
 }
 
 export function applyEvent(s: LiveData, e: AppEvent): LiveData {
   switch (e.kind) {
     case "ConnectionChanged": {
       const { kind: _, ...state } = e;
-      return { ...s, ...withConnection(s, state) };
+      return { ...s, connections: keepHigher(s.connections, state.id, state) };
     }
-    case "CatalogChanged":
-      return { ...s, catalogVersions: bumpVersion(s.catalogVersions, e.connectionId, e.version) };
     case "ConsoleChanged": {
       const { kind: _, ...state } = e;
       return { ...s, consoles: keepHigher(s.consoles, state.tabId, state) };
@@ -80,7 +110,7 @@ export function applyEvent(s: LiveData, e: AppEvent): LiveData {
 
 export function hydrateLive(s: LiveData, b: BootSnapshot): LiveData {
   let next = s;
-  for (const c of b.live) next = { ...next, ...withConnection(next, c) };
+  for (const c of b.live) next = { ...next, connections: keepHigher(next.connections, c.id, c) };
   for (const c of b.consoles) next = { ...next, consoles: keepHigher(next.consoles, c.tabId, c) };
   return next;
 }

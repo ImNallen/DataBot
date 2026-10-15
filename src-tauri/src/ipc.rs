@@ -43,20 +43,44 @@ pub async fn connection_disconnect(engine: State<'_, Arc<Engine>>, id: Connectio
 
 #[tauri::command]
 #[specta::specta]
-pub fn catalog_get(engine: State<'_, Arc<Engine>>, id: ConnectionId) -> Result<Arc<Catalog>, NotConnected> {
-    engine.catalog(id)
+pub async fn catalog_get(engine: State<'_, Arc<Engine>>, db: DatabaseRef) -> Result<Arc<Catalog>, CatalogError> {
+    engine.catalog(db).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn catalog_refresh(engine: State<'_, Arc<Engine>>, id: ConnectionId) -> Result<u64, NotConnected> {
-    engine.refresh_catalog(id).await
+pub async fn catalog_refresh(engine: State<'_, Arc<Engine>>, db: DatabaseRef) -> Result<u64, CatalogError> {
+    engine.refresh_catalog(db).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn exact_row_count(engine: State<'_, Arc<Engine>>, id: ConnectionId, schema: String, table: String, query: TableQuery) -> Result<u64, CountError> {
-    engine.exact_row_count(id, schema, table, query).await
+pub async fn connection_refresh(engine: State<'_, Arc<Engine>>, id: ConnectionId) -> Result<(), CatalogError> {
+    engine.refresh_connection(id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn connection_edit_view(engine: State<'_, Arc<Engine>>, id: ConnectionId, edit: ViewEdit) -> Result<(), CatalogError> {
+    engine.edit_view(id, edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn connection_probe_databases(engine: State<'_, Arc<Engine>>, id: ConnectionId, databases: Vec<String>) {
+    engine.probe_databases(id, databases)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn relation_detail(engine: State<'_, Arc<Engine>>, db: DatabaseRef, oid: u32) -> Result<RelationDetail, DetailError> {
+    engine.relation_detail(db, oid).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn exact_row_count(engine: State<'_, Arc<Engine>>, db: DatabaseRef, schema: String, table: String, query: TableQuery) -> Result<u64, CountError> {
+    engine.exact_row_count(db, schema, table, query).await
 }
 
 #[tauri::command]

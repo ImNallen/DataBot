@@ -3,6 +3,8 @@ import { Command } from "cmdk";
 import { IconBraces, IconColumns3, IconEye, IconSearch, IconTable } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { useCatalog, type SearchItem } from "../../state/catalog";
+import { dbKey, type DbKey } from "../../state/dbKey";
+import { shownSchemas, useLive } from "../../state/live";
 import { useWorkspace } from "../../state/workspace";
 import { DialogBackdrop } from "../../ui/primitives";
 import { insertAtCursor } from "../editor/editorStates";
@@ -17,7 +19,13 @@ const ICONS = {
 } satisfies Record<SearchItem["kind"], React.ReactNode>;
 
 function itemKey(item: SearchItem): string {
-  return `${item.connectionId}:${item.schema}:${item.kind}:${item.label}`;
+  return `${dbKey(item.db)}:${item.schema}:${item.kind}:${item.label}`;
+}
+
+/** Where an item lives, when the loaded catalogs leave that ambiguous. */
+function placeHint(item: SearchItem, multiDatabase: boolean, multiSchema: boolean): string | null {
+  if (multiDatabase) return `${item.db.database}.${item.schema}`;
+  return multiSchema ? item.schema : null;
 }
 
 function choose(item: SearchItem) {
@@ -26,7 +34,7 @@ function choose(item: SearchItem) {
     case "table":
     case "view":
     case "column":
-      openTableTab({ connectionId: item.connectionId, schema: item.schema, relation: item.relation });
+      openTableTab({ db: item.db, schema: item.schema, relation: item.relation });
       return;
     case "function": {
       const tab = ws.active ? ws.tabs[ws.active] : undefined;
@@ -45,13 +53,22 @@ export function SearchPalette() {
   const open = useWorkspace((s) => s.overlay.kind === "palette");
   const close = useWorkspace((s) => s.close);
   const views = useCatalog((s) => s.views);
+  const connections = useLive((s) => s.connections);
   const [query, setQuery] = useState("");
 
-  const items = useMemo(() => Object.values(views).flatMap((v) => v.searchItems), [views]);
+  // Only what the tree shows: a tab on another database loads its catalog for completion, not for search.
+  const items = useMemo(() => {
+    const shown = shownSchemas(connections);
+    return Object.entries(views).flatMap(([key, v]) => {
+      const schemas = shown.get(key as DbKey);
+      return schemas ? v.searchItems.filter((i) => schemas.has(i.schema)) : [];
+    });
+  }, [views, connections]);
   const results = useMemo(
     () => (query.trim() ? fuzzyRank(query, items, (i) => i.label, 60) : items.filter((i) => i.kind !== "column").slice(0, 60)),
     [query, items],
   );
+  const multiDatabase = useMemo(() => new Set(items.map((i) => dbKey(i.db))).size > 1, [items]);
   const multiSchema = useMemo(() => new Set(items.map((i) => i.schema)).size > 1, [items]);
 
   return (
@@ -99,7 +116,7 @@ export function SearchPalette() {
                 >
                   <span className="grid w-[18px] place-items-center">{ICONS[item.kind]}</span>
                   <span className="truncate">{item.label}</span>
-                  {multiSchema && item.kind !== "column" && <span className="text-ui-12 text-faint">{item.schema}</span>}
+                  {item.kind !== "column" && <span className="text-ui-12 text-faint">{placeHint(item, multiDatabase, multiSchema)}</span>}
                   <span className="ml-auto truncate pl-4 font-mono text-ui-11.5 text-dim">
                     {item.kind === "table" || item.kind === "view" ? item.kind : item.detail}
                   </span>

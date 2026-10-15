@@ -1,9 +1,10 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { IconPlayerPlayFilled, IconPlayerStopFilled } from "@tabler/icons-react";
-import { cancelActive, endTransaction, runActive, setTabConnection } from "../features/editor/runActions";
+import { cancelActive, endTransaction, runActive, setTabTarget } from "../features/editor/runActions";
+import { homeDb } from "../state/dbKey";
 import { useLive } from "../state/live";
 import { connectionStatus, hasUncommittedWork, isRunning } from "../state/status";
-import { tabConnectionId, tabLabel, useWorkspace } from "../state/workspace";
+import { tabLabel, tabTarget, useWorkspace } from "../state/workspace";
 import { Button, Kbd, MenuContent, MenuItem, MenuLabel, StatusDot, cx } from "../ui/primitives";
 import { SidebarToggle, WindowEdgeActions, windowEdgeInset, windowLeadingInset } from "./WindowEdgeActions";
 import type { HostedWindow } from "./hostedWindow";
@@ -12,7 +13,7 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
   const tab = useWorkspace((s) => (s.active ? s.tabs[s.active] : undefined));
   const configs = useWorkspace((s) => s.configs);
   const layout = useWorkspace((s) => s.layout);
-  const connectionId = tabConnectionId(tab);
+  const connectionId = tabTarget(tab)?.connectionId ?? null;
   const liveConsole = useLive((s) => (tab ? s.consoles[tab.id] : undefined));
   const connections = useLive((s) => s.connections);
   const config = connectionId ? configs[connectionId] : undefined;
@@ -38,7 +39,7 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
             <MenuContent>
               <MenuLabel>Connection for this tab</MenuLabel>
               {Object.values(configs).map((c) => (
-                <MenuItem key={c.id} checked={c.id === connectionId} onSelect={() => void setTabConnection(sql.id, c.id)}>
+                <MenuItem key={c.id} checked={c.id === connectionId} onSelect={() => void setTabTarget(sql.id, homeDb(c))}>
                   <StatusDot tone={connectionStatus(connections[c.id]).tone} />
                   {c.name}
                 </MenuItem>

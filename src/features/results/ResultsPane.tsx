@@ -29,7 +29,7 @@ import {
   type ResultView,
   type Summary,
 } from "../../state/status";
-import { useCatalog } from "../../state/catalog";
+import { useCatalog, viewFor } from "../../state/catalog";
 import { NO_EDITS, pendingCount, useTableEdits } from "../../state/tableEdits";
 import { isFiltered, useWorkspace, type TableTab } from "../../state/workspace";
 import { cx, IconButton, MenuContent, MenuItem, Spinner } from "../../ui/primitives";
@@ -66,7 +66,7 @@ function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
   const size = useWorkspace((s) => s.settings.tablePageSize);
   const estimate = useCatalog(
     (s) =>
-      s.views[tab.connectionId]?.catalog.schemas.find((sc) => sc.name === tab.schema)?.relations.find((r) => r.name === tab.table)
+      viewFor(s.views, tab.db)?.catalog.schemas.find((sc) => sc.name === tab.schema)?.relations.find((r) => r.name === tab.table)
         ?.rowEstimate ?? null,
   );
   const { label, isLast } = pageStatus(tab.page, size, rows, isFiltered(tab.query) ? null : estimate, tab.exactRowCount);
@@ -308,11 +308,11 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
   useEffect(() => {
     if (tabId && isTable) loadTableOnce(tabId);
   }, [tabId, isTable]);
-  const catalogView = useCatalog((s) => (browsingTable ? s.views[browsingTable.connectionId] : undefined));
+  const catalogView = useCatalog((s) => viewFor(s.views, browsingTable?.db));
   const editing = useMemo<GridEditing | null>(() => {
     const pkColumns = browsingTable && catalogView ? tablePrimaryKey(browsingTable) : [];
     return pkColumns.length ? { pkColumns } : null;
-  }, [browsingTable?.connectionId, browsingTable?.schema, browsingTable?.table, catalogView]);
+  }, [browsingTable?.db, browsingTable?.schema, browsingTable?.table, catalogView]);
   const actions = useRef<GridActions | null>(null);
 
   return (

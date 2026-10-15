@@ -17,7 +17,7 @@ it("quotes only the identifiers that need it in a table's browse query", () => {
 });
 
 it("opens the results when a table opens, new or already in a tab", () => {
-  const ref = { connectionId: "c1", schema: "public", relation: "orders" };
+  const ref = { db: { connectionId: "c1", database: "shop" }, schema: "public", relation: "orders" };
   useWorkspace.setState({ layout: { ...useWorkspace.getState().layout, results: false } });
   openTableTab(ref);
   const tab = useWorkspace.getState().tabs[useWorkspace.getState().active!];

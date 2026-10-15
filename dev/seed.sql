@@ -33,15 +33,21 @@ CREATE TABLE addresses (
   customer_id bigint NOT NULL REFERENCES customers(id),
   line1 text NOT NULL,
   city text NOT NULL,
-  postal_code text
+  postal_code text,
+  UNIQUE (customer_id, id)
 );
 
 CREATE TABLE orders (
-  id bigserial PRIMARY KEY,
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  number text NOT NULL UNIQUE,
   customer_id bigint NOT NULL REFERENCES customers(id),
-  status text NOT NULL,
+  ship_address_id bigint,
+  status text NOT NULL DEFAULT 'pending',
   total numeric(12,2) NOT NULL,
-  created_at timestamptz NOT NULL
+  metadata jsonb NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (customer_id, ship_address_id) REFERENCES addresses (customer_id, id)
 );
 
 CREATE TABLE order_items (
@@ -103,12 +109,16 @@ INSERT INTO customers (email, name, region, created_at)
 INSERT INTO addresses (customer_id, line1, city, postal_code)
   SELECT id, id || ' Main St', (ARRAY['Stockholm','Berlin','Austin','Tokyo','Lima'])[1 + id % 5], lpad((id % 99999)::text, 5, '0')
   FROM customers;
-INSERT INTO orders (customer_id, status, total, created_at)
-  SELECT 1 + (random() * 18399)::int,
+INSERT INTO orders (number, customer_id, ship_address_id, status, total, metadata, created_at)
+  SELECT 'ORD-' || lpad(g::text, 7, '0'),
+         a.customer_id,
+         a.id,
          (ARRAY['paid','paid','paid','paid','pending','refunded','cancelled'])[1 + (random() * 6)::int],
          round((10 + random() * 600)::numeric, 2),
+         CASE WHEN g % 10 = 0 THEN '{"gift": true}'::jsonb ELSE '{}' END,
          now() - (random() * interval '365 days')
-  FROM generate_series(1, 241000) g;
+  FROM generate_series(1, 241000) g
+  JOIN addresses a ON a.customer_id = 1 + (g * 7919) % 18400;
 INSERT INTO order_items (order_id, product_id, quantity, unit_price)
   SELECT 1 + (random() * 240999)::int, 1 + (random() * 1199)::int, 1 + (random() * 4)::int, round((5 + random() * 200)::numeric, 2)
   FROM generate_series(1, 612000) g;
@@ -124,8 +134,21 @@ INSERT INTO reviews (product_id, customer_id, rating, body)
 INSERT INTO coupons VALUES ('WELCOME10', 10, '2027-01-01'), ('VIP25', 25, NULL), ('SPRING', 15, '2026-05-31');
 
 CREATE INDEX ON orders (customer_id);
-CREATE INDEX ON orders (created_at);
+CREATE INDEX ON orders (created_at DESC);
+CREATE INDEX orders_open_idx ON orders (status) WHERE status <> 'paid';
 CREATE INDEX ON order_items (order_id);
+
+CREATE TABLE order_audit (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  order_id bigint NOT NULL,
+  action text NOT NULL,
+  at timestamptz NOT NULL DEFAULT now()
+);
+CREATE FUNCTION set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.updated_at = now(); RETURN NEW; END $$;
+CREATE FUNCTION audit_order() RETURNS trigger LANGUAGE plpgsql AS $$
+  BEGIN INSERT INTO order_audit (order_id, action) VALUES (coalesce(NEW.id, OLD.id), TG_OP); RETURN NULL; END $$;
+CREATE TRIGGER orders_set_updated_at BEFORE UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER orders_audit AFTER INSERT OR UPDATE OR DELETE ON orders FOR EACH ROW EXECUTE FUNCTION audit_order();
 
 CREATE VIEW paid_orders AS SELECT * FROM orders WHERE status = 'paid';
 CREATE VIEW revenue_by_region AS
@@ -153,5 +176,26 @@ INSERT INTO lab.type_zoo (b, i2, i8, f4, f8, n, t, vc, ch, u, j, jb, ba, d, tm, 
    'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', '{"a": 1}', '{"b": [1, 2, 3]}', '\xdeadbeef', '2026-10-13', '10:14:00',
    '2026-10-13 10:14:00', '2026-10-13 10:14:00+02', '1 day 02:03:04', '192.168.0.1', '{1,2,3}', '{"a","b c"}', 'happy', '(1,2)', '[1,10)'),
   (NULL, NULL, NULL, 'NaN', '-Infinity', NULL, '', NULL, NULL, NULL, 'null', NULL, '\x', NULL, NULL, NULL, NULL, NULL, NULL, '{}', '{NULL}', NULL, NULL, 'empty');
+
+ANALYZE;
+
+CREATE DATABASE reporting;
+\c reporting
+
+CREATE SCHEMA audit;
+
+CREATE TABLE daily (
+  day date PRIMARY KEY,
+  orders integer NOT NULL,
+  revenue numeric(12,2) NOT NULL
+);
+INSERT INTO daily SELECT date '2026-01-01' + g, 100 + (g % 50), 1000 + g * 7.5 FROM generate_series(1, 90) g;
+
+CREATE TABLE audit.events (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  at timestamptz NOT NULL DEFAULT now(),
+  what text NOT NULL
+);
+INSERT INTO audit.events (what) VALUES ('nightly rollup'), ('manual rerun');
 
 ANALYZE;

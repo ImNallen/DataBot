@@ -104,9 +104,13 @@ routes! { e;
     connection_test(draft: ConnectionDraft) => e.test_connection(draft).await;
     connection_connect(id: ConnectionId) => e.connect(id).await;
     connection_disconnect(id: ConnectionId, force: bool) => e.disconnect(id, force).await;
-    catalog_get(id: ConnectionId) => e.catalog(id);
-    catalog_refresh(id: ConnectionId) => e.refresh_catalog(id).await;
-    exact_row_count(id: ConnectionId, schema: String, table: String, query: TableQuery) => e.exact_row_count(id, schema, table, query).await;
+    catalog_get(db: DatabaseRef) => e.catalog(db).await;
+    catalog_refresh(db: DatabaseRef) => e.refresh_catalog(db).await;
+    connection_refresh(id: ConnectionId) => e.refresh_connection(id).await;
+    connection_edit_view(id: ConnectionId, edit: ViewEdit) => e.edit_view(id, edit).await;
+    connection_probe_databases(id: ConnectionId, databases: Vec<String>) => { e.probe_databases(id, databases); ok(()) };
+    relation_detail(db: DatabaseRef, oid: u32) => e.relation_detail(db, oid).await;
+    exact_row_count(db: DatabaseRef, schema: String, table: String, query: TableQuery) => e.exact_row_count(db, schema, table, query).await;
     console_configure(tab_id: TabId, config: ConsoleConfig) => e.console_configure(tab_id, config).await;
     console_run(tab_id: TabId, request: RunRequest) => e.console_run(tab_id, request).await;
     console_cancel(tab_id: TabId) => { e.console_cancel(tab_id).await; ok(()) };
@@ -194,8 +198,8 @@ mod tests {
             dispatch(&engine, "console_cancel", args).await,
             Err(BridgeError::BadArg { arg, .. }) if arg == "tabId"
         ));
-        let unknown = json!({ "id": "00000000-0000-0000-0000-000000000000" }).as_object().unwrap().clone();
+        let unknown = json!({ "db": { "connectionId": "00000000-0000-0000-0000-000000000000", "database": "shop" } }).as_object().unwrap().clone();
         let reply = dispatch(&engine, "catalog_get", unknown).await.unwrap();
-        assert_eq!(reply.unwrap_err()["connectionId"], json!("00000000-0000-0000-0000-000000000000"), "a typed error is a command error");
+        assert_eq!(reply.unwrap_err(), json!({ "kind": "NotConnected" }), "a typed error is a command error");
     }
 }

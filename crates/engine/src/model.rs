@@ -82,15 +82,94 @@ pub struct ServerInfo {
     pub encoding: String,
 }
 
+/// One database on one saved connection. Postgres catalogs and OIDs are per database, so every
+/// catalog lookup, refresh, and count takes one of these. `database` is `pg_database.datname`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseRef {
+    pub connection_id: ConnectionId,
+    pub database: String,
+}
+
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum ConnStatus {
     Disconnected,
     Connecting,
-    Connected { server: ServerInfo, catalog_version: u64 },
+    /// The home session is open and `pg_database` was read. Catalogs load after this, each with
+    /// its own `CatalogStatus`, so one unreachable database never fails the instance.
+    Connected { server: ServerInfo, instance: InstanceState },
     Failed { error: ConnectError },
-    /// The metadata session died after being `Connected`.
+    /// The home database's metadata session died after being `Connected`.
     Lost { reason: String },
+}
+
+/// Every database of the instance, with the state of its catalog. The connection snapshot is the
+/// single source of catalog versions.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceState {
+    /// `ConnectionConfig.database` as the server spells it.
+    pub home: String,
+    /// The database picker lists system databases only while this is on.
+    pub show_system_databases: bool,
+    /// Every row of `pg_database`, sorted by name.
+    pub databases: Vec<DatabaseState>,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseState {
+    pub name: String,
+    /// `datistemplate OR NOT datallowconn`. `postgres` is an ordinary database.
+    pub system: bool,
+    pub access: DbAccess,
+    /// Whether the tree shows this database, resolved from the stored view. Never true without
+    /// `DbAccess::Ok`.
+    pub shown: bool,
+    /// The schema picker lists system schemas only while this is on.
+    pub show_system_schemas: bool,
+    /// The schemas the tree shows under this database, in name order. Empty until the catalog
+    /// serves a version.
+    pub shown_schemas: Vec<String>,
+    /// Non-system schema count for the database picker: from the catalog when one is served,
+    /// else from `connection_probe_databases`.
+    pub schema_count: SchemaCount,
+    pub catalog: CatalogStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum SchemaCount {
+    Unknown,
+    Probing,
+    Known { count: u32 },
+    /// The probe session failed; `message` is the server's or the transport's text.
+    Unavailable { message: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum DbAccess {
+    Ok,
+    /// `datallowconn` is false.
+    NoConnections,
+    /// `has_database_privilege(datname, 'CONNECT')` is false.
+    NoPrivilege,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum CatalogStatus {
+    /// No metadata session is wanted for this database.
+    Idle,
+    /// The first load is in flight. A reload keeps `Ready` with the old version.
+    Loading,
+    /// `version` comes from one engine-wide counter, so it rises across every database and every
+    /// reconnect. The UI fetches `catalog_get` when it is newer than what it holds.
+    Ready { version: u64 },
+    /// The last load failed. `version` is the last good catalog's, which `catalog_get` still
+    /// serves, so the UI keeps it until a reload succeeds.
+    Failed { message: String, version: Option<u64> },
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -115,9 +194,15 @@ pub enum ConnectError {
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Catalog {
-    pub connection_id: ConnectionId,
+    pub db: DatabaseRef,
     pub version: u64,
-    pub database: String,
+    /// The first existing non-system entry of `current_schemas(false)` on this database's
+    /// metadata session, else `public` when it exists, else the first non-system schema by name.
+    /// `None` only when the database has no non-system schema. "Default only" in the schema
+    /// picker means this.
+    pub default_schema: Option<String>,
+    /// Every schema except `pg_toast` and temp schemas, in name order. A system schema carries
+    /// its relations only while the tree shows it, and never its functions.
     pub schemas: Vec<SchemaInfo>,
 }
 
@@ -125,6 +210,11 @@ pub struct Catalog {
 #[serde(rename_all = "camelCase")]
 pub struct SchemaInfo {
     pub name: String,
+    /// `information_schema` or a `pg_` prefix, which Postgres reserves for its own schemas.
+    pub system: bool,
+    /// Tables, partitioned tables, and foreign tables, which the tree lists as tables. Counted by
+    /// the schema query itself, so it is right for a system schema whose `relations` are not loaded.
+    pub table_count: u32,
     pub relations: Vec<Relation>,
     pub functions: Vec<FunctionInfo>,
 }
@@ -156,8 +246,11 @@ pub struct ColumnInfo {
     pub attnum: i16,
     pub name: String,
     pub type_display: String,
+    pub category: TypeCategory,
     pub not_null: bool,
     pub pk: bool,
+    /// Part of any foreign key.
+    pub fk: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -178,6 +271,115 @@ pub enum FnKind {
     Window,
 }
 
+/// What a table row shows past its columns, read by `relation_detail` when the row first opens.
+/// It is not in `Catalog`, so a DDL refresh never scans constraints, indexes, and triggers.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationDetail {
+    pub db: DatabaseRef,
+    pub oid: u32,
+    /// The catalog version the detail is at least as new as.
+    pub catalog_version: u64,
+    /// In `attnum` order.
+    pub defaults: Vec<ColumnDefault>,
+    /// Primary, then foreign, unique, and check, each by name.
+    pub keys: Vec<KeyInfo>,
+    /// Primary, then unique, then the rest, each by name.
+    pub indexes: Vec<IndexInfo>,
+    /// By name.
+    pub triggers: Vec<TriggerInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnDefault {
+    pub column: String,
+    pub value: DefaultValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum DefaultValue {
+    /// `pg_get_expr` of the default, with the cast dropped from a lone literal: `'pending'`, `now()`.
+    Expr { sql: String },
+    /// `GENERATED ALWAYS` (`always`) or `BY DEFAULT AS IDENTITY`.
+    Identity { always: bool },
+    /// `GENERATED ALWAYS AS (sql) STORED`, or `VIRTUAL` on PG 18.
+    Generated { sql: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyInfo {
+    pub name: String,
+    /// In key order.
+    pub columns: Vec<String>,
+    pub kind: KeyKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum KeyKind {
+    Primary,
+    Unique,
+    Foreign { ref_schema: String, ref_table: String, ref_columns: Vec<String>, on_delete: FkAction, on_update: FkAction },
+    /// `definition` is `pg_get_constraintdef`: `CHECK ((qty > 0))`.
+    Check { definition: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum FkAction {
+    NoAction,
+    Restrict,
+    Cascade,
+    SetNull,
+    SetDefault,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInfo {
+    pub name: String,
+    /// `pg_am.amname`: btree, hash, gin, gist, brin.
+    pub method: String,
+    pub unique: bool,
+    pub primary: bool,
+    /// False while `CREATE INDEX CONCURRENTLY` builds it or after that failed.
+    pub valid: bool,
+    /// The key list cut from `pg_get_indexdef`: `(created_at DESC)`, `(a) INCLUDE (b)`.
+    pub keys: String,
+    /// The predicate of a partial index, without redundant parentheses: `status <> 'paid'::text`.
+    pub predicate: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerInfo {
+    pub name: String,
+    pub timing: TriggerTiming,
+    /// In INSERT, UPDATE, DELETE, TRUNCATE order.
+    pub events: Vec<TriggerEvent>,
+    pub per_row: bool,
+    pub enabled: bool,
+    /// Schema-qualified only when the function is not on the search path: `set_updated_at`.
+    pub function: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum TriggerTiming {
+    Before,
+    After,
+    InsteadOf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum TriggerEvent {
+    Insert,
+    Update,
+    Delete,
+    Truncate,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub enum TxnMode {
     AutoCommit,
@@ -188,6 +390,8 @@ pub enum TxnMode {
 #[serde(rename_all = "camelCase")]
 pub struct ConsoleConfig {
     pub connection_id: ConnectionId,
+    /// A change resets the session like a connection change does.
+    pub database: String,
     pub schema: Option<String>,
     pub mode: TxnMode,
 }
@@ -223,8 +427,15 @@ pub struct ConsoleState {
 #[serde(rename_all = "camelCase")]
 pub struct ConsoleConfigView {
     pub connection_id: ConnectionId,
+    pub database: String,
     pub schema: Option<String>,
     pub mode: TxnMode,
+}
+
+impl ConsoleConfigView {
+    pub fn db(&self) -> DatabaseRef {
+        DatabaseRef { connection_id: self.connection_id, database: self.database.clone() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -362,6 +573,9 @@ pub struct ResultRef {
 #[serde(rename_all = "camelCase")]
 pub struct ResultMeta {
     pub r#ref: ResultRef,
+    /// The database the rows came from. Column sources are its OIDs, so PK lookups key on this,
+    /// not on the tab's current target, which a retarget can change under an old result.
+    pub db: DatabaseRef,
     pub columns: Vec<ColumnMeta>,
     /// Rows stored and pageable.
     pub row_count: u32,
@@ -396,6 +610,9 @@ pub struct PgTypeRef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 pub enum TypeCategory {
+    /// int2, int4, int8, oid.
+    Integer,
+    /// numeric, real, double precision, money.
     Numeric,
     Text,
     Bool,
@@ -551,6 +768,9 @@ pub enum TabSnapshot {
     Table {
         id: TabId,
         connection_id: ConnectionId,
+        /// `None` only in workspaces written before tabs carried a database; the frontend resolves
+        /// it to the connection's configured database, the only one such a tab could have used.
+        database: Option<String>,
         schema: String,
         table: String,
         page: u32,
@@ -563,6 +783,8 @@ pub enum TabSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ConsoleConfigSnapshot {
     pub connection_id: Option<ConnectionId>,
+    /// `None` only in workspaces written before tabs carried a database (see `TabSnapshot::Table`).
+    pub database: Option<String>,
     pub schema: Option<String>,
     pub mode: TxnMode,
 }
@@ -783,10 +1005,6 @@ pub struct BootSnapshot {
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum AppEvent {
     ConnectionChanged(ConnectionState),
-    CatalogChanged {
-        connection_id: ConnectionId,
-        version: u64,
-    },
     /// Throttled to at most 10/s per console while streaming.
     ConsoleChanged(ConsoleState),
     ConsoleOutput {
@@ -819,10 +1037,51 @@ pub enum DisconnectError {
     Store { message: String },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct NotConnected {
-    pub connection_id: ConnectionId,
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum CatalogError {
+    NotConnected,
+    /// Not in `pg_database` as last read.
+    UnknownDatabase { database: String },
+    /// Neither the home database, a shown database, nor the database of a console. Consoles get
+    /// their catalog through the console path, so a frontend bug cannot open a session per database.
+    NotShown { database: String },
+    /// The metadata session or the load failed. `CatalogStatus::Failed` carries the same message.
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum DetailError {
+    Catalog { error: CatalogError },
+    /// The relation was dropped after the catalog the caller holds was read.
+    Gone,
+    Failed { message: String },
+}
+
+/// One edit to a connection's stored view, sent by the pickers. Each is an intent that the engine
+/// resolves against its own current database list and catalogs, so two quick clicks cannot lose
+/// an update the way a selection computed from a stale snapshot would. Every edit is idempotent.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ViewEdit {
+    Databases { preset: Preset },
+    /// One checkbox of the database picker. Showing a database whose stored schema selection
+    /// resolves to no schema resets that selection to `DefaultOnly`.
+    Database { name: String, shown: bool },
+    ShowSystemDatabases { show: bool },
+    Schemas { database: String, preset: Preset },
+    /// One checkbox of the schema picker.
+    Schema { database: String, name: String, shown: bool },
+    ShowSystemSchemas { database: String, show: bool },
+}
+
+/// The quick actions of a picker. `None` is an explicit empty selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Type)]
+pub enum Preset {
+    All,
+    DefaultOnly,
+    None,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -952,14 +1211,23 @@ mod tests {
 
     #[test]
     fn struct_variant_fields_are_camel_case_and_tags_keep_variant_names() {
-        let ev = AppEvent::CatalogChanged {
-            connection_id: ConnectionId(Uuid::nil()),
-            version: 3,
-        };
-        assert_eq!(
-            serde_json::to_value(ev).unwrap(),
-            json!({ "kind": "CatalogChanged", "connectionId": Uuid::nil(), "version": 3 })
-        );
+        let err = CatalogError::UnknownDatabase { database: "reporting".into() };
+        assert_eq!(serde_json::to_value(err).unwrap(), json!({ "kind": "UnknownDatabase", "database": "reporting" }));
+        let status = CatalogStatus::Ready { version: 3 };
+        assert_eq!(serde_json::to_value(status).unwrap(), json!({ "kind": "Ready", "version": 3 }));
+    }
+
+    #[test]
+    fn tabs_saved_before_they_carried_a_database_load_with_none() {
+        let tab: TabSnapshot = serde_json::from_value(json!({
+            "kind": "Table", "id": "00000000-0000-0000-0000-000000000001", "connectionId": "00000000-0000-0000-0000-000000000002",
+            "schema": "public", "table": "orders", "page": 0
+        }))
+        .unwrap();
+        assert!(matches!(tab, TabSnapshot::Table { database: None, .. }));
+        let console: ConsoleConfigSnapshot =
+            serde_json::from_value(json!({ "connectionId": "00000000-0000-0000-0000-000000000002", "schema": null, "mode": "Manual" })).unwrap();
+        assert_eq!((console.database, console.mode), (None, TxnMode::Manual));
     }
 
     #[test]

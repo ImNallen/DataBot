@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 
 use crate::model::{ConnectionConfig, ConnectionId, HistoryEntry, HistoryOutcome, HistoryPage, HistoryQuery};
 use crate::secrets::Sealed;
+use crate::view::ConnectionView;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -20,7 +21,7 @@ pub enum StoreError {
 
 pub const HISTORY_KEEP: i64 = 10_000;
 
-const MIGRATIONS: [&str; 2] = [
+const MIGRATIONS: [&str; 3] = [
     "
     CREATE TABLE connections (id TEXT PRIMARY KEY, json TEXT NOT NULL);
     CREATE TABLE history (
@@ -37,6 +38,7 @@ const MIGRATIONS: [&str; 2] = [
     CREATE TABLE kv (key TEXT PRIMARY KEY, json TEXT NOT NULL);
 ",
     "CREATE TABLE secrets (connection_id TEXT PRIMARY KEY, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL);",
+    "CREATE TABLE connection_views (connection_id TEXT PRIMARY KEY, json TEXT NOT NULL);",
 ];
 
 pub struct Store {
@@ -92,7 +94,34 @@ impl Store {
             let tx = c.unchecked_transaction()?;
             tx.execute("DELETE FROM connections WHERE id = ?1", [id.0.to_string()])?;
             tx.execute("DELETE FROM secrets WHERE connection_id = ?1", [id.0.to_string()])?;
+            tx.execute("DELETE FROM connection_views WHERE connection_id = ?1", [id.0.to_string()])?;
             tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// The connection's stored view. A row that fails to parse reads as `None`, which the caller
+    /// takes as the initial view: a bad row can hide the tree's extras, never the connection.
+    pub fn view(&self, id: ConnectionId) -> Result<Option<ConnectionView>, StoreError> {
+        self.with(|c| {
+            let json: Option<String> =
+                c.query_row("SELECT json FROM connection_views WHERE connection_id = ?1", [id.0.to_string()], |r| r.get(0)).optional()?;
+            Ok(json.and_then(|j| match serde_json::from_str(&j) {
+                Ok(view) => Some(view),
+                Err(e) => {
+                    eprintln!("connection view {} unreadable, using the initial view: {e}", id.0);
+                    None
+                }
+            }))
+        })
+    }
+
+    pub fn set_view(&self, id: ConnectionId, view: &ConnectionView) -> Result<(), StoreError> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO connection_views (connection_id, json) VALUES (?1, ?2) ON CONFLICT (connection_id) DO UPDATE SET json = excluded.json",
+                params![id.0.to_string(), serde_json::to_string(view)?],
+            )?;
             Ok(())
         })
     }
@@ -285,6 +314,34 @@ mod tests {
         assert_eq!(s.history(&HistoryQuery { text: None, connection_id: None, before_id: None, limit: 10 }).unwrap().entries[0].sql, "select 1");
         s.delete_connection(config.id).unwrap();
         assert!(s.connections().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_view_is_stored_per_connection_and_a_bad_row_reads_as_none() {
+        use crate::view::{DatabaseView, Selection};
+        let (s, _dir) = store();
+        let id = ConnectionId(uuid::Uuid::new_v4());
+        assert_eq!(s.view(id).unwrap(), None);
+
+        let mut view = ConnectionView::initial();
+        view.databases = Selection::Only { names: ["reporting".to_owned()].into() };
+        view.schemas.insert("reporting".into(), DatabaseView { schemas: Selection::All, show_system_schemas: true });
+        s.set_view(id, &view).unwrap();
+        assert_eq!(s.view(id).unwrap(), Some(view.clone()));
+        view.show_system_databases = true;
+        s.set_view(id, &view).unwrap();
+        assert_eq!(s.view(id).unwrap(), Some(view));
+
+        s.with(|c| {
+            c.execute("UPDATE connection_views SET json = '{\"databases\": 7' WHERE connection_id = ?1", [id.0.to_string()])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(s.view(id).unwrap(), None);
+
+        s.set_view(id, &ConnectionView::initial()).unwrap();
+        s.delete_connection(id).unwrap();
+        assert_eq!(s.view(id).unwrap(), None, "the view row goes with the connection");
     }
 
     #[test]

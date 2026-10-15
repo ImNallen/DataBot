@@ -13,6 +13,7 @@ Each rule below keeps a class of bug out of the app. Break one only after you ch
 - Rust owns result rows. The grid pulls windows with `result_page`, and `state/rowCache.ts` caches them. Do not send whole results to the webview.
 - Offsets that cross IPC are UTF-16 code units, which is CodeMirror's unit. The engine converts them once, at the boundary, in `text.rs`.
 - The backend emits whole `ConsoleState` and `ConnectionState` snapshots with a rising `rev`. `state/live.ts` keeps the higher `rev` and nothing else writes to it. Only the output log uses deltas.
+- A connection is a Postgres instance, and catalogs are per database. Key catalogs, catalog versions, primary-key lookups, and OID maps by `DatabaseRef { connectionId, database }`, never by `ConnectionId` alone, because OIDs repeat across databases. `ConnectionState` is the only source of catalog versions.
 - A run moves the tab's session into the run task. Commit, rollback, or a second run during a run returns `Busy`. Keep that shape so concurrent use of one session stays impossible.
 
 ## Add or change an IPC command
@@ -24,7 +25,9 @@ Each rule below keeps a class of bug out of the app. Break one only after you ch
 5. Run `pnpm bindings` to rewrite `src/ipc/bindings.ts`, and commit that file.
 6. Run `cargo test --workspace`. The bindings drift test fails if `bindings.ts` is stale. The bridge coverage test fails if the bridge and the Tauri registration list different commands or argument names.
 
-The app saves `Workspace` and `Settings` as JSON in SQLite, so a type that is saved must still load data written by an older build. To add a field to such a type, give it a fallback in a hand-written `Deserialize`, as `Layout` does in `model.rs`. Do not use `#[serde(default)]` on the struct, because specta then marks every field optional in `bindings.ts`.
+Tauri runs a sync command on the main thread, where no tokio runtime is active, and a bare `tokio::spawn` there aborts the app. Start engine background work with `Shared::spawn` in `crates/engine/src/lib.rs`, which uses the runtime handle the engine stores at open. The test `sync_commands_never_reach_a_bare_tokio_call` in `src-tauri/src/main.rs` fails if a sync command reaches a bare tokio call. The dev-bridge and the pg tests run inside tokio, so they cannot catch this.
+
+The app saves `Workspace`, `Settings`, and each connection's `ConnectionView` (the sidebar's database and schema choices, in `crates/engine/src/view.rs`) as JSON in SQLite. A type that is saved must still load data written by an older build. To add a field to such a type, give it a fallback in a hand-written `Deserialize`, as `Layout` does in `model.rs` and `ConnectionView` does in `view.rs`. Do not use `#[serde(default)]` on the struct, because specta then marks every field optional in `bindings.ts`.
 
 ## Run the checks
 
@@ -40,7 +43,7 @@ Run the checks that cover your change before you open a PR. Docker is needed onl
 | `pnpm self-check` | the engine booted inside the Tauri binary | `pnpm db:up` |
 | `dev/bridge-smoke.sh` | the dev-bridge over HTTP, end to end | `pnpm db:up` and `cargo build -p dev-bridge` first. The script starts its own bridge. |
 
-`pnpm db:up` starts Postgres 16 on `localhost:5433` with the seeded `shop` database from `dev/seed.sql`. The `lab.type_zoo` table in the seed holds one column per awkward type, for value-rendering tests.
+`pnpm db:up` starts Postgres 16 on `localhost:5433` with the seeded `shop` and `reporting` databases from `dev/seed.sql`. The `lab.type_zoo` table in `shop` holds one column per awkward type, for value-rendering tests. The `public.orders` table in `shop` has defaults, keys, indexes, and triggers, for the sidebar's table detail. Docker runs the seed only on a fresh volume, so after a change to `dev/seed.sql`, run `docker compose -f dev/docker-compose.yml down -v && pnpm db:up`.
 
 ## Prove UI changes in the running app
 
@@ -49,9 +52,9 @@ A passing typecheck does not show that a UI change works. Drive the real UI agai
 1. Run `pnpm db:up`, then `pnpm bridge`. The bridge serves the engine on `:7077` and vite serves the UI on `:5173`.
 2. Open `http://localhost:5173` in a browser tool such as agent-browser or Playwright. `src/dev/bridgeShim.ts` forwards every IPC call to the bridge, so the generated bindings run unchanged.
 3. Select elements by `data-testid`. Add a `data-testid` to any new control you need to reach.
-4. Connect to `postgres://l1data:l1data@localhost:5433/shop` and exercise the change.
+4. Connect to `postgres://l1data:l1data@localhost:5433/shop` and exercise the change. Tree rows have `data-testid="tree-node-<connection>/<database>/<schema>/..."`. The count pills that open the database and schema pickers are `db-pill-<connection>` and `schema-pill-<connection>/<database>`.
 
-The bridge has two limits. It runs in Chromium, not WKWebView, and it has no native dialogs, so **Export** fails there. For window chrome, file dialogs, or anything WebKit-specific, run `pnpm tauri dev` and check the real window. On macOS, `pnpm screenshot` rewrites `docs/images/l1-data.png` from the running app.
+The bridge has three limits. It runs in Chromium, not WKWebView. It has no native dialogs, so **Export** fails there. It serves commands inside a tokio runtime, so it cannot show a sync command that crashes the desktop app. For window chrome, file dialogs, a new or changed sync command, or anything WebKit-specific, run `pnpm tauri dev` and check the real window. On macOS, `pnpm screenshot` rewrites `docs/images/l1-data.png` from the running app.
 
 The environment variables that change the data directory, the credential store, and the test databases are listed in the README.
 
@@ -63,7 +66,7 @@ The environment variables that change the data directory, the credential store, 
 
 ## Write commits and PRs
 
-- Title commits and PRs in Conventional Commits form, `type(scope): subject`, with an imperative subject. Types in use are `feat`, `docs`, and `chore`. Scopes in use are `app`, `engine`, `ui`, `window`, `icons`, `scaffold`, `readme`, and `architecture`.
-- Open one PR per change against `main`. PRs merge as one squash commit.
+- Title commits and PRs in Conventional Commits form, `type(scope): subject`, with an imperative subject. Types in use are `feat`, `fix`, `test`, `docs`, and `chore`. Scopes in use are `app`, `engine`, `ui`, `window`, `icons`, `scaffold`, `readme`, and `architecture`.
+- Open one PR per feature against `main`. Do not split a feature into stacked PRs. Each squash merge forces the next PR in the stack to be retargeted and rebased. Split the work into commits inside the PR instead. PRs merge as one squash commit.
 - Write the PR body as a short briefing in these sections: `## Why`, `## Scope`, `## Tradeoffs`, `## Blast Radius`, and `## Verification`. Drop a section that has nothing to say. Under `## Verification`, name each check you ran and its result, say what you did not test, and attach a screenshot for UI changes.
 - After you open a PR, watch it if your harness has a PR watcher, such as `watch_pull_request` in T3 Code. Fix failing checks and answer review comments without waiting to be asked. If your harness has no watcher, skip this step.

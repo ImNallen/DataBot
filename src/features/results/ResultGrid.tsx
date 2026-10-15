@@ -23,13 +23,14 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSt
 import type { ColumnMeta, Density, FontSetting, ResultMeta, TypeCategory } from "../../ipc/bindings";
 import { DENSITY_FACTOR, gridRowHeight } from "../../shell/appearance";
 import { rowCacheFor, type RowCache } from "../../state/rowCache";
-import { isPrimaryKey, useCatalog } from "../../state/catalog";
+import { isPrimaryKey, useCatalog, viewFor, type CatalogView } from "../../state/catalog";
+import type { DbKey } from "../../state/dbKey";
 import { NO_EDITS, markDeleted, removeNewRows, resetNewCell, rowKey, setCell, setNewCell, useTableEdits, type CellValue, type RowId, type TableEdits } from "../../state/tableEdits";
-import { tabConnectionId, useWorkspace } from "../../state/workspace";
+import { useWorkspace } from "../../state/workspace";
 import { fontStack } from "../../themes/fonts";
 import { ContextMenuArea, ContextMenuItem, cx } from "../../ui/primitives";
 import { submitEdits } from "../editor/runActions";
-import { groupDigits, isRightAligned, toTsv } from "./format";
+import { groupDigits, isNumeric, toTsv } from "./format";
 import type { SortKey } from "./tableQuery";
 
 const HEADER_H = 28;
@@ -67,6 +68,7 @@ export type GridQuery = {
 };
 
 const TYPE_ICONS: Record<TypeCategory, Icon> = {
+  Integer: IconHash,
   Numeric: IconHash,
   Text: IconLetterCase,
   Bool: IconToggleLeft,
@@ -114,7 +116,7 @@ function naturalWidths(columns: ColumnMeta[], cache: RowCache, sampleRows: numbe
     let longest = 0;
     for (let r = 0; r < sampleRows; r++) {
       const v = cache.get(r)?.[i];
-      const shown = v == null ? 4 : isRightAligned(c.type.category) ? groupDigits(v).length : Math.min(v.length, 60);
+      const shown = v == null ? 4 : isNumeric(c.type.category) ? groupDigits(v).length : Math.min(v.length, 60);
       longest = Math.max(longest, shown);
     }
     const header = headerTextWidth(c.name, look) + HEADER_ICON + (HEADER_GAP + headerExtra) * factor;
@@ -223,6 +225,12 @@ async function copySelection(
   if (cells > 1) notify(`Copied ${groupDigits(String(cells))} cells.`);
 }
 
+/** Which columns are primary keys, per the catalog of the database the rows came from. */
+export function primaryKeyColumns(views: Record<DbKey, CatalogView>, meta: Pick<ResultMeta, "db" | "columns">): boolean[] {
+  const view = viewFor(views, meta.db);
+  return meta.columns.map((c) => isPrimaryKey(view, c.source));
+}
+
 export function ResultGrid({
   meta,
   done,
@@ -245,9 +253,8 @@ export function ResultGrid({
   const [selection, setSelection] = useState<Selection>(null);
   const dragging = useRef<"cells" | "rows" | null>(null);
   const { rowCount, columns } = meta;
-  const connectionId = useWorkspace((s) => tabConnectionId(s.tabs[meta.ref.tabId]));
-  const catalog = useCatalog((s) => (connectionId ? s.views[connectionId] : undefined));
-  const pk = useMemo(() => columns.map((c) => isPrimaryKey(catalog, c.source)), [columns, catalog]);
+  const views = useCatalog((s) => s.views);
+  const pk = useMemo(() => primaryKeyColumns(views, meta), [views, meta]);
   const tabId = meta.ref.tabId;
   const pkIdx = useMemo(() => editing?.pkColumns.map((n) => columns.findIndex((c) => c.name === n)) ?? [], [editing, columns]);
   const editable = editing !== null && pkIdx.length > 0 && pkIdx.every((i) => i >= 0);
@@ -592,7 +599,7 @@ export function ResultGrid({
               {virtualCols.map((vc) => {
                 const c = columns[vc.index]!;
                 const value = cellValue(vr.index, vc.index);
-                const right = isRightAligned(c.type.category);
+                const right = isNumeric(c.type.category);
                 const cut = !added && !(changed && c.name in changed) && cache.isCut(vr.index, vc.index);
                 const isEditing = editingCell?.row === vr.index && editingCell.col === vc.index;
                 const selected = inSelection(selection, vr.index, vc.index);

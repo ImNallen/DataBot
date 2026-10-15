@@ -1,6 +1,7 @@
 mod catalog;
 mod connection;
 mod console;
+mod detail;
 pub mod model;
 mod results;
 mod secrets;
@@ -9,21 +10,24 @@ mod sql;
 mod store;
 mod text;
 mod txn;
+mod view;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use connection::{ConnEntry, ConnSlot, ConnectParams, Live};
-use console::{Console, PlannedStmt, RunPlan, SessionSlot};
+use connection::{CatalogSlot, ConnEntry, ConnSlot, ConnectParams, DbSlot, Instance, Wanted};
+use console::{Console, Owed, PlannedStmt, RunPlan, SessionSlot};
 use model::*;
 use secrets::Vault;
 use session::Session;
 use store::{HistoryInsert, Store};
+use view::{ConnectionView, Known, Selection};
 
 pub use connection::draft_from_url;
 pub use secrets::{KeyStore, KeyringKeyStore, MemoryKeyStore, SecretError};
@@ -47,10 +51,20 @@ pub(crate) struct Shared {
     consoles: RwLock<HashMap<TabId, Arc<Console>>>,
     events: broadcast::Sender<AppEvent>,
     next_run: AtomicU64,
+    /// Engine-wide, so a reconnect never reissues a catalog version the UI has already seen.
+    next_catalog_version: AtomicU64,
+    /// Serializes every view edit, so two concurrent `edit_view` calls cannot interleave apply
+    /// and persist.
+    view_edits: tokio::sync::Mutex<()>,
     timezone: String,
+    /// The runtime `Engine::open` ran on. Every task the engine starts goes through it, so a
+    /// sync entry point works from any thread: Tauri runs sync commands inline on the main
+    /// thread, where a bare `tokio::spawn` panics.
+    runtime: tokio::runtime::Handle,
 }
 
 const EVENT_BUFFER: usize = 1024;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const DB_FILE: &str = "l1-data.sqlite3";
 const KV_WORKSPACE: &str = "workspace";
 const KV_SETTINGS: &str = "settings";
@@ -58,6 +72,14 @@ const KV_SETTINGS: &str = "settings";
 impl Shared {
     pub(crate) fn emit(&self, ev: AppEvent) {
         let _ = self.events.send(ev);
+    }
+
+    pub(crate) fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.runtime.spawn(task)
     }
 
     pub(crate) fn settings(&self) -> Settings {
@@ -89,23 +111,27 @@ impl Shared {
         self.emit(AppEvent::ConnectionChanged(state));
     }
 
-    fn live(&self, id: ConnectionId) -> Option<Arc<Live>> {
-        self.connections.read().unwrap().get(&id).and_then(ConnEntry::live)
+    fn instance(&self, id: ConnectionId) -> Option<Arc<Instance>> {
+        self.connections.read().unwrap().get(&id).and_then(ConnEntry::instance)
     }
 
     fn config(&self, id: ConnectionId) -> Option<ConnectionConfig> {
         self.store.connections().ok()?.into_iter().find(|c| c.id == id)
     }
 
-    fn connect_params(&self, id: ConnectionId) -> Result<(ConnectionConfig, ConnectParams), ConnectError> {
+    fn params(&self, config: &ConnectionConfig, database: &str) -> Result<ConnectParams, ConnectError> {
+        let password = if config.has_password { self.saved_password(config.id)? } else { None };
+        Ok(ConnectParams::for_database(config, database, password))
+    }
+
+    /// Parameters for a console session on `database`, from the config as saved now.
+    fn session_params(&self, id: ConnectionId, database: &str) -> Result<ConnectParams, ConnectError> {
         let config = self.config(id).ok_or_else(|| ConnectError::Network { message: "unknown connection".into() })?;
-        let password = if config.has_password {
-            self.saved_password(id)?
-        } else {
-            None
-        };
-        let params = ConnectParams::from_config(&config, password);
-        Ok((config, params))
+        self.params(&config, database)
+    }
+
+    fn next_catalog_version(&self) -> u64 {
+        self.next_catalog_version.fetch_add(1, Ordering::Relaxed)
     }
 
     fn saved_password(&self, id: ConnectionId) -> Result<Option<String>, ConnectError> {
@@ -118,37 +144,188 @@ impl Shared {
         self.consoles.read().unwrap().values().cloned().collect()
     }
 
-    pub(crate) fn schedule_catalog_refresh(self: &Arc<Self>, id: ConnectionId) {
-        let shared = self.clone();
-        tokio::spawn(async move {
-            let _ = shared.refresh_catalog(id).await;
-        });
-    }
-
-    async fn refresh_catalog(&self, id: ConnectionId) -> Result<u64, NotConnected> {
-        let live = self.live(id).ok_or(NotConnected { connection_id: id })?;
-        let version = live.catalog.read().unwrap().version + 1;
-        let database = live.catalog.read().unwrap().database.clone();
-        let result = {
-            let meta = live.meta.lock().await;
-            catalog::load(&meta.client, id, version, database).await
-        };
-        match result {
-            Ok(catalog) => {
-                *live.catalog.write().unwrap() = Arc::new(catalog);
-                self.republish_connection(id);
-                self.emit(AppEvent::CatalogChanged { connection_id: id, version });
-                Ok(version)
-            }
-            Err(e) => {
-                let reason = live.meta.lock().await.closed_reason();
-                match reason {
-                    Some(reason) => self.mark_lost(id, &live, reason),
-                    None => eprintln!("catalog refresh failed: {}", connection::error_text(&e)),
-                }
-                Err(NotConnected { connection_id: id })
+    /// Databases of `id` that may have a slot (`keep`): the home database, the shown ones, and
+    /// the database of every console on the connection. The ones that get a slot without being
+    /// asked (`open`) are the same minus the shown databases past the auto-open cap.
+    fn wanted(&self, instance: &Instance) -> Wanted {
+        let mut keep = BTreeSet::from([instance.home.clone()]);
+        for console in self.all_consoles() {
+            let config = console.latest.lock().unwrap().config.clone();
+            if config.connection_id == instance.config.id {
+                keep.insert(config.database);
             }
         }
+        let shown = instance.shown();
+        let mut open = keep.clone();
+        open.extend(view::auto_open(&shown));
+        keep.extend(shown);
+        Wanted { keep, open }
+    }
+
+    /// Converges the current instance's slots to `wanted` and starts a load for each slot not
+    /// loaded yet.
+    fn reconcile(self: &Arc<Self>, id: ConnectionId) {
+        if let Some(instance) = self.instance(id) {
+            self.reconcile_instance(&instance);
+        }
+    }
+
+    fn reconcile_instance(self: &Arc<Self>, instance: &Arc<Instance>) {
+        self.converge(instance, || self.wanted(instance));
+    }
+
+    fn converge(self: &Arc<Self>, instance: &Arc<Instance>, wanted: impl FnOnce() -> Wanted) {
+        let id = instance.config.id;
+        let opened = instance.converge(id, wanted);
+        self.republish_connection(id);
+        for slot in opened {
+            let shared = self.clone();
+            let instance = instance.clone();
+            self.spawn(async move {
+                let _ = shared.ensure_catalog(&instance, &slot).await;
+            });
+        }
+    }
+
+    /// The slot of a wanted database, created on first use. The instance it converges is the one
+    /// fetched here, so a reconnect in between cannot leave it without the slot; the slot is
+    /// missing afterwards only when the instance closed or the database left `pg_database`.
+    fn slot(self: &Arc<Self>, db: &DatabaseRef) -> Result<(Arc<Instance>, Arc<DbSlot>), CatalogError> {
+        let instance = self.instance(db.connection_id).ok_or(CatalogError::NotConnected)?;
+        if !instance.knows(&db.database) {
+            return Err(CatalogError::UnknownDatabase { database: db.database.clone() });
+        }
+        if instance.slot(&db.database).is_none() {
+            if !self.wanted(&instance).keep.contains(&db.database) {
+                return Err(CatalogError::NotShown { database: db.database.clone() });
+            }
+            self.converge(&instance, || {
+                let mut wanted = self.wanted(&instance);
+                wanted.open.insert(db.database.clone());
+                wanted
+            });
+        }
+        let slot = instance.slot(&db.database).ok_or_else(|| {
+            if instance.knows(&db.database) { CatalogError::NotConnected } else { CatalogError::UnknownDatabase { database: db.database.clone() } }
+        })?;
+        Ok((instance, slot))
+    }
+
+    /// The Ready catalog, or one load of it. Loads of one database are single-flight: callers
+    /// that arrive during a load wait for it and get its result. A load that fails after an
+    /// earlier one succeeded serves the last good catalog; the failure shows on the connection
+    /// snapshot, and the next call tries again.
+    async fn ensure_catalog(self: &Arc<Self>, instance: &Arc<Instance>, slot: &Arc<DbSlot>) -> Result<Arc<Catalog>, CatalogError> {
+        if let Some(catalog) = slot.ready() {
+            return Ok(catalog);
+        }
+        let mut meta = slot.meta.lock().await;
+        if let Some(catalog) = slot.ready() {
+            return Ok(catalog);
+        }
+        match self.load_catalog(instance, slot, &mut meta).await {
+            Ok(catalog) => Ok(catalog),
+            Err(e) => slot.last().ok_or(e),
+        }
+    }
+
+    /// One load under the slot's session lock. Opens the session when the slot has none.
+    async fn load_catalog(self: &Arc<Self>, instance: &Arc<Instance>, slot: &DbSlot, meta: &mut Option<Session>) -> Result<Arc<Catalog>, CatalogError> {
+        let id = instance.config.id;
+        if slot.last().is_none() {
+            slot.set(CatalogSlot::Opening);
+            self.republish_connection(id);
+        }
+        let session = match self.session_in(instance, slot, meta).await {
+            Ok(session) => session,
+            Err(e) => {
+                let message = connection::connect_error_text(&e);
+                slot.fail(message.clone());
+                self.republish_connection(id);
+                return Err(CatalogError::Failed { message });
+            }
+        };
+        let version = self.next_catalog_version();
+        let extra = view::system_schemas_to_load(&instance.view.read().unwrap().database(&slot.db.database, &instance.home));
+        match catalog::load(&session.client, slot.db.clone(), version, &extra).await {
+            Ok(catalog) => {
+                let catalog = Arc::new(catalog);
+                slot.set(CatalogSlot::Ready(catalog.clone()));
+                let owed_check = instance.show_checks.lock().unwrap().remove(&slot.db.database);
+                if owed_check {
+                    self.check_shown_schemas(instance, &slot.db.database, &catalog).await;
+                }
+                self.republish_connection(id);
+                Ok(catalog)
+            }
+            Err(e) => {
+                let message = match session.closed_reason() {
+                    Some(reason) => {
+                        *meta = None;
+                        reason
+                    }
+                    None => connection::error_text(&e),
+                };
+                slot.fail(message.clone());
+                if slot.db.database == instance.home && meta.is_none() {
+                    self.mark_lost(id, instance, message.clone());
+                } else {
+                    self.republish_connection(id);
+                }
+                Err(CatalogError::Failed { message })
+            }
+        }
+    }
+
+    /// The deferred half of `ViewEdit::Database { shown: true }`: a database shown while its
+    /// catalog was unknown, whose stored `Only` selection resolves to no schema once the catalog
+    /// is known, falls back to its default schema.
+    async fn check_shown_schemas(self: &Arc<Self>, instance: &Arc<Instance>, database: &str, catalog: &Catalog) {
+        let _edits = self.view_edits.lock().await;
+        if instance.is_closed() {
+            return;
+        }
+        let view = instance.view();
+        let entry = view.database(database, &instance.home);
+        if !matches!(entry.schemas, Selection::Only { .. }) || !view::resolve_schemas(&entry, catalog).is_empty() {
+            return;
+        }
+        let known = Known { home: &instance.home, databases: &[], catalogs: &HashMap::new() };
+        let next = view.apply(&ViewEdit::Schemas { database: database.to_owned(), preset: Preset::DefaultOnly }, &known);
+        if let Err(e) = self.store.set_view(instance.config.id, &next) {
+            eprintln!("connection view save failed: {e}");
+        }
+        *instance.view.write().unwrap() = next;
+    }
+
+    /// Re-reads `pg_database` on the home session into the instance and drops the probe cache,
+    /// since a database may have been dropped and recreated under the same name.
+    async fn reread_databases(self: &Arc<Self>, instance: &Arc<Instance>) -> Result<(), CatalogError> {
+        let failed = |message: String| CatalogError::Failed { message };
+        let home = instance.slot(&instance.home).ok_or(CatalogError::NotConnected)?;
+        let mut meta = home.meta.lock().await;
+        let session = self.session_in(instance, &home, &mut meta).await.map_err(|e| failed(connection::connect_error_text(&e)))?;
+        let (databases, _) = catalog::list_databases(&session.client).await.map_err(|e| failed(connection::error_text(&e)))?;
+        instance.probes.lock().unwrap().clear();
+        *instance.databases.write().unwrap() = Arc::new(databases);
+        Ok(())
+    }
+
+    /// The slot's open session, reopened if it died or was never opened.
+    async fn session_in<'m>(self: &Arc<Self>, instance: &Arc<Instance>, slot: &DbSlot, meta: &'m mut Option<Session>) -> Result<&'m Session, ConnectError> {
+        if meta.as_ref().is_some_and(|s| s.closed_reason().is_some()) {
+            *meta = None;
+        }
+        if meta.is_none() {
+            if instance.is_closed() {
+                return Err(ConnectError::Network { message: "disconnected".into() });
+            }
+            let params = self.params(&instance.config, &slot.db.database)?;
+            let session = Session::open(&params, None, &self.timezone).await?;
+            self.watch_slot_session(instance, &slot.db, session.backend_pid, session.closed_watch());
+            *meta = Some(session);
+        }
+        Ok(meta.as_ref().expect("opened above"))
     }
 
     fn republish_connection(&self, id: ConnectionId) {
@@ -160,27 +337,75 @@ impl Shared {
         self.emit(AppEvent::ConnectionChanged(state));
     }
 
-    fn mark_lost(&self, id: ConnectionId, live: &Arc<Live>, reason: String) {
-        let still_current = self
-            .connections
-            .read()
-            .unwrap()
-            .get(&id)
-            .and_then(ConnEntry::live)
-            .is_some_and(|l| Arc::ptr_eq(&l, live));
+    fn mark_lost(&self, id: ConnectionId, instance: &Arc<Instance>, reason: String) {
+        let still_current = self.instance(id).is_some_and(|i| Arc::ptr_eq(&i, instance));
         if still_current {
             self.set_connection(id, ConnSlot::Lost(reason));
+            instance.close();
         }
     }
 
-    fn watch_metadata_session(self: &Arc<Self>, id: ConnectionId, live: Arc<Live>, mut closed: tokio::sync::watch::Receiver<Option<String>>) {
+    /// The home session's death loses the instance. Another slot's death fails only its database,
+    /// and the next load on it reopens the session. The task holds the instance weakly: the
+    /// session it watches lives inside the instance, so a strong handle would keep that session
+    /// open past a disconnect.
+    fn watch_slot_session(self: &Arc<Self>, instance: &Arc<Instance>, db: &DatabaseRef, backend_pid: i32, mut closed: tokio::sync::watch::Receiver<Option<String>>) {
         let shared = self.clone();
-        tokio::spawn(async move {
+        let instance: Weak<Instance> = Arc::downgrade(instance);
+        let db = db.clone();
+        self.spawn(async move {
             while closed.changed().await.is_ok() {
-                if let Some(reason) = closed.borrow().clone() {
-                    shared.mark_lost(id, &live, reason);
+                let Some(reason) = closed.borrow().clone() else { continue };
+                let Some(instance) = instance.upgrade() else { return };
+                if db.database == instance.home {
+                    shared.mark_lost(db.connection_id, &instance, reason);
+                } else if let Some(slot) = instance.slot(&db.database) {
+                    let mut meta = slot.meta.lock().await;
+                    if meta.as_ref().is_some_and(|s| s.backend_pid == backend_pid) {
+                        *meta = None;
+                        slot.fail(reason);
+                        shared.republish_connection(db.connection_id);
+                    }
+                }
+                return;
+            }
+        });
+    }
+
+    pub(crate) fn schedule_refreshes(self: &Arc<Self>, db: DatabaseRef, owed: Owed) {
+        if owed.catalog {
+            self.schedule_catalog_refresh(db.clone());
+        }
+        if owed.databases {
+            self.schedule_database_list_refresh(db.connection_id);
+        }
+    }
+
+    fn schedule_catalog_refresh(self: &Arc<Self>, db: DatabaseRef) {
+        let Ok((instance, slot)) = self.slot(&db) else { return };
+        if !slot.refresh.request() {
+            return;
+        }
+        let shared = self.clone();
+        self.spawn(async move {
+            loop {
+                let mut meta = slot.meta.lock().await;
+                let _ = shared.load_catalog(&instance, &slot, &mut meta).await;
+                drop(meta);
+                if !slot.refresh.again() {
                     return;
                 }
+            }
+        });
+    }
+
+    fn schedule_database_list_refresh(self: &Arc<Self>, id: ConnectionId) {
+        let shared = self.clone();
+        self.spawn(async move {
+            let Some(instance) = shared.instance(id) else { return };
+            match shared.reread_databases(&instance).await {
+                Ok(()) => shared.reconcile_instance(&instance),
+                Err(e) => eprintln!("database list refresh failed: {e:?}"),
             }
         });
     }
@@ -188,7 +413,7 @@ impl Shared {
     async fn connect(self: &Arc<Self>, id: ConnectionId) -> Result<ServerInfo, ConnectError> {
         loop {
             let connecting = match self.connections.read().unwrap().get(&id).map(|e| &e.slot) {
-                Some(ConnSlot::Connected(live)) => return Ok(live.server.clone()),
+                Some(ConnSlot::Connected(instance)) => return Ok(instance.server.clone()),
                 Some(ConnSlot::Connecting) => true,
                 _ => false,
             };
@@ -198,13 +423,13 @@ impl Shared {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         self.set_connection(id, ConnSlot::Connecting);
-        match self.open_live(id).await {
-            Ok(live) => {
-                let server = live.server.clone();
-                let closed = live.meta.lock().await.closed_watch();
-                self.set_connection(id, ConnSlot::Connected(live.clone()));
-                self.emit(AppEvent::CatalogChanged { connection_id: id, version: 1 });
-                self.watch_metadata_session(id, live, closed);
+        match self.open_instance(id).await {
+            Ok((instance, home_pid, home_closed)) => {
+                let server = instance.server.clone();
+                self.set_connection(id, ConnSlot::Connected(instance.clone()));
+                let home = DatabaseRef { connection_id: id, database: instance.home.clone() };
+                self.watch_slot_session(&instance, &home, home_pid, home_closed);
+                self.reconcile(id);
                 Ok(server)
             }
             Err(e) => {
@@ -214,15 +439,31 @@ impl Shared {
         }
     }
 
-    async fn open_live(&self, id: ConnectionId) -> Result<Arc<Live>, ConnectError> {
-        let (config, params) = self.connect_params(id)?;
+    /// Opens the home session and reads `pg_database`. Catalogs load afterwards, each on its own.
+    async fn open_instance(&self, id: ConnectionId) -> Result<(Arc<Instance>, i32, tokio::sync::watch::Receiver<Option<String>>), ConnectError> {
+        let config = self.config(id).ok_or_else(|| ConnectError::Network { message: "unknown connection".into() })?;
+        let params = self.params(&config, &config.database)?;
         let session = Session::open(&params, None, &self.timezone).await?;
-        let catalog = catalog::load(&session.client, id, 1, config.database).await.map_err(connection::connect_error)?;
-        Ok(Arc::new(Live {
-            server: session.server.clone(),
-            meta: tokio::sync::Mutex::new(session),
-            catalog: RwLock::new(Arc::new(catalog)),
-        }))
+        let (databases, home) = catalog::list_databases(&session.client).await.map_err(connection::connect_error)?;
+        let (server, pid, closed) = (session.server.clone(), session.backend_pid, session.closed_watch());
+        let slot = DbSlot::new(DatabaseRef { connection_id: id, database: home.clone() });
+        *slot.meta.lock().await = Some(session);
+        // An edit on the previous instance may still be persisting; its row is the one to read.
+        let view = {
+            let _edits = self.view_edits.lock().await;
+            self.stored_view(id)
+        };
+        Ok((Arc::new(Instance::new(config, server, home, databases, view, slot)), pid, closed))
+    }
+
+    fn stored_view(&self, id: ConnectionId) -> ConnectionView {
+        match self.store.view(id) {
+            Ok(view) => view.unwrap_or_else(ConnectionView::initial),
+            Err(e) => {
+                eprintln!("connection view load failed: {e}");
+                ConnectionView::initial()
+            }
+        }
     }
 
     /// Consoles of `id` with an open transaction, with `has_writes` probed on their idle sessions.
@@ -294,15 +535,13 @@ impl Shared {
             .edit(self, run_id, |inner| {
                 let txn = txn::txn_after(inner.txn, &kind, outcome);
                 Console::return_session(inner, session, txn, lost);
-                let refresh = inner.ddl_pending && inner.txn == TxnState::Idle && commit && !aborted && result.is_ok();
-                if inner.txn == TxnState::Idle {
-                    inner.ddl_pending = false;
-                }
-                refresh.then_some(inner.config.connection_id)
+                let owed = if inner.txn == TxnState::Idle { inner.owed.take() } else { Owed::default() };
+                let committed = commit && !aborted && result.is_ok();
+                committed.then(|| (inner.config.db(), owed))
             })
             .await;
-        if let Ok(Some(connection_id)) = edited {
-            self.schedule_catalog_refresh(connection_id);
+        if let Ok(Some((db, owed))) = edited {
+            self.schedule_refreshes(db, owed);
         }
         match result {
             Ok(()) if commit && aborted => Err(TxnError::RolledBack),
@@ -336,7 +575,10 @@ impl Engine {
                 consoles: RwLock::new(HashMap::new()),
                 events,
                 next_run: AtomicU64::new(1),
+                next_catalog_version: AtomicU64::new(1),
+                view_edits: tokio::sync::Mutex::new(()),
                 timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
+                runtime: tokio::runtime::Handle::current(),
             }),
         }))
     }
@@ -457,47 +699,192 @@ impl Engine {
         for c in &consoles {
             c.drop_session(s).await;
         }
+        let instance = s.instance(id);
         if s.connection_state(id).is_some() {
             s.set_connection(id, ConnSlot::Disconnected);
+        }
+        if let Some(instance) = instance {
+            instance.close();
         }
         Ok(())
     }
 
-    pub fn catalog(&self, id: ConnectionId) -> Result<Arc<Catalog>, NotConnected> {
-        let live = self.shared.live(id).ok_or(NotConnected { connection_id: id })?;
-        let catalog = live.catalog.read().unwrap().clone();
-        Ok(catalog)
+    /// The catalog of one database, loaded on first use. Only the home database, the shown ones,
+    /// and the databases of this connection's consoles get a catalog.
+    pub async fn catalog(&self, db: DatabaseRef) -> Result<Arc<Catalog>, CatalogError> {
+        let (instance, slot) = self.shared.slot(&db)?;
+        self.shared.ensure_catalog(&instance, &slot).await
     }
 
-    pub async fn refresh_catalog(&self, id: ConnectionId) -> Result<u64, NotConnected> {
-        self.shared.refresh_catalog(id).await
+    pub async fn refresh_catalog(&self, db: DatabaseRef) -> Result<u64, CatalogError> {
+        let (instance, slot) = self.shared.slot(&db)?;
+        let mut meta = slot.meta.lock().await;
+        Ok(self.shared.load_catalog(&instance, &slot, &mut meta).await?.version)
     }
 
-    pub async fn exact_row_count(&self, id: ConnectionId, schema: String, table: String, query: TableQuery) -> Result<u64, CountError> {
-        let live = self.shared.live(id).ok_or(CountError::NotConnected)?;
+    /// Re-reads `pg_database`, drops the probe cache, reconciles the slots, and refreshes every
+    /// catalog that has been loaded or has failed. The "Refresh" item on the connection menu.
+    pub async fn refresh_connection(&self, id: ConnectionId) -> Result<(), CatalogError> {
+        let s = &self.shared;
+        let instance = s.instance(id).ok_or(CatalogError::NotConnected)?;
+        s.reread_databases(&instance).await?;
+        s.reconcile_instance(&instance);
+        for name in instance.slot_names() {
+            let Some(slot) = instance.slot(&name) else { continue };
+            if !matches!(slot.status(), CatalogStatus::Idle | CatalogStatus::Loading) {
+                s.schedule_catalog_refresh(slot.db.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies one picker edit to the connection's stored view: apply, persist, reconcile the
+    /// slots, reload the catalogs whose system schemas changed, republish. Refused while
+    /// disconnected: a checkbox edit resolves against the instance's lists, which an edit without
+    /// one would materialize from nothing.
+    pub async fn edit_view(&self, id: ConnectionId, edit: ViewEdit) -> Result<(), CatalogError> {
+        let s = &self.shared;
+        let _edits = s.view_edits.lock().await;
+        let instance = s.instance(id).ok_or(CatalogError::NotConnected)?;
+        let view = instance.view();
+        let databases = instance.databases.read().unwrap().clone();
+        // Showing a database whose catalog is unknown defers the empty-selection reset to its
+        // first load. The check is registered before the catalogs are read: a load that finishes
+        // in between is then seen here, and the check is withdrawn as `apply` covers it.
+        let deferred = match &edit {
+            ViewEdit::Database { name, shown: true } => Some(name.clone()),
+            _ => None,
+        };
+        if let Some(name) = &deferred {
+            instance.show_checks.lock().unwrap().insert(name.clone());
+        }
+        let catalogs = instance.catalogs();
+        let known = Known { home: &instance.home, databases: &databases, catalogs: &catalogs };
+        let next = view.apply(&edit, &known);
+        s.store.set_view(id, &next).map_err(|e| CatalogError::Failed { message: e.to_string() })?;
+        // A schema choice or a hide supersedes a pending check; the check must not later reset
+        // a selection the user made on purpose.
+        let settled = match &edit {
+            ViewEdit::Database { name, .. } if deferred.is_none() || catalogs.contains_key(name) => Some(name),
+            ViewEdit::Schemas { database, .. } | ViewEdit::Schema { database, .. } => Some(database),
+            _ => None,
+        };
+        if let Some(name) = settled {
+            instance.show_checks.lock().unwrap().remove(name);
+        }
+        let reload: Vec<String> = instance
+            .slot_names()
+            .into_iter()
+            .filter(|db| view::system_schemas_to_load(&view.database(db, &instance.home)) != view::system_schemas_to_load(&next.database(db, &instance.home)))
+            .collect();
+        *instance.view.write().unwrap() = next;
+        s.reconcile_instance(&instance);
+        for database in reload {
+            s.schedule_catalog_refresh(DatabaseRef { connection_id: id, database });
+        }
+        Ok(())
+    }
+
+    /// Counts the non-system schemas of the named databases that have no slot and no cached
+    /// count, each through a short-lived session, at most `PROBE_PERMITS` at a time. Fire and
+    /// forget: each result lands on the connection snapshot.
+    pub fn probe_databases(&self, id: ConnectionId, databases: Vec<String>) {
+        let s = &self.shared;
+        let Some(instance) = s.instance(id) else { return };
+        let candidates: Vec<String> = databases.into_iter().filter(|name| instance.slot(name).is_none() && instance.knows(name)).collect();
+        let mut fresh = Vec::new();
+        {
+            let mut probes = instance.probes.lock().unwrap();
+            for name in candidates {
+                if !probes.contains_key(&name) {
+                    probes.insert(name.clone(), SchemaCount::Probing);
+                    fresh.push(name);
+                }
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        s.republish_connection(id);
+        for name in fresh {
+            let (shared, instance) = (s.clone(), instance.clone());
+            s.spawn(async move {
+                let _permit = instance.probe_gate.acquire().await;
+                if instance.is_closed() {
+                    return;
+                }
+                let probe = async {
+                    let params = shared.params(&instance.config, &name).map_err(|e| connection::connect_error_text(&e))?;
+                    let session = Session::open(&params, None, &shared.timezone).await.map_err(|e| connection::connect_error_text(&e))?;
+                    catalog::count_schemas(&session.client).await.map_err(|e| connection::error_text(&e))
+                };
+                let count = match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+                    Ok(Ok(count)) => SchemaCount::Known { count },
+                    Ok(Err(message)) => SchemaCount::Unavailable { message },
+                    Err(_) => SchemaCount::Unavailable { message: format!("timed out after {} s", PROBE_TIMEOUT.as_secs()) },
+                };
+                if instance.is_closed() {
+                    return;
+                }
+                // A re-read cleared the cache while this probe ran; its count is of the old list.
+                let mut probes = instance.probes.lock().unwrap();
+                if probes.get(&name) != Some(&SchemaCount::Probing) {
+                    return;
+                }
+                probes.insert(name, count);
+                drop(probes);
+                shared.republish_connection(id);
+            });
+        }
+    }
+
+    /// `count(*)` with the query's filters, on the database's metadata session.
+    pub async fn exact_row_count(&self, db: DatabaseRef, schema: String, table: String, query: TableQuery) -> Result<u64, CountError> {
+        let (instance, slot) = self.shared.slot(&db).map_err(|_| CountError::NotConnected)?;
         let sql = text::count_sql(&schema, &table, &query);
         if sql::split_statements(&sql).len() != 1 {
             return Err(CountError::Failed { message: "The filter must be a single expression.".into() });
         }
-        let meta = live.meta.lock().await;
-        let row = meta.client.query_one(&sql, &[]).await.map_err(|e| CountError::Failed { message: connection::error_text(&e) })?;
+        let mut meta = slot.meta.lock().await;
+        let session = self.shared.session_in(&instance, &slot, &mut meta).await.map_err(|e| CountError::Failed { message: connection::connect_error_text(&e) })?;
+        let row = session.client.query_one(&sql, &[]).await.map_err(|e| CountError::Failed { message: connection::error_text(&e) })?;
         Ok(row.get::<_, i64>(0) as u64)
     }
 
+    /// Defaults, keys, indexes, and triggers of one relation, read on the database's metadata
+    /// session when the tree opens the relation. The engine keeps no copy.
+    pub async fn relation_detail(&self, db: DatabaseRef, oid: u32) -> Result<RelationDetail, DetailError> {
+        let (instance, slot) = self.shared.slot(&db).map_err(|error| DetailError::Catalog { error })?;
+        // A `Failed` slot still serves its last catalog; reloading here would retry on every expand.
+        let version = match slot.last() {
+            Some(catalog) => catalog.version,
+            None => self.shared.ensure_catalog(&instance, &slot).await.map_err(|error| DetailError::Catalog { error })?.version,
+        };
+        let mut meta = slot.meta.lock().await;
+        let session = self.shared.session_in(&instance, &slot, &mut meta).await.map_err(|e| DetailError::Failed { message: connection::connect_error_text(&e) })?;
+        detail::load(&session.client, db, oid, version)
+            .await
+            .map_err(|e| DetailError::Failed { message: connection::error_text(&e) })?
+            .ok_or(DetailError::Gone)
+    }
+
+    /// A connection, database, or mode change needs an idle tab with no open transaction. A
+    /// connection or database change also resets the session.
     pub async fn console_configure(&self, tab: TabId, c: ConsoleConfig) -> Result<ConsoleState, ConfigureError> {
         let s = &self.shared;
         if s.config(c.connection_id).is_none() {
             return Err(ConfigureError::UnknownConnection);
         }
-        let view = ConsoleConfigView { connection_id: c.connection_id, schema: c.schema, mode: c.mode };
+        let view = ConsoleConfigView { connection_id: c.connection_id, database: c.database, schema: c.schema, mode: c.mode };
         let console = {
             let mut map = s.consoles.write().unwrap();
             map.entry(tab).or_insert_with(|| Arc::new(Console::new(tab, view.clone()))).clone()
         };
         let mut inner = console.inner.lock().await;
-        let connection_changed = inner.config.connection_id != view.connection_id;
+        let previous = inner.config.connection_id;
+        let target_changed = inner.config.connection_id != view.connection_id || inner.config.database != view.database;
         let mode_changed = inner.config.mode != view.mode;
-        if connection_changed || mode_changed {
+        if target_changed || mode_changed {
             if matches!(inner.session, SessionSlot::Busy { .. }) {
                 return Err(ConfigureError::Busy);
             }
@@ -505,11 +892,17 @@ impl Engine {
                 return Err(ConfigureError::TransactionOpen);
             }
         }
-        if connection_changed {
+        if target_changed {
             inner.session = SessionSlot::Empty;
         }
-        inner.config = view;
-        Ok(console.publish(&mut inner, s))
+        inner.config = view.clone();
+        let state = console.publish(&mut inner, s);
+        drop(inner);
+        s.reconcile(view.connection_id);
+        if previous != view.connection_id {
+            s.reconcile(previous);
+        }
+        Ok(state)
     }
 
     pub async fn console_run(&self, tab: TabId, r: RunRequest) -> Result<RunAccepted, RunError> {
@@ -537,7 +930,7 @@ impl Engine {
                 (text, spans)
             }
             RunRequest::TablePage { schema, table, page, query } => {
-                let catalog = self.catalog(config.connection_id).map_err(|_| RunError::NotConfigured)?;
+                let catalog = self.catalog(config.db()).await.map_err(|_| RunError::NotConfigured)?;
                 let pk = catalog.relation(&schema, &table).map(|r| r.pk_columns()).unwrap_or_default();
                 let size = s.settings().table_page_size.max(1);
                 let text = text::browse_sql(&schema, &table, &pk, &query, size, u64::from(page) * u64::from(size));
@@ -561,7 +954,7 @@ impl Engine {
         let mut fresh = None;
         let needs_session = matches!(console.inner.lock().await.session, SessionSlot::Empty | SessionSlot::Lost { .. });
         if needs_session {
-            let (_, params) = s.connect_params(config.connection_id).map_err(|error| RunError::Connect { error })?;
+            let params = s.session_params(config.connection_id, &config.database).map_err(|error| RunError::Connect { error })?;
             let session = Session::open(&params, config.schema.as_deref(), &s.timezone).await.map_err(|error| RunError::Connect { error })?;
             fresh = Some(session);
         }
@@ -590,8 +983,8 @@ impl Engine {
         console.publish(&mut inner, s);
         drop(inner);
 
-        let plan = RunPlan { run_id, text, statements, mode: config.mode, txn, schema: config.schema.clone(), connection };
-        tokio::spawn(console::run_task(console.clone(), s.clone(), session, plan, stop));
+        let plan = RunPlan { run_id, text, statements, mode: config.mode, txn, schema: config.schema.clone(), database: config.database.clone(), connection };
+        s.spawn(console::run_task(console.clone(), s.clone(), session, plan, stop));
         Ok(RunAccepted { run_id, statements: ranges })
     }
 
@@ -627,7 +1020,8 @@ impl Engine {
         let s = &self.shared;
         let console = s.console(tab).ok_or(ApplyError::NotConfigured)?;
         let config = console.inner.lock().await.config.clone();
-        let catalog = self.catalog(config.connection_id).map_err(|_| ApplyError::NotConfigured)?;
+        s.connect(config.connection_id).await.map_err(|error| ApplyError::Connect { error })?;
+        let catalog = self.catalog(config.db()).await.map_err(|_| ApplyError::NotConfigured)?;
         let pk = catalog.relation(&changes.schema, &changes.table).map(|r| r.pk_columns()).unwrap_or_default();
         let full_key = |key: &[CellWrite]| !pk.is_empty() && key.len() == pk.len() && pk.iter().all(|p| key.iter().any(|k| &k.column == p));
         if !changes.deletes.iter().all(|k| full_key(k)) || !changes.updates.iter().all(|u| full_key(&u.key)) {
@@ -643,11 +1037,10 @@ impl Engine {
         );
         plan.extend(changes.inserts.iter().enumerate().map(|(i, cells)| (at(ChangeKind::Insert, i), text::insert_sql(schema, table, cells))));
 
-        s.connect(config.connection_id).await.map_err(|error| ApplyError::Connect { error })?;
         let needs_session = matches!(console.inner.lock().await.session, SessionSlot::Empty | SessionSlot::Lost { .. });
         let mut fresh = None;
         if needs_session {
-            let (_, params) = s.connect_params(config.connection_id).map_err(|error| ApplyError::Connect { error })?;
+            let params = s.session_params(config.connection_id, &config.database).map_err(|error| ApplyError::Connect { error })?;
             fresh = Some(Session::open(&params, config.schema.as_deref(), &s.timezone).await.map_err(|error| ApplyError::Connect { error })?);
         }
 
@@ -740,6 +1133,8 @@ impl Engine {
         console.closed.store(true, Ordering::Relaxed);
         console.drop_session(s).await;
         s.consoles.write().unwrap().remove(&tab);
+        let connection_id = console.latest.lock().unwrap().config.connection_id;
+        s.reconcile(connection_id);
         Ok(())
     }
 
@@ -755,7 +1150,7 @@ impl Engine {
 
     pub async fn export_csv(&self, r: ResultRef, path: PathBuf) -> Result<ExportSummary, ExportError> {
         let set = self.shared.result_set(r).ok_or(ExportError::Gone)?;
-        tokio::task::spawn_blocking(move || {
+        self.shared.runtime.spawn_blocking(move || {
             let file = std::fs::File::create(&path)?;
             let mut out = std::io::BufWriter::new(file);
             let summary = set.write_csv(&mut out)?;
@@ -934,11 +1329,169 @@ mod tests {
     async fn console_requires_a_known_connection_and_results_are_gone_without_a_run() {
         let (engine, _dir) = engine().await;
         let tab = TabId(uuid::Uuid::new_v4());
-        let unknown = ConsoleConfig { connection_id: ConnectionId(uuid::Uuid::new_v4()), schema: None, mode: TxnMode::AutoCommit };
+        let unknown = ConsoleConfig { connection_id: ConnectionId(uuid::Uuid::new_v4()), database: "shop".into(), schema: None, mode: TxnMode::AutoCommit };
         assert!(matches!(engine.console_configure(tab, unknown).await, Err(ConfigureError::UnknownConnection)));
         let r = ResultRef { tab_id: tab, run_id: RunId(1), index: 0 };
         assert!(matches!(engine.result_page(r, 0, 10), Err(ResultError::Gone)));
         assert!(matches!(engine.console_run(tab, RunRequest::Script { text: "select 1".into(), target: RunTarget::All }).await, Err(RunError::NotConfigured)));
         assert!(matches!(engine.console_commit(tab).await, Err(TxnError::NoTransaction)));
+    }
+
+    #[tokio::test]
+    async fn a_view_edit_while_disconnected_is_refused() {
+        let (engine, _dir) = engine().await;
+        let config = engine.save_connection(draft("x")).await.unwrap();
+        let edit = ViewEdit::Database { name: "reporting".into(), shown: true };
+        assert!(matches!(engine.edit_view(config.id, edit).await, Err(CatalogError::NotConnected)));
+        assert!(engine.shared.store.view(config.id).unwrap().is_none(), "nothing was persisted");
+    }
+
+    /// A listener that accepts and drops every connection, so a session open fails at once. The
+    /// count tells whether a task reached the network.
+    struct Refuser {
+        port: u16,
+        accepted: Arc<AtomicU64>,
+    }
+
+    impl Refuser {
+        fn start() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let accepted = Arc::new(AtomicU64::new(0));
+            let count = accepted.clone();
+            std::thread::spawn(move || {
+                for conn in listener.incoming() {
+                    drop(conn);
+                    count.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            Self { port, accepted }
+        }
+    }
+
+    /// A connected instance whose home catalog is Ready and whose other databases point at
+    /// `refuser`, without a server: every network path these tests take fails fast.
+    async fn fake_connected(engine: &Arc<Engine>, refuser: &Refuser, databases: &[&str]) -> (ConnectionId, Arc<Instance>) {
+        let config = engine
+            .save_connection(ConnectionDraft { host: "127.0.0.1".into(), port: refuser.port, password: PasswordInput::Clear, ..draft("fake") })
+            .await
+            .unwrap();
+        let home = config.database.clone();
+        let db = DatabaseRef { connection_id: config.id, database: home.clone() };
+        let slot = DbSlot::new(db.clone());
+        slot.set(CatalogSlot::Ready(Arc::new(Catalog { db, version: 1, default_schema: Some("public".into()), schemas: Vec::new() })));
+        let list = std::iter::once(home.as_str())
+            .chain(databases.iter().copied())
+            .map(|name| connection::PgDatabase { name: name.into(), system: false, access: DbAccess::Ok })
+            .collect();
+        let server = ServerInfo { version: "16.0".into(), version_num: 160000, encoding: "UTF8".into() };
+        let instance = Arc::new(Instance::new(config.clone(), server, home, list, ConnectionView::initial(), slot));
+        engine.shared.set_connection(config.id, ConnSlot::Connected(instance.clone()));
+        (config.id, instance)
+    }
+
+    fn probe_of(instance: &Instance, name: &str) -> Option<SchemaCount> {
+        instance.probes.lock().unwrap().get(name).cloned()
+    }
+
+    async fn wait_until(what: &str, done: impl Fn() -> bool) {
+        let started = std::time::Instant::now();
+        while !done() {
+            assert!(started.elapsed() < Duration::from_secs(5), "{what}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Tauri runs a sync command inline on the main thread, outside its tokio runtime. The
+    /// engine's fire-and-forget entry points must work from there.
+    #[tokio::test]
+    async fn probe_databases_works_from_a_thread_without_a_runtime() {
+        let (engine, _dir) = engine().await;
+        let refuser = Refuser::start();
+        let (id, instance) = fake_connected(&engine, &refuser, &["x"]).await;
+        let caller = engine.clone();
+        let joined = std::thread::spawn(move || caller.probe_databases(id, vec!["x".into()])).join();
+        assert!(joined.is_ok(), "probe_databases panicked off the runtime");
+        wait_until("the probe never finished", || matches!(probe_of(&instance, "x"), Some(SchemaCount::Unavailable { .. }))).await;
+        assert_eq!(refuser.accepted.load(Ordering::SeqCst), 1);
+    }
+
+    /// Probe bookkeeping and the connection snapshot take the instance's locks from opposite
+    /// ends unless both follow the documented order. Both paths hammer the same instance; a
+    /// deadlock shows as a timeout.
+    #[tokio::test]
+    async fn probes_and_snapshots_never_deadlock() {
+        let (engine, _dir) = engine().await;
+        let refuser = Refuser::start();
+        let (id, _instance) = fake_connected(&engine, &refuser, &["x"]).await;
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        for worker in 0..2 {
+            let (engine, done_tx) = (engine.clone(), done_tx.clone());
+            std::thread::spawn(move || {
+                while std::time::Instant::now() < deadline {
+                    if worker == 0 {
+                        engine.probe_databases(id, vec!["x".into()]);
+                    } else {
+                        engine.shared.republish_connection(id);
+                    }
+                }
+                done_tx.send(()).unwrap();
+            });
+        }
+        drop(done_tx);
+        for _ in 0..2 {
+            assert!(done_rx.recv_timeout(Duration::from_secs(5)).is_ok(), "a worker is deadlocked");
+        }
+    }
+
+    /// Up to four probes run at once; the rest wait for a permit. A disconnect while they wait
+    /// must not let them open sessions afterwards.
+    #[tokio::test]
+    async fn probes_queued_behind_the_gate_open_no_session_after_a_disconnect() {
+        let (engine, _dir) = engine().await;
+        let refuser = Refuser::start();
+        let (id, instance) = fake_connected(&engine, &refuser, &["x"]).await;
+        let held = instance.probe_gate.acquire_many(connection::PROBE_PERMITS as u32).await.unwrap();
+        engine.probe_databases(id, vec!["x".into()]);
+        assert_eq!(probe_of(&instance, "x"), Some(SchemaCount::Probing));
+        engine.disconnect(id, false).await.unwrap();
+        drop(held);
+        wait_until("the queued probe never took its permit", || instance.probe_gate.available_permits() == connection::PROBE_PERMITS).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(refuser.accepted.load(Ordering::SeqCst), 0, "a probe connected after the disconnect");
+    }
+
+    /// Another thread's reconcile that read the view before an edit must not undo the edit's
+    /// slot once the edit's own reconcile has run.
+    #[tokio::test]
+    async fn a_concurrent_reconcile_cannot_undo_a_shown_database() {
+        let (engine, _dir) = engine().await;
+        let refuser = Refuser::start();
+        let (id, instance) = fake_connected(&engine, &refuser, &["x"]).await;
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let churn = {
+            let engine = engine.clone();
+            std::thread::spawn(move || {
+                while std::time::Instant::now() < deadline {
+                    engine.shared.reconcile(id);
+                }
+            })
+        };
+        let known = Known { home: &instance.home, databases: &[], catalogs: &HashMap::new() };
+        let shown = ConnectionView::initial().apply(&ViewEdit::Database { name: "x".into(), shown: true }, &known);
+        let hidden = ConnectionView::initial();
+        let mut lost = 0;
+        while std::time::Instant::now() < deadline {
+            for (view, want_slot) in [(&shown, true), (&hidden, false)] {
+                *instance.view.write().unwrap() = view.clone();
+                engine.shared.reconcile(id);
+                if instance.slot("x").is_some() != want_slot {
+                    lost += 1;
+                }
+            }
+        }
+        churn.join().unwrap();
+        assert_eq!(lost, 0, "a stale reconcile undid an edit {lost} times");
     }
 }

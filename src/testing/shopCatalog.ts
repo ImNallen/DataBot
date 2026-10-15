@@ -40,19 +40,21 @@ function relation(spec: TableSpec, oid: number): Relation {
     rowEstimate: spec.rows,
     columns: spec.columns.map((c, i): ColumnInfo => {
       const [name = "", typeDisplay = "", ...flags] = c.split("|");
-      return { attnum: i + 1, name, typeDisplay, notNull: !flags.includes("null"), pk: flags.includes("pk") };
+      return { attnum: i + 1, name, typeDisplay, category: "Other", notNull: !flags.includes("null"), pk: flags.includes("pk"), fk: false };
     }),
   };
 }
 
+const tableCount = (specs: TableSpec[]) => specs.filter((s) => s.kind !== "View").length;
+
 export function shopCatalog(connectionId: ConnectionId, version: number): Catalog {
   return {
-    connectionId,
+    db: { connectionId, database: "shop" },
     version,
-    database: "shop",
+    defaultSchema: "public",
     schemas: [
-      { name: "lab", relations: LAB.map((s, i) => relation(s, 16_900 + i)), functions: [] },
-      { name: "public", relations: SHOP.map((s, i) => relation(s, 16_400 + i)), functions: SHOP_FUNCTIONS },
+      { name: "lab", system: false, tableCount: tableCount(LAB), relations: LAB.map((s, i) => relation(s, 16_900 + i)), functions: [] },
+      { name: "public", system: false, tableCount: tableCount(SHOP), relations: SHOP.map((s, i) => relation(s, 16_400 + i)), functions: SHOP_FUNCTIONS },
     ],
   };
 }

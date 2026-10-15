@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactCount, formatClock, formatElapsed, groupDigits, pageStatus, shortType, toTsv } from "./format";
+import { formatClock, formatElapsed, groupDigits, isNumeric, pageStatus, shortType, toTsv } from "./format";
 
 describe("groupDigits", () => {
   it("groups the integer part and keeps sign and fraction verbatim", () => {
@@ -25,27 +25,6 @@ describe("groupDigits", () => {
   });
 });
 
-describe("compactCount", () => {
-  it("matches the mockup's row estimates", () => {
-    expect(compactCount(18_400)).toBe("18.4k");
-    expect(compactCount(241_000)).toBe("241k");
-    expect(compactCount(612_000)).toBe("612k");
-    expect(compactCount(1_200)).toBe("1.2k");
-  });
-
-  it("keeps small counts exact and drops a trailing .0", () => {
-    expect(compactCount(0)).toBe("0");
-    expect(compactCount(999)).toBe("999");
-    expect(compactCount(3_000)).toBe("3k");
-  });
-
-  it("promotes to the next unit when rounding carries", () => {
-    expect(compactCount(999_999)).toBe("1M");
-    expect(compactCount(1_234_567)).toBe("1.2M");
-    expect(compactCount(2_500_000_000)).toBe("2.5B");
-  });
-});
-
 describe("toTsv", () => {
   it("joins cells with tabs, rows with newlines, and empties NULL", () => {
     expect(toTsv([["a", null, "3"], ["b", "x", "4"]])).toBe("a\t\t3\nb\tx\t4");
@@ -65,6 +44,12 @@ describe("shortType", () => {
     expect(shortType("character(3)")).toBe("char(3)");
     expect(shortType("numeric(12,2)")).toBe("numeric(12,2)");
     expect(shortType("lab.mood")).toBe("lab.mood");
+  });
+});
+
+describe("isNumeric", () => {
+  it("treats integers and other numbers alike and nothing else", () => {
+    expect((["Integer", "Numeric", "Text", "Bool", "Temporal", "Other"] as const).map(isNumeric)).toEqual([true, true, false, false, false, false]);
   });
 });
 

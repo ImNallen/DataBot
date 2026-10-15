@@ -222,7 +222,7 @@ const handle = (html: string, id: string) =>
   html.match(new RegExp(`<div[^>]*data-testid="${id}"[^>]*>(.*?)</div></div>`));
 
 function withSqlTab() {
-  const tab = { kind: "sql", id: "t1", title: "Untitled-1.sql", console: { connectionId: null, schema: null, mode: "AutoCommit" } } as const;
+  const tab = { kind: "sql", id: "t1", title: "Untitled-1.sql", console: { db: null, mode: "AutoCommit" } } as const;
   Object.assign(useWorkspace.getInitialState(), { tabs: { t1: tab }, active: "t1" });
 }
 

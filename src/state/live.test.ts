@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AppEvent, BootSnapshot, ConsoleState, OutputEntry } from "../ipc/bindings";
-import { applyEvent, emptyLive, hydrateLive, OUTPUT_LIMIT } from "./live";
+import type { AppEvent, BootSnapshot, ConnectionState, ConsoleState, DatabaseState, OutputEntry } from "../ipc/bindings";
+import { applyEvent, emptyLive, hydrateLive, OUTPUT_LIMIT, shownSchemas, wantedCatalogs } from "./live";
 
 const CONN = "c0000000-0000-4000-8000-000000000001";
 const TAB = "t0000000-0000-4000-8000-000000000001";
@@ -9,7 +9,7 @@ function consoleAt(rev: number, txn: ConsoleState["txn"] = "Idle"): ConsoleState
   return {
     tabId: TAB,
     rev,
-    config: { connectionId: CONN, schema: "public", mode: "Manual" },
+    config: { connectionId: CONN, database: "shop", schema: "public", mode: "Manual" },
     session: { kind: "None" },
     txn,
     run: { kind: "Idle" },
@@ -42,7 +42,7 @@ describe("live.apply", () => {
       kind: "ConnectionChanged",
       id: CONN,
       rev: 9,
-      status: { kind: "Connected", server: { version: "16.4", versionNum: 160004, encoding: "UTF8" }, catalogVersion: 2 },
+      status: { kind: "Connected", server: { version: "16.4", versionNum: 160004, encoding: "UTF8" }, instance: { home: "shop", showSystemDatabases: false, databases: [] } },
     });
     const boot: BootSnapshot = {
       connections: [],
@@ -53,14 +53,50 @@ describe("live.apply", () => {
     };
     const s = hydrateLive(early, boot);
     expect(s.connections[CONN]?.status.kind).toBe("Connected");
-    expect(s.catalogVersions[CONN]).toBe(2);
     expect(s.consoles[TAB]?.rev).toBe(1);
   });
 
-  it("tracks the highest catalog version from CatalogChanged and Connected", () => {
-    let s = applyEvent(emptyLive, { kind: "CatalogChanged", connectionId: CONN, version: 5 });
-    s = applyEvent(s, { kind: "CatalogChanged", connectionId: CONN, version: 3 });
-    expect(s.catalogVersions[CONN]).toBe(5);
+  it("wants the Ready catalogs of connected instances and the last good one behind a failed reload", () => {
+    const db = (name: string, catalog: DatabaseState["catalog"]): DatabaseState => ({ name, system: false, access: "Ok", shown: name === "shop", showSystemSchemas: false, shownSchemas: [], schemaCount: { kind: "Unknown" }, catalog });
+    const server = { version: "16.4", versionNum: 160004, encoding: "UTF8" };
+    const connections: Record<string, ConnectionState> = {
+      [CONN]: {
+        id: CONN,
+        rev: 3,
+        status: {
+          kind: "Connected",
+          server,
+          instance: {
+            home: "shop",
+            showSystemDatabases: false,
+            databases: [
+              db("postgres", { kind: "Idle" }),
+              db("reporting", { kind: "Ready", version: 7 }),
+              db("shop", { kind: "Loading" }),
+              db("stale", { kind: "Failed", message: "statement timeout", version: 5 }),
+              db("never", { kind: "Failed", message: "permission denied", version: null }),
+            ],
+          },
+        },
+      },
+      other: { id: "other", rev: 1, status: { kind: "Connected", server, instance: { home: "x", showSystemDatabases: false, databases: [db("x", { kind: "Ready", version: 2 })] } } },
+      down: { id: "down", rev: 9, status: { kind: "Lost", reason: "gone" } },
+    };
+    expect([...wantedCatalogs(connections).entries()]).toEqual([
+      [`${CONN}\u0000reporting`, { ref: { connectionId: CONN, database: "reporting" }, version: 7 }],
+      [`${CONN}\u0000stale`, { ref: { connectionId: CONN, database: "stale" }, version: 5 }],
+      ["other\u0000x", { ref: { connectionId: "other", database: "x" }, version: 2 }],
+    ]);
+  });
+
+  it("lists the shown schemas of the shown databases of connected instances, not every loaded one", () => {
+    const db = (name: string, shown: boolean): DatabaseState => ({ name, system: false, access: "Ok", shown, showSystemSchemas: false, shownSchemas: ["audit", "public"], schemaCount: { kind: "Unknown" }, catalog: { kind: "Ready", version: 1 } });
+    const server = { version: "16.4", versionNum: 160004, encoding: "UTF8" };
+    const connections: Record<string, ConnectionState> = {
+      [CONN]: { id: CONN, rev: 3, status: { kind: "Connected", server, instance: { home: "shop", showSystemDatabases: false, databases: [db("postgres", false), db("shop", true)] } } },
+      down: { id: "down", rev: 9, status: { kind: "Lost", reason: "gone" } },
+    };
+    expect([...shownSchemas(connections)].map(([key, schemas]) => [key, [...schemas]])).toEqual([[`${CONN}\u0000shop`, ["audit", "public"]]]);
   });
 
   it("appends output and caps it per tab", () => {

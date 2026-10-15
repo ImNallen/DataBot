@@ -3,7 +3,7 @@ import type { TxnMode } from "../ipc/bindings";
 import { setTabMode } from "../features/editor/runActions";
 import { useLive } from "../state/live";
 import { connectionStatus } from "../state/status";
-import { tabConnectionId, useWorkspace } from "../state/workspace";
+import { tabTarget, targetLabel, useWorkspace } from "../state/workspace";
 import { cx, MenuContent, MenuItem, StatusDot } from "../ui/primitives";
 
 const CHIP = "inline-flex h-6 items-center gap-1.5 rounded-md bg-pill px-2";
@@ -13,9 +13,10 @@ const MODE_LABEL: Record<TxnMode, string> = { AutoCommit: "Auto-commit", Manual:
 export function StatusBar() {
   const tab = useWorkspace((s) => (s.active ? s.tabs[s.active] : undefined));
   const cursor = useWorkspace((s) => s.cursor);
-  const connectionId = tabConnectionId(tab);
-  const config = useWorkspace((s) => (connectionId ? s.configs[connectionId] : undefined));
-  const conn = useLive((s) => (connectionId ? s.connections[connectionId] : undefined));
+  const target = tabTarget(tab);
+  const configs = useWorkspace((s) => s.configs);
+  const config = target ? configs[target.connectionId] : undefined;
+  const conn = useLive((s) => (target ? s.connections[target.connectionId] : undefined));
   const liveConsole = useLive((s) => (tab ? s.consoles[tab.id] : undefined));
   const status = connectionStatus(conn);
   const mode = tab?.kind === "sql" ? tab.console.mode : "AutoCommit";
@@ -27,6 +28,11 @@ export function StatusBar() {
         <StatusDot tone={config ? status.tone : "off"} />
         {config ? status.label : "No connection"}
       </span>
+      {target && config && (
+        <span data-testid="status-target" className={CHIP}>
+          {targetLabel(target, configs)}
+        </span>
+      )}
       {status.version && <span className={CHIP}>PostgreSQL {status.version}</span>}
       {liveConsole?.session.kind === "Lost" && liveConsole.session.txnLost && (
         <span className={cx(CHIP, "text-danger")}>Transaction rolled back: connection lost</span>

@@ -25,6 +25,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ipc::connection_disconnect,
             ipc::catalog_get,
             ipc::catalog_refresh,
+            ipc::connection_refresh,
+            ipc::connection_edit_view,
+            ipc::connection_probe_databases,
+            ipc::relation_detail,
             ipc::exact_row_count,
             ipc::console_configure,
             ipc::console_run,
@@ -165,7 +169,7 @@ async fn self_check(app: AppHandle, engine: Arc<Engine>) {
     app.exit(if ok { 0 } else { 1 });
 }
 
-async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Value, (&'static str, serde_json::Value)> {
+async fn self_check_steps(engine: &Arc<Engine>, url: &str) -> Result<serde_json::Value, (&'static str, serde_json::Value)> {
     use engine::model::*;
     fn fail<E: serde::Serialize>(step: &'static str) -> impl FnOnce(E) -> (&'static str, serde_json::Value) {
         move |e| (step, serde_json::to_value(e).expect("IPC types serialize to JSON"))
@@ -176,7 +180,7 @@ async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Valu
     let server = engine.connect(config.id).await.map_err(fail("connection_connect"))?;
     let tab = TabId(uuid::Uuid::new_v4());
     engine
-        .console_configure(tab, ConsoleConfig { connection_id: config.id, schema: None, mode: TxnMode::AutoCommit })
+        .console_configure(tab, ConsoleConfig { connection_id: config.id, database: config.database.clone(), schema: None, mode: TxnMode::AutoCommit })
         .await
         .map_err(fail("console_configure"))?;
     let accepted = engine
@@ -202,17 +206,48 @@ async fn self_check_steps(engine: &Engine, url: &str) -> Result<serde_json::Valu
     let page = engine
         .result_page(ResultRef { tab_id: tab, run_id: accepted.run_id, index: 0 }, 0, 1)
         .map_err(fail("result_page"))?;
-    let catalog = engine.catalog(config.id).map_err(fail("catalog_get"))?;
+    let catalog = engine.catalog(DatabaseRef { connection_id: config.id, database: config.database.clone() }).await.map_err(fail("catalog_get"))?;
+    engine
+        .edit_view(config.id, ViewEdit::Database { name: "reporting".into(), shown: true })
+        .await
+        .map_err(fail("connection_edit_view"))?;
+    let reporting = engine.catalog(DatabaseRef { connection_id: config.id, database: "reporting".into() }).await.map_err(fail("catalog_get reporting"))?;
+    // Called from a plain thread, as the sync command is on the main thread of the desktop app.
+    let prober = engine.clone();
+    let id = config.id;
+    std::thread::spawn(move || prober.probe_databases(id, vec!["postgres".into()]))
+        .join()
+        .map_err(|_| ("connection_probe_databases", serde_json::json!("panicked off the runtime")))?;
+    let probed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let live = engine.boot().live.into_iter().find(|c| c.id == config.id);
+            if let Some(ConnectionState { status: ConnStatus::Connected { instance, .. }, .. }) = live
+                && let Some(db) = instance.databases.iter().find(|d| d.name == "postgres")
+                && let SchemaCount::Known { count } = db.schema_count
+            {
+                return count;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| ("connection_probe_databases", serde_json::json!("no Known count within 10s")))?;
+    let report = |c: &Catalog| {
+        serde_json::json!({
+            "version": c.version,
+            "database": c.db.database,
+            "defaultSchema": c.default_schema,
+            "schemas": c.schemas.iter().map(|s| serde_json::json!({
+                "name": s.name, "system": s.system, "relations": s.relations.len(), "functions": s.functions.len(),
+            })).collect::<Vec<_>>(),
+        })
+    };
     Ok(serde_json::json!({
         "server": server,
         "select1": { "rows": page.rows, "elapsedMs": finished.1 },
-        "catalog": {
-            "version": catalog.version,
-            "database": catalog.database,
-            "schemas": catalog.schemas.iter().map(|s| serde_json::json!({
-                "name": s.name, "relations": s.relations.len(), "functions": s.functions.len(),
-            })).collect::<Vec<_>>(),
-        },
+        "catalog": report(&catalog),
+        "shownCatalog": report(&reporting),
+        "probedSchemas": { "postgres": probed },
     }))
 }
 
@@ -268,6 +303,52 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const IPC_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/ipc.rs");
+    const ENGINE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../crates/engine/src/lib.rs");
+
+    /// The body of `pub fn <name>(`, by brace count.
+    fn sync_fn_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+        let start = source.find(&format!("pub fn {name}("))?;
+        let open = start + source[start..].find('{')?;
+        let mut depth = 0usize;
+        for (i, c) in source[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&source[open..open + i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Tauri runs a sync command inline on the thread that delivered the IPC message, which on
+    /// macOS is the main thread, outside its tokio runtime. An engine method such a command calls
+    /// must start tasks through `Shared::spawn`, never through a call that needs the runtime on
+    /// the current thread.
+    #[test]
+    fn sync_commands_never_reach_a_bare_tokio_call() {
+        const NEEDS_RUNTIME: [&str; 5] = ["tokio::spawn(", "tokio::task::spawn", "spawn_blocking(", "Handle::current(", "block_on("];
+        let ipc = std::fs::read_to_string(IPC_PATH).unwrap();
+        let engine = std::fs::read_to_string(ENGINE_PATH).unwrap();
+        let mut checked = 0;
+        for command in ipc.split("#[tauri::command]").skip(1) {
+            let Some(signature) = command.lines().find(|l| l.starts_with("pub fn ")) else { continue };
+            let body = sync_fn_body(command, signature["pub fn ".len()..].split('(').next().unwrap()).unwrap();
+            let method = body.split("engine.").nth(1).map(|rest| rest.split('(').next().unwrap()).unwrap_or_else(|| panic!("no engine call in {signature}"));
+            let engine_body = sync_fn_body(&engine, method).unwrap_or_else(|| panic!("Engine::{method} is not a sync method"));
+            for pattern in NEEDS_RUNTIME {
+                assert!(!engine_body.contains(pattern), "{signature} is sync but Engine::{method} calls {pattern}");
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 8, "the sync commands in ipc.rs");
+    }
 
     #[test]
     fn export_bindings_up_to_date() {

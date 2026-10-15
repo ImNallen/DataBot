@@ -10,9 +10,13 @@ export const commands = {
 	connectionTest: (draft: ConnectionDraft) => typedError<ServerInfo, ConnectError>(__TAURI_INVOKE("connection_test", { draft })),
 	connectionConnect: (id: ConnectionId) => typedError<ServerInfo, ConnectError>(__TAURI_INVOKE("connection_connect", { id })),
 	connectionDisconnect: (id: ConnectionId, force: boolean) => typedError<null, DisconnectError>(__TAURI_INVOKE("connection_disconnect", { id, force })),
-	catalogGet: (id: ConnectionId) => typedError<Catalog, NotConnected>(__TAURI_INVOKE("catalog_get", { id })),
-	catalogRefresh: (id: ConnectionId) => typedError<number, NotConnected>(__TAURI_INVOKE("catalog_refresh", { id })),
-	exactRowCount: (id: ConnectionId, schema: string, table: string, query: TableQuery) => typedError<number, CountError>(__TAURI_INVOKE("exact_row_count", { id, schema, table, query })),
+	catalogGet: (db: DatabaseRef) => typedError<Catalog, CatalogError>(__TAURI_INVOKE("catalog_get", { db })),
+	catalogRefresh: (db: DatabaseRef) => typedError<number, CatalogError>(__TAURI_INVOKE("catalog_refresh", { db })),
+	connectionRefresh: (id: ConnectionId) => typedError<null, CatalogError>(__TAURI_INVOKE("connection_refresh", { id })),
+	connectionEditView: (id: ConnectionId, edit: ViewEdit) => typedError<null, CatalogError>(__TAURI_INVOKE("connection_edit_view", { id, edit })),
+	connectionProbeDatabases: (id: ConnectionId, databases: string[]) => __TAURI_INVOKE<void>("connection_probe_databases", { id, databases }),
+	relationDetail: (db: DatabaseRef, oid: number) => typedError<RelationDetail, DetailError>(__TAURI_INVOKE("relation_detail", { db, oid })),
+	exactRowCount: (db: DatabaseRef, schema: string, table: string, query: TableQuery) => typedError<number, CountError>(__TAURI_INVOKE("exact_row_count", { db, schema, table, query })),
 	consoleConfigure: (tabId: TabId, config: ConsoleConfig) => typedError<ConsoleState, ConfigureError>(__TAURI_INVOKE("console_configure", { tabId, config })),
 	consoleRun: (tabId: TabId, request: RunRequest) => typedError<RunAccepted, RunError>(__TAURI_INVOKE("console_run", { tabId, request })),
 	consoleCancel: (tabId: TabId) => __TAURI_INVOKE<void>("console_cancel", { tabId }),
@@ -32,11 +36,11 @@ export const commands = {
 /* Types */
 export type AppEvent = {
 	kind: "ConnectionChanged",
-} & ConnectionState | ({ kind: "CatalogChanged"; connectionId: ConnectionId; version: number }) & { entries?: never; tabId?: never } | 
+} & ConnectionState | 
 /**  Throttled to at most 10/s per console while streaming. */
 {
 	kind: "ConsoleChanged",
-} & ConsoleState | ({ kind: "ConsoleOutput"; tabId: TabId; entries: OutputEntry[] }) & { connectionId?: never; version?: never } | {
+} & ConsoleState | { kind: "ConsoleOutput"; tabId: TabId; entries: OutputEntry[] } | {
 	kind: "HistoryAppended",
 } & HistoryEntry;
 
@@ -67,11 +71,48 @@ export type BootSnapshot = {
 };
 
 export type Catalog = {
-	connectionId: ConnectionId,
+	db: DatabaseRef,
 	version: number,
-	database: string,
+	/**
+	 *  The first existing non-system entry of `current_schemas(false)` on this database's
+	 *  metadata session, else `public` when it exists, else the first non-system schema by name.
+	 *  `None` only when the database has no non-system schema. "Default only" in the schema
+	 *  picker means this.
+	 */
+	defaultSchema: string | null,
+	/**
+	 *  Every schema except `pg_toast` and temp schemas, in name order. A system schema carries
+	 *  its relations only while the tree shows it, and never its functions.
+	 */
 	schemas: SchemaInfo[],
 };
+
+export type CatalogError = { kind: "NotConnected" } | 
+/**  Not in `pg_database` as last read. */
+{ kind: "UnknownDatabase"; database: string } | 
+/**
+ *  Neither the home database, a shown database, nor the database of a console. Consoles get
+ *  their catalog through the console path, so a frontend bug cannot open a session per database.
+ */
+{ kind: "NotShown"; database: string } | 
+/**  The metadata session or the load failed. `CatalogStatus::Failed` carries the same message. */
+{ kind: "Failed"; message: string };
+
+export type CatalogStatus = 
+/**  No metadata session is wanted for this database. */
+{ kind: "Idle" } | 
+/**  The first load is in flight. A reload keeps `Ready` with the old version. */
+{ kind: "Loading" } | 
+/**
+ *  `version` comes from one engine-wide counter, so it rises across every database and every
+ *  reconnect. The UI fetches `catalog_get` when it is newer than what it holds.
+ */
+{ kind: "Ready"; version: number } | 
+/**
+ *  The last load failed. `version` is the last good catalog's, which `catalog_get` still
+ *  serves, so the UI keeps it until a reload succeeds.
+ */
+{ kind: "Failed"; message: string; version: number | null };
 
 export type CellWrite = {
 	column: string,
@@ -89,6 +130,11 @@ export type ChangeRef = {
 
 export type ColorScheme = "System" | "Light" | "Dark";
 
+export type ColumnDefault = {
+	column: string,
+	value: DefaultValue,
+};
+
 export type ColumnFilter = {
 	column: string,
 	op: FilterOp,
@@ -100,8 +146,11 @@ export type ColumnInfo = {
 	attnum: number,
 	name: string,
 	typeDisplay: string,
+	category: TypeCategory,
 	notNull: boolean,
 	pk: boolean,
+	/**  Part of any foreign key. */
+	fk: boolean,
 };
 
 export type ColumnMeta = {
@@ -119,8 +168,13 @@ export type ConfigureError =
 /**  Mode or connection change requested while a transaction is open. */
 { kind: "TransactionOpen" } | { kind: "Busy" } | { kind: "UnknownConnection" };
 
-export type ConnStatus = { kind: "Disconnected" } | { kind: "Connecting" } | { kind: "Connected"; server: ServerInfo; catalogVersion: number } | { kind: "Failed"; error: ConnectError } | 
-/**  The metadata session died after being `Connected`. */
+export type ConnStatus = { kind: "Disconnected" } | { kind: "Connecting" } | 
+/**
+ *  The home session is open and `pg_database` was read. Catalogs load after this, each with
+ *  its own `CatalogStatus`, so one unreachable database never fails the instance.
+ */
+{ kind: "Connected"; server: ServerInfo; instance: InstanceState } | { kind: "Failed"; error: ConnectError } | 
+/**  The home database's metadata session died after being `Connected`. */
 { kind: "Lost"; reason: string };
 
 export type ConnectError = { kind: "Network"; message: string } | { kind: "Tls"; message: string } | { kind: "Auth"; message: string } | ({ kind: "MissingPassword" }) & { message?: never } | {
@@ -164,18 +218,23 @@ export type ConnectionState = {
 
 export type ConsoleConfig = {
 	connectionId: ConnectionId,
+	/**  A change resets the session like a connection change does. */
+	database: string,
 	schema: string | null,
 	mode: TxnMode,
 };
 
 export type ConsoleConfigSnapshot = {
 	connectionId: ConnectionId | null,
+	/**  `None` only in workspaces written before tabs carried a database (see `TabSnapshot::Table`). */
+	database: string | null,
 	schema: string | null,
 	mode: TxnMode,
 };
 
 export type ConsoleConfigView = {
 	connectionId: ConnectionId,
+	database: string,
 	schema: string | null,
 	mode: TxnMode,
 };
@@ -206,7 +265,59 @@ export type CustomThemeVariant = {
 	colors: { [key in string]: string },
 };
 
+/**
+ *  One database on one saved connection. Postgres catalogs and OIDs are per database, so every
+ *  catalog lookup, refresh, and count takes one of these. `database` is `pg_database.datname`.
+ */
+export type DatabaseRef = {
+	connectionId: ConnectionId,
+	database: string,
+};
+
+export type DatabaseState = {
+	name: string,
+	/**  `datistemplate OR NOT datallowconn`. `postgres` is an ordinary database. */
+	system: boolean,
+	access: DbAccess,
+	/**
+	 *  Whether the tree shows this database, resolved from the stored view. Never true without
+	 *  `DbAccess::Ok`.
+	 */
+	shown: boolean,
+	/**  The schema picker lists system schemas only while this is on. */
+	showSystemSchemas: boolean,
+	/**
+	 *  The schemas the tree shows under this database, in name order. Empty until the catalog
+	 *  serves a version.
+	 */
+	shownSchemas: string[],
+	/**
+	 *  Non-system schema count for the database picker: from the catalog when one is served,
+	 *  else from `connection_probe_databases`.
+	 */
+	schemaCount: SchemaCount,
+	catalog: CatalogStatus,
+};
+
+export type DbAccess = "Ok" | 
+/**  `datallowconn` is false. */
+"NoConnections" | 
+/**  `has_database_privilege(datname, 'CONNECT')` is false. */
+"NoPrivilege";
+
+export type DefaultValue = 
+/**  `pg_get_expr` of the default, with the cast dropped from a lone literal: `'pending'`, `now()`. */
+{ kind: "Expr"; sql: string } | 
+/**  `GENERATED ALWAYS` (`always`) or `BY DEFAULT AS IDENTITY`. */
+{ kind: "Identity"; always: boolean } | 
+/**  `GENERATED ALWAYS AS (sql) STORED`, or `VIRTUAL` on PG 18. */
+{ kind: "Generated"; sql: string };
+
 export type Density = "Compact" | "Standard" | "Spacious";
+
+export type DetailError = { kind: "Catalog"; error: CatalogError } | 
+/**  The relation was dropped after the catalog the caller holds was read. */
+{ kind: "Gone" } | { kind: "Failed"; message: string };
 
 export type DisconnectError = { kind: "OpenTransactions"; tabs: OpenTxn[] } | { kind: "Store"; message: string };
 
@@ -227,6 +338,8 @@ export type ExportSummary = {
 };
 
 export type FilterOp = "Eq" | "Ne" | "Lt" | "Le" | "Gt" | "Ge" | "Contains" | "StartsWith" | "IsNull" | "NotNull";
+
+export type FkAction = "NoAction" | "Restrict" | "Cascade" | "SetNull" | "SetDefault";
 
 export type FnKind = "Function" | "Procedure" | "Aggregate" | "Window";
 
@@ -269,6 +382,44 @@ export type HistoryQuery = {
 	limit: number,
 };
 
+export type IndexInfo = {
+	name: string,
+	/**  `pg_am.amname`: btree, hash, gin, gist, brin. */
+	method: string,
+	unique: boolean,
+	primary: boolean,
+	/**  False while `CREATE INDEX CONCURRENTLY` builds it or after that failed. */
+	valid: boolean,
+	/**  The key list cut from `pg_get_indexdef`: `(created_at DESC)`, `(a) INCLUDE (b)`. */
+	keys: string,
+	/**  The predicate of a partial index, without redundant parentheses: `status <> 'paid'::text`. */
+	predicate: string | null,
+};
+
+/**
+ *  Every database of the instance, with the state of its catalog. The connection snapshot is the
+ *  single source of catalog versions.
+ */
+export type InstanceState = {
+	/**  `ConnectionConfig.database` as the server spells it. */
+	home: string,
+	/**  The database picker lists system databases only while this is on. */
+	showSystemDatabases: boolean,
+	/**  Every row of `pg_database`, sorted by name. */
+	databases: DatabaseState[],
+};
+
+export type KeyInfo = {
+	name: string,
+	/**  In key order. */
+	columns: string[],
+	kind: KeyKind,
+};
+
+export type KeyKind = { kind: "Primary" } | { kind: "Unique" } | { kind: "Foreign"; refSchema: string; refTable: string; refColumns: string[]; onDelete: FkAction; onUpdate: FkAction } | 
+/**  `definition` is `pg_get_constraintdef`: `CHECK ((qty > 0))`. */
+{ kind: "Check"; definition: string };
+
 export type Layout = {
 	sidebar: boolean,
 	results: boolean,
@@ -276,10 +427,6 @@ export type Layout = {
 	resultsHeight: number,
 	sidebarWidth: number,
 	rightPanelWidth: number,
-};
-
-export type NotConnected = {
-	connectionId: ConnectionId,
 };
 
 /**  A console whose transaction would be lost by a disconnect or close. */
@@ -315,6 +462,9 @@ export type PgTypeRef = {
 	category: TypeCategory,
 };
 
+/**  The quick actions of a picker. `None` is an explicit empty selection. */
+export type Preset = "All" | "DefaultOnly" | "None";
+
 export type QueryError = {
 	severity: string,
 	sqlstate: string | null,
@@ -337,10 +487,34 @@ export type Relation = {
 	columns: ColumnInfo[],
 };
 
+/**
+ *  What a table row shows past its columns, read by `relation_detail` when the row first opens.
+ *  It is not in `Catalog`, so a DDL refresh never scans constraints, indexes, and triggers.
+ */
+export type RelationDetail = {
+	db: DatabaseRef,
+	oid: number,
+	/**  The catalog version the detail is at least as new as. */
+	catalogVersion: number,
+	/**  In `attnum` order. */
+	defaults: ColumnDefault[],
+	/**  Primary, then foreign, unique, and check, each by name. */
+	keys: KeyInfo[],
+	/**  Primary, then unique, then the rest, each by name. */
+	indexes: IndexInfo[],
+	/**  By name. */
+	triggers: TriggerInfo[],
+};
+
 export type ResultError = { kind: "Gone" } | { kind: "OutOfRange" };
 
 export type ResultMeta = {
 	ref: ResultRef,
+	/**
+	 *  The database the rows came from. Column sources are its OIDs, so PK lookups key on this,
+	 *  not on the tab's current target, which a retarget can change under an old result.
+	 */
+	db: DatabaseRef,
 	columns: ColumnMeta[],
 	/**  Rows stored and pageable. */
 	rowCount: number,
@@ -393,8 +567,19 @@ export type RunTarget = { kind: "cursor"; offset: DocOffset } | { kind: "selecti
 
 export type SaveError = { kind: "Invalid"; message: string } | { kind: "Keychain"; message: string } | { kind: "Store"; message: string };
 
+export type SchemaCount = { kind: "Unknown" } | { kind: "Probing" } | { kind: "Known"; count: number } | 
+/**  The probe session failed; `message` is the server's or the transport's text. */
+{ kind: "Unavailable"; message: string };
+
 export type SchemaInfo = {
 	name: string,
+	/**  `information_schema` or a `pg_` prefix, which Postgres reserves for its own schemas. */
+	system: boolean,
+	/**
+	 *  Tables, partitioned tables, and foreign tables, which the tree lists as tables. Counted by
+	 *  the schema query itself, so it is right for a system schema whose `relations` are not loaded.
+	 */
+	tableCount: number,
 	relations: Relation[],
 	functions: FunctionInfo[],
 };
@@ -444,7 +629,12 @@ export type StmtStatus = { kind: "Pending" } | { kind: "Preparing" } | { kind: "
 /**  Minted by the frontend (`crypto.randomUUID()`). */
 export type TabId = string;
 
-export type TabSnapshot = { kind: "Sql"; id: TabId; title: string; text: string; console: ConsoleConfigSnapshot } | { kind: "Table"; id: TabId; connectionId: ConnectionId; schema: string; table: string; page: number; query?: TableQuery };
+export type TabSnapshot = { kind: "Sql"; id: TabId; title: string; text: string; console: ConsoleConfigSnapshot } | { kind: "Table"; id: TabId; connectionId: ConnectionId; 
+/**
+ *  `None` only in workspaces written before tabs carried a database; the frontend resolves
+ *  it to the connection's configured database, the only one such a tab could have used.
+ */
+database: string | null; schema: string; table: string; page: number; query?: TableQuery };
 
 /**  Staged edits to one table, applied together by `table_apply`. Rows to update or delete are found by primary key. */
 export type TableChanges = {
@@ -465,6 +655,21 @@ export type TableQuery = {
 	where: string,
 };
 
+export type TriggerEvent = "Insert" | "Update" | "Delete" | "Truncate";
+
+export type TriggerInfo = {
+	name: string,
+	timing: TriggerTiming,
+	/**  In INSERT, UPDATE, DELETE, TRUNCATE order. */
+	events: TriggerEvent[],
+	perRow: boolean,
+	enabled: boolean,
+	/**  Schema-qualified only when the function is not on the search path: `set_updated_at`. */
+	function: string,
+};
+
+export type TriggerTiming = "Before" | "After" | "InsteadOf";
+
 export type TruncateReason = "RowLimit" | "ByteLimit";
 
 export type TxnError = { kind: "Busy" } | { kind: "NoTransaction" } | { kind: "RolledBack" } | {
@@ -477,7 +682,25 @@ export type TxnState = "Idle" | "Active" |
 /**  Only `ROLLBACK [TO SAVEPOINT]` is accepted. */
 "Aborted";
 
-export type TypeCategory = "Numeric" | "Text" | "Bool" | "Temporal" | "Json" | "Binary" | "Uuid" | "Network" | "Array" | "Enum" | "Composite" | "Range" | "Other";
+export type TypeCategory = 
+/**  int2, int4, int8, oid. */
+"Integer" | 
+/**  numeric, real, double precision, money. */
+"Numeric" | "Text" | "Bool" | "Temporal" | "Json" | "Binary" | "Uuid" | "Network" | "Array" | "Enum" | "Composite" | "Range" | "Other";
+
+/**
+ *  One edit to a connection's stored view, sent by the pickers. Each is an intent that the engine
+ *  resolves against its own current database list and catalogs, so two quick clicks cannot lose
+ *  an update the way a selection computed from a stale snapshot would. Every edit is idempotent.
+ */
+export type ViewEdit = { kind: "Databases"; preset: Preset } | 
+/**
+ *  One checkbox of the database picker. Showing a database whose stored schema selection
+ *  resolves to no schema resets that selection to `DefaultOnly`.
+ */
+{ kind: "Database"; name: string; shown: boolean } | { kind: "ShowSystemDatabases"; show: boolean } | { kind: "Schemas"; database: string; preset: Preset } | 
+/**  One checkbox of the schema picker. */
+{ kind: "Schema"; database: string; name: string; shown: boolean } | { kind: "ShowSystemSchemas"; database: string; show: boolean };
 
 /**  Owned by the frontend, stored verbatim by the engine (single writer: the UI). */
 export type Workspace = {
