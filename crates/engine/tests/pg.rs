@@ -1531,3 +1531,55 @@ async fn a_view_row_that_fails_to_parse_falls_back_to_the_initial_view() {
     h.engine.connect(h.conn).await.unwrap();
     assert_default_view(&h).await;
 }
+
+/// A role whose search path starts with `pg_catalog` still gets a user schema as its default:
+/// "Default only" never shows a schema the picker hides.
+#[tokio::test]
+async fn a_search_path_starting_with_pg_catalog_defaults_to_a_user_schema() {
+    let role = Role::create().await;
+    role.oracle.batch_execute(&format!("alter role {} set search_path = pg_catalog, public", role.name)).await.unwrap();
+    let mut h = Harness::start_as(&role).await;
+    h.engine.connect(h.conn).await.unwrap();
+    let tab = h.sql_tab(TxnMode::AutoCommit).await;
+    assert_eq!(h.scalar(tab, "show search_path").await, "pg_catalog, public");
+    let catalog = h.catalog_when(&h.db(), |_| true).await;
+    assert_eq!(catalog.default_schema.as_deref(), Some("public"));
+    h.engine.disconnect(h.conn, false).await.unwrap();
+    role.drop().await;
+}
+
+/// The probe cache is a cache of the database list: a DDL re-read of `pg_database` drops it, so
+/// a database dropped and recreated under its old name is counted again.
+#[tokio::test]
+async fn a_database_list_reread_drops_the_probe_cache() {
+    let mut h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    h.engine.probe_databases(h.conn, vec!["postgres".into()]);
+    h.wait_database("postgres", |d| matches!(d.schema_count, SchemaCount::Known { .. })).await;
+    let tab = h.sql_tab(TxnMode::AutoCommit).await;
+    let name = unique("t_db");
+    h.run_ok(tab, &format!("create database {name}")).await;
+    h.wait_database_names(|names| names.contains(&name)).await;
+    assert_eq!(h.database_state("postgres").schema_count, SchemaCount::Unknown, "the count went with the list it counted");
+    h.run_ok(tab, &format!("drop database {name}")).await;
+    h.wait_database_names(|names| !names.contains(&name)).await;
+}
+
+/// Showing a database whose stored selection is empty resets it to its default schema once the
+/// catalog is known, unless the user chose the schemas in the meantime.
+#[tokio::test]
+async fn a_schema_choice_made_while_the_catalog_loads_is_not_reset() {
+    let h = Harness::start().await;
+    h.engine.connect(h.conn).await.unwrap();
+    h.edit_view(ViewEdit::Schemas { database: "reporting".into(), preset: Preset::None }).await;
+    h.edit_view(ViewEdit::Database { name: "reporting".into(), shown: true }).await;
+    h.edit_view(ViewEdit::Schemas { database: "reporting".into(), preset: Preset::None }).await;
+    let reporting = h.wait_database("reporting", |d| matches!(d.catalog, CatalogStatus::Ready { .. })).await;
+    assert!(reporting.shown_schemas.is_empty(), "None was chosen on purpose: {:?}", reporting.shown_schemas);
+
+    h.edit_view(ViewEdit::Database { name: "reporting".into(), shown: false }).await;
+    h.wait_database("reporting", |d| d.catalog == CatalogStatus::Idle).await;
+    h.edit_view(ViewEdit::Database { name: "reporting".into(), shown: true }).await;
+    let reporting = h.wait_database("reporting", |d| matches!(d.catalog, CatalogStatus::Ready { .. }) && !d.shown_schemas.is_empty()).await;
+    assert_eq!(reporting.shown_schemas, ["public"], "shown again with nothing else said, the empty selection resets to the default");
+}
