@@ -4,6 +4,7 @@ mod console;
 mod detail;
 mod history;
 pub mod model;
+mod provider;
 mod results;
 mod secrets;
 mod session;
@@ -25,6 +26,7 @@ use tokio::sync::broadcast;
 use connection::{CatalogSlot, ConnEntry, ConnSlot, ConnectParams, DbSlot, Instance, Wanted};
 use console::{Console, Owed, PlannedStmt, RunPlan, SessionSlot};
 use model::*;
+use provider::ProbeDepth;
 use secrets::Vault;
 use session::Session;
 use store::{HistoryInsert, Store};
@@ -62,6 +64,7 @@ pub(crate) struct Shared {
     /// sync entry point works from any thread: Tauri runs sync commands inline on the main
     /// thread, where a bare `tokio::spawn` panics.
     runtime: tokio::runtime::Handle,
+    providers: provider::Providers,
 }
 
 const EVENT_BUFFER: usize = 1024;
@@ -567,22 +570,25 @@ impl Engine {
         let store = Store::open(&cfg.data_dir.join(DB_FILE))?;
         let settings = store.kv_get::<Settings>(KV_SETTINGS)?.unwrap_or_default();
         let (events, _) = broadcast::channel(EVENT_BUFFER);
-        Ok(Arc::new(Self {
-            shared: Arc::new(Shared {
-                data_dir: cfg.data_dir,
-                vault: Vault::new(cfg.keys),
-                store,
-                settings: RwLock::new(settings),
-                connections: RwLock::new(HashMap::new()),
-                consoles: RwLock::new(HashMap::new()),
-                events,
-                next_run: AtomicU64::new(1),
-                next_catalog_version: AtomicU64::new(1),
-                view_edits: tokio::sync::Mutex::new(()),
-                timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
-                runtime: tokio::runtime::Handle::current(),
-            }),
-        }))
+        let shared = Arc::new(Shared {
+            data_dir: cfg.data_dir,
+            vault: Vault::new(cfg.keys),
+            store,
+            settings: RwLock::new(settings),
+            connections: RwLock::new(HashMap::new()),
+            consoles: RwLock::new(HashMap::new()),
+            events,
+            next_run: AtomicU64::new(1),
+            next_catalog_version: AtomicU64::new(1),
+            view_edits: tokio::sync::Mutex::new(()),
+            timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
+            runtime: tokio::runtime::Handle::current(),
+            providers: provider::Providers::new(),
+        });
+        tokio::fs::create_dir_all(shared.assistant_dir()).await?;
+        shared.probe_all(ProbeDepth::Full);
+        shared.spawn(provider::health_loop(Arc::downgrade(&shared)));
+        Ok(Arc::new(Self { shared }))
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -613,7 +619,7 @@ impl Engine {
             .into_iter()
             .map(|(id, r)| ChatState { id, rev: 0, title: r.title, updated_at_ms: r.updated_at_ms, options: r.options, status: ChatStatus::Idle, entry_count: r.entry_count })
             .collect();
-        BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings(), providers: Vec::new(), chats }
+        BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings(), providers: s.providers.states(), chats }
     }
 
     pub async fn save_connection(&self, d: ConnectionDraft) -> Result<ConnectionConfig, SaveError> {
@@ -1211,7 +1217,8 @@ impl Engine {
         if let Err(e) = self.shared.store.kv_set(KV_SETTINGS, &s) {
             eprintln!("settings save failed: {e}");
         }
-        *self.shared.settings.write().unwrap() = s;
+        let before = std::mem::replace(&mut *self.shared.settings.write().unwrap(), s.clone());
+        self.shared.reprobe_changed(&before.providers, &s.providers);
     }
 
     pub async fn assistant_open(&self, _chat: ChatId) -> Result<ChatView, ChatError> {
@@ -1236,7 +1243,10 @@ impl Engine {
         todo!("assistant engine")
     }
 
-    pub fn provider_refresh(&self) {}
+    /// Full probe of every enabled provider. Fire and forget.
+    pub fn provider_refresh(&self) {
+        self.shared.probe_all(ProbeDepth::Full);
+    }
 
     pub async fn shutdown(&self) {}
 }

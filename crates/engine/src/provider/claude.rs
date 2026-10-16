@@ -1,0 +1,904 @@
+//! Claude Code over stream-json, as captured from `claude` 2.1.301 in `tests/fixtures/claude/`.
+//! Every wire shape stays in this file: the engine sees `AgentEvent`s.
+
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde_json::{Value, json};
+
+use super::{AgentEvent, BlockKey, BoxFuture, Codec, Handshake, HostEnv, LaunchSpec, ModelResult, Open, Provider, Quick, ReplyTo, SessionStart, Step};
+use crate::model::{AgentError, Decision, EffortId, EffortOption, ModelId, ModelOption, ProbeOutcome, ProviderConfig, ProviderInfo, ToolCallId, TurnOutcome};
+
+pub(crate) struct Claude;
+
+/// The MCP server name the CLI sees. Its tools reach the model as `mcp__l1__<name>`.
+const SERVER: &str = "l1";
+const TOOL_PREFIX: &str = "mcp__l1__";
+const VERSION_TIMEOUT: Duration = Duration::from_secs(4);
+const AUTH_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Flags the engine owns. A launch argument naming one is dropped, so the field cannot turn off
+/// isolation or the permission prompt. `--model` and `--effort` become the probe's default instead.
+const ENGINE_FLAGS: &[&str] = &[
+    "--output-format",
+    "--input-format",
+    "--verbose",
+    "--print",
+    "--setting-sources",
+    "--settings",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "--tools",
+    "--allowedTools",
+    "--allowed-tools",
+    "--disallowedTools",
+    "--disallowed-tools",
+    "--permission-prompt-tool",
+    "--permission-mode",
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "--include-partial-messages",
+    "--resume",
+    "--continue",
+    "--session-id",
+    "--fork-session",
+    "--system-prompt",
+    "--system-prompt-file",
+    "--append-system-prompt",
+    "--model",
+    "--effort",
+    "--bare",
+];
+
+impl Provider for Claude {
+    fn info(&self) -> ProviderInfo {
+        ProviderInfo {
+            default_name: "Claude".into(),
+            default_binary: "claude".into(),
+            config_env: "CLAUDE_CONFIG_DIR".into(),
+            config_dir_default: "~/.claude".into(),
+            sign_in_command: "claude auth login".into(),
+            owned_flags: ENGINE_FLAGS.iter().map(|f| (*f).to_owned()).collect(),
+        }
+    }
+
+    fn quick_probe<'a>(&'a self, cfg: &'a ProviderConfig, host: &'a HostEnv) -> BoxFuture<'a, Result<Quick, ProbeOutcome>> {
+        Box::pin(quick_probe(cfg, host))
+    }
+
+    fn launch(&self, cfg: &ProviderConfig, host: &HostEnv, start: &SessionStart) -> Result<LaunchSpec, AgentError> {
+        let program = resolve_binary(cfg, host).map_err(|binary| AgentError::NotFound { binary })?;
+        let (env_set, env_remove) = env(cfg, host, std::env::vars_os());
+        Ok(LaunchSpec { program, args: argv(start, &parse_launch_args(&cfg.launch_args)), env_set, env_remove, cwd: host.cwd.clone() })
+    }
+
+    fn codec(&self, cfg: &ProviderConfig, open: Open) -> Box<dyn Codec> {
+        Box::new(ClaudeCodec::new(parse_launch_args(&cfg.launch_args).model, open))
+    }
+}
+
+/// The binary the config names, or `claude` on the host PATH. The error text says what was looked
+/// up and where, because "not found" is the first thing a new user hits.
+fn resolve_binary(cfg: &ProviderConfig, host: &HostEnv) -> Result<PathBuf, String> {
+    let name = cfg.binary_path.trim();
+    let name = if name.is_empty() { "claude" } else { name };
+    if name.contains('/') || name.starts_with('~') {
+        let path = host.expand_home(name);
+        return if is_executable(&path) { Ok(path) } else { Err(path.display().to_string()) };
+    }
+    let dirs = host.dirs();
+    dirs.iter().map(|d| d.join(name)).find(|p| is_executable(p)).ok_or_else(|| format!("{name} on PATH ({})", dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(":")))
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
+}
+
+async fn quick_probe(cfg: &ProviderConfig, host: &HostEnv) -> Result<Quick, ProbeOutcome> {
+    let program = resolve_binary(cfg, host).map_err(|binary| ProbeOutcome::NotFound { binary })?;
+    let (env_set, env_remove) = env(cfg, host, std::env::vars_os());
+    let run = |args: &'static [&'static str], limit: Duration| {
+        let mut command = tokio::process::Command::new(&program);
+        command.args(args).current_dir(&host.cwd).stdin(std::process::Stdio::null()).kill_on_drop(true);
+        for key in &env_remove {
+            command.env_remove(key);
+        }
+        for (key, value) in &env_set {
+            command.env(key, value);
+        }
+        let what = format!("{} {}", program.display(), args.join(" "));
+        async move {
+            match tokio::time::timeout(limit, command.output()).await {
+                Ok(Ok(output)) => Ok(output),
+                Ok(Err(e)) => Err(format!("{what}: {e}")),
+                Err(_) => Err(format!("{what} did not answer within {} s", limit.as_secs())),
+            }
+        }
+    };
+    let broken = |version: Option<String>, message: String| ProbeOutcome::Broken { version, message };
+    let version_out = run(&["--version"], VERSION_TIMEOUT).await.map_err(|m| broken(None, m))?;
+    let version_text = String::from_utf8_lossy(&version_out.stdout);
+    let version = match (version_out.status.success(), parse_version(&version_text)) {
+        (true, Some(version)) => version,
+        (true, None) => return Err(broken(None, format!("--version printed {:?}", version_text.trim()))),
+        (false, _) => return Err(broken(None, format!("--version exited with {}: {}", version_out.status, String::from_utf8_lossy(&version_out.stderr).trim()))),
+    };
+    // Signed out, the CLI still prints its JSON and exits 1, so the exit code is not read.
+    let auth_out = run(&["auth", "status"], AUTH_TIMEOUT).await.map_err(|m| broken(Some(version.clone()), m))?;
+    let auth_text = String::from_utf8_lossy(&auth_out.stdout);
+    let auth = parse_auth_status(&auth_text).ok_or_else(|| broken(Some(version.clone()), format!("auth status printed {:?}", auth_text.trim())))?;
+    Ok(Quick { version, signed_in: auth.0, plan: auth.1 })
+}
+
+/// `2.1.301 (Claude Code)`.
+pub(crate) fn parse_version(output: &str) -> Option<String> {
+    output
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')')
+        .map(|w| w.trim_start_matches('v'))
+        .find(|w| w.split('.').count() == 3 && w.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())))
+        .map(str::to_owned)
+}
+
+/// `claude auth status` prints JSON: `(loggedIn, plan)`.
+pub(crate) fn parse_auth_status(stdout: &str) -> Option<(bool, Option<String>)> {
+    let v: Value = serde_json::from_str(stdout.trim()).ok()?;
+    let logged_in = v["loggedIn"].as_bool()?;
+    let plan = plan_label(v["subscriptionType"].as_str(), v["apiProvider"].as_str(), v["authMethod"].as_str());
+    Some((logged_in, plan))
+}
+
+/// "Claude Max", "Claude Pro", "API key", "Amazon Bedrock". The CLI spells a plan `max` in `auth
+/// status` and `Claude Max` in `initialize`, so only the letters are compared.
+pub(crate) fn plan_label(subscription: Option<&str>, api_provider: Option<&str>, auth_method: Option<&str>) -> Option<String> {
+    match api_provider.map(str::to_ascii_lowercase).as_deref() {
+        Some("bedrock") => return Some("Amazon Bedrock".into()),
+        Some("vertex") => return Some("Google Vertex".into()),
+        Some("foundry") => return Some("Microsoft Foundry".into()),
+        _ => {}
+    }
+    if let Some(raw) = subscription.map(str::trim).filter(|s| !s.is_empty()) {
+        let key: String = raw.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        let key = key.strip_prefix("claude").unwrap_or(&key);
+        let key = key.strip_suffix("subscription").unwrap_or(key);
+        return Some(match key {
+            "max" | "maxplan" => "Claude Max".into(),
+            "max5" | "max5x" => "Claude Max 5x".into(),
+            "max20" | "max20x" => "Claude Max 20x".into(),
+            "pro" => "Claude Pro".into(),
+            "team" => "Claude Team".into(),
+            "enterprise" => "Claude Enterprise".into(),
+            "free" => "Claude Free".into(),
+            _ => format!("Claude {raw}"),
+        });
+    }
+    match auth_method {
+        Some("none") | Some("claude.ai") | None => None,
+        Some(_) => Some("API key".into()),
+    }
+}
+
+fn effort_label(id: &str) -> String {
+    match id {
+        "low" => "Low".into(),
+        "medium" => "Medium".into(),
+        "high" => "High".into(),
+        "xhigh" => "Extra high".into(),
+        "max" => "Max".into(),
+        other => {
+            let mut chars = other.chars();
+            chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+        }
+    }
+}
+
+/// The `initialize` response's `models`. The `default` alias is hidden and the model it resolves to
+/// is `recommended`, unless the launch arguments' `--model` names one in the list.
+pub(crate) fn models(raw: &[Value], prefer: Option<&str>) -> Vec<ModelOption> {
+    let default_resolved = raw.iter().find(|m| m["value"] == "default").and_then(|m| m["resolvedModel"].as_str());
+    let listed: Vec<&Value> = raw.iter().filter(|m| m["value"].as_str().is_some_and(|v| v != "default")).collect();
+    let recommended = prefer
+        .filter(|p| listed.iter().any(|m| m["value"] == *p))
+        .or_else(|| listed.iter().find(|m| m["resolvedModel"].as_str().is_some_and(|r| Some(r) == default_resolved)).and_then(|m| m["value"].as_str()));
+    listed
+        .iter()
+        .map(|m| {
+            let id = m["value"].as_str().unwrap_or_default();
+            ModelOption {
+                id: ModelId(id.to_owned()),
+                label: m["displayName"].as_str().unwrap_or(id).to_owned(),
+                description: m["description"].as_str().unwrap_or_default().to_owned(),
+                efforts: if m["supportsEffort"].as_bool().unwrap_or(false) {
+                    m["supportedEffortLevels"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|e| EffortOption { id: EffortId(e.to_owned()), label: effort_label(e) }).collect()
+                } else {
+                    Vec::new()
+                },
+                recommended: Some(id) == recommended,
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LaunchArgs {
+    pub passthrough: Vec<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// Engine-owned flags the text named, each once.
+    pub ignored: Vec<String>,
+}
+
+/// Whitespace-separated with single or double quotes grouping. `--flag value`, `--flag=value`, and
+/// a bare `--flag` are kept; single-dash and positional tokens are dropped, since a positional
+/// would become a prompt.
+pub(crate) fn parse_launch_args(raw: &str) -> LaunchArgs {
+    let tokens = split_args(raw);
+    let mut out = LaunchArgs::default();
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = &tokens[i];
+        i += 1;
+        if !token.starts_with("--") || token == "--" {
+            continue;
+        }
+        let (flag, mut value) = match token.split_once('=') {
+            Some((f, v)) => (f.to_owned(), Some(v.to_owned())),
+            None => (token.clone(), None),
+        };
+        if value.is_none() && tokens.get(i).is_some_and(|next| !next.starts_with('-')) {
+            value = Some(tokens[i].clone());
+            i += 1;
+        }
+        if ENGINE_FLAGS.contains(&flag.as_str()) {
+            match flag.as_str() {
+                "--model" => out.model = value.filter(|v| !v.is_empty()),
+                "--effort" => out.effort = value.filter(|v| !v.is_empty()),
+                _ => {}
+            }
+            if !out.ignored.contains(&flag) {
+                out.ignored.push(flag);
+            }
+            continue;
+        }
+        out.passthrough.push(flag);
+        out.passthrough.extend(value);
+    }
+    out
+}
+
+fn split_args(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+    for c in text.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => current.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started || !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            (None, c) => current.push(c),
+        }
+    }
+    if started || !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// FINDINGS point 1 plus the session flags. `--setting-sources=` drops hooks, plugins, and user
+/// settings; `--strict-mcp-config` drops account connectors; `--tools=` removes every built-in tool;
+/// `--permission-prompt-tool=stdio` makes permission asks reach the host.
+pub(crate) fn argv(start: &SessionStart, args: &LaunchArgs) -> Vec<String> {
+    let mut argv: Vec<String> = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--setting-sources=", "--strict-mcp-config", "--tools=", "--permission-prompt-tool=stdio", "--permission-mode=default"]
+        .map(str::to_owned)
+        .to_vec();
+    if let Some(model) = start.model.as_ref().map(|m| m.0.clone()).or_else(|| args.model.clone()) {
+        argv.extend(["--model".into(), model]);
+    }
+    if let Some(effort) = start.effort.as_ref().map(|e| e.0.clone()).or_else(|| args.effort.clone()) {
+        argv.extend(["--effort".into(), effort]);
+    }
+    argv.push("--include-partial-messages".into());
+    if let Some(id) = &start.resume {
+        argv.extend(["--resume".into(), id.clone()]);
+    }
+    argv.extend(args.passthrough.iter().cloned());
+    argv
+}
+
+/// Starts from the engine's env, drops what leaks in from whatever launched the app (another
+/// Claude Code session, a different login), and sets what the SDK sets. `HOME` stays, for the
+/// macOS keychain lookup.
+pub(crate) fn env(cfg: &ProviderConfig, host: &HostEnv, parent: impl Iterator<Item = (OsString, OsString)>) -> (Vec<(OsString, OsString)>, Vec<OsString>) {
+    let remove: Vec<OsString> = parent
+        .map(|(k, _)| k)
+        .filter(|k| {
+            let k = k.to_string_lossy();
+            k == "CLAUDECODE" || k.starts_with("CLAUDE_CODE_") || ["CLAUDE_EFFORT", "CLAUDE_AGENT_SDK_VERSION", "NODE_OPTIONS", "ANTHROPIC_API_KEY"].contains(&k.as_ref())
+        })
+        .collect();
+    let mut set: Vec<(OsString, OsString)> = vec![("PATH".into(), host.path.clone())];
+    let config_dir = cfg.config_dir.trim();
+    if !config_dir.is_empty() {
+        set.push(("CLAUDE_CONFIG_DIR".into(), host.expand_home(config_dir).into_os_string()));
+    }
+    set.extend(
+        [("CLAUDE_CODE_ENTRYPOINT", "sdk-ts"), ("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1"), ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"), ("CLAUDE_CODE_AUTO_CONNECT_IDE", "0"), ("CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL", "1")]
+            .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+    );
+    (set, remove)
+}
+
+enum HostRequest {
+    Initialize,
+    #[cfg_attr(not(test), expect(dead_code, reason = "Stop sends it in the next change"))]
+    Interrupt,
+}
+
+pub(crate) struct ClaudeCodec {
+    next_request: u64,
+    /// Our own control requests in flight.
+    pending: HashMap<String, HostRequest>,
+    prefer_model: Option<String>,
+    open: Open,
+    /// Incremented on `message_start`; the first half of a `BlockKey`.
+    message: u32,
+    text_blocks: HashSet<BlockKey>,
+    /// JSON-RPC ids of `tools/call` requests in flight, so `notifications/cancelled` names the call.
+    calls: HashMap<String, ToolCallId>,
+    interrupted: bool,
+}
+
+impl ClaudeCodec {
+    pub(crate) fn new(prefer_model: Option<String>, open: Open) -> Self {
+        Self { next_request: 0, pending: HashMap::new(), prefer_model, open, message: 0, text_blocks: HashSet::new(), calls: HashMap::new(), interrupted: false }
+    }
+
+    fn request(&mut self, kind: HostRequest, body: Value) -> String {
+        self.next_request += 1;
+        let id = format!("req_{}", self.next_request);
+        self.pending.insert(id.clone(), kind);
+        json!({ "type": "control_request", "request_id": id, "request": body }).to_string()
+    }
+
+    fn handshake(&self, response: &Value) -> Handshake {
+        let account = &response["account"];
+        Handshake {
+            version: response["claude_code_version"].as_str().map(str::to_owned),
+            plan: plan_label(account["subscriptionType"].as_str(), account["apiProvider"].as_str(), None),
+            models: models(response["models"].as_array().map_or(&[][..], Vec::as_slice), self.prefer_model.as_deref()),
+        }
+    }
+
+    fn mcp(&mut self, request_id: &str, message: &Value) -> Step {
+        let rpc_id = message.get("id").cloned().unwrap_or(json!(0));
+        let reply = |result: Value| Step { replies: vec![mcp_reply(request_id, json!({ "jsonrpc": "2.0", "id": rpc_id, "result": result }))], events: Vec::new() };
+        match message["method"].as_str() {
+            Some("initialize") => reply(json!({
+                "protocolVersion": message["params"]["protocolVersion"],
+                "capabilities": { "tools": { "listChanged": true } },
+                "serverInfo": { "name": SERVER, "version": env!("CARGO_PKG_VERSION") },
+            })),
+            Some("tools/list") => reply(json!({
+                "tools": self.open.tools.iter().map(|t| json!({ "name": t.name, "description": t.description, "inputSchema": (t.input_schema)() })).collect::<Vec<_>>()
+            })),
+            Some("tools/call") => {
+                let params = &message["params"];
+                let call = ToolCallId(params["_meta"]["claudecode/toolUseId"].as_str().map_or_else(|| format!("rpc-{rpc_id}"), str::to_owned));
+                self.calls.insert(rpc_id.to_string(), call.clone());
+                Step {
+                    replies: Vec::new(),
+                    events: vec![AgentEvent::ToolCall {
+                        reply: ReplyTo(json!({ "request_id": request_id, "id": rpc_id })),
+                        call,
+                        name: params["name"].as_str().unwrap_or_default().to_owned(),
+                        input: params.get("arguments").cloned().unwrap_or(json!({})),
+                    }],
+                }
+            }
+            Some("notifications/cancelled") => {
+                let cancelled = message["params"]["requestId"].as_str().map(str::to_owned).or_else(|| message["params"]["requestId"].as_u64().map(|n| n.to_string()));
+                let mut step = reply(json!({}));
+                if let Some(call) = cancelled.and_then(|id| self.calls.remove(&id)) {
+                    step.events.push(AgentEvent::ToolCancelled { call });
+                }
+                step
+            }
+            Some(method) if method.starts_with("notifications/") => reply(json!({})),
+            _ => Step {
+                replies: vec![mcp_reply(request_id, json!({ "jsonrpc": "2.0", "id": rpc_id, "error": { "code": -32601, "message": "method not found" } }))],
+                events: Vec::new(),
+            },
+        }
+    }
+
+    fn result(&mut self, v: &Value) -> TurnOutcome {
+        if self.interrupted {
+            return TurnOutcome::Stopped;
+        }
+        if v["subtype"] == "success" && !v["is_error"].as_bool().unwrap_or(false) {
+            return TurnOutcome::Completed;
+        }
+        let message = v["errors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .next()
+            .map(str::to_owned)
+            .or_else(|| v["result"].as_str().filter(|s| !s.is_empty()).map(str::to_owned))
+            .unwrap_or_else(|| v["subtype"].as_str().unwrap_or("error").to_owned());
+        let signed_out = v["api_error_status"].as_u64() == Some(401) || message.contains("/login") || message.contains("Not logged in");
+        TurnOutcome::Failed { error: if signed_out { AgentError::SignedOut } else { AgentError::Provider { message } } }
+    }
+}
+
+fn mcp_reply(request_id: &str, rpc: Value) -> String {
+    json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": { "mcp_response": rpc } } }).to_string()
+}
+
+fn control_error(request_id: &str, error: &str) -> String {
+    json!({ "type": "control_response", "response": { "subtype": "error", "request_id": request_id, "error": error } }).to_string()
+}
+
+fn tool_name(name: &str) -> String {
+    name.strip_prefix(TOOL_PREFIX).unwrap_or(name).to_owned()
+}
+
+impl Codec for ClaudeCodec {
+    fn open(&mut self) -> Vec<String> {
+        let prompt = self.open.system_prompt;
+        vec![self.request(HostRequest::Initialize, json!({ "subtype": "initialize", "systemPrompt": prompt, "sdkMcpServers": [SERVER] }))]
+    }
+
+    fn user_turn(&mut self, text: &str) -> Vec<String> {
+        vec![json!({ "type": "user", "session_id": "", "message": { "role": "user", "content": [{ "type": "text", "text": text }] }, "parent_tool_use_id": null }).to_string()]
+    }
+
+    fn interrupt(&mut self) -> Vec<String> {
+        self.interrupted = true;
+        vec![self.request(HostRequest::Interrupt, json!({ "subtype": "interrupt" }))]
+    }
+
+    fn permission(&mut self, reply: &ReplyTo, decision: Decision, input: &Value, message: &str) -> Vec<String> {
+        let (request_id, tool_use_id) = (&reply.0["request_id"], &reply.0["tool_use_id"]);
+        let response = match decision {
+            Decision::Run => json!({ "behavior": "allow", "updatedInput": input, "toolUseID": tool_use_id }),
+            Decision::Deny => json!({ "behavior": "deny", "message": message, "toolUseID": tool_use_id }),
+        };
+        vec![json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } }).to_string()]
+    }
+
+    fn tool_result(&mut self, reply: &ReplyTo, result: &ModelResult) -> Vec<String> {
+        let rpc_id = &reply.0["id"];
+        self.calls.remove(&rpc_id.to_string());
+        let mut body = json!({ "content": [{ "type": "text", "text": result.text }] });
+        if result.is_error {
+            body["isError"] = json!(true);
+        }
+        vec![mcp_reply(reply.0["request_id"].as_str().unwrap_or_default(), json!({ "jsonrpc": "2.0", "id": rpc_id, "result": body }))]
+    }
+
+    fn read(&mut self, line: &str) -> Step {
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => return Step::default(),
+        };
+        let event = |event: AgentEvent| Step { replies: Vec::new(), events: vec![event] };
+        match v["type"].as_str() {
+            Some("control_response") => {
+                let response = &v["response"];
+                let Some(kind) = response["request_id"].as_str().and_then(|id| self.pending.remove(id)) else { return Step::default() };
+                match kind {
+                    HostRequest::Initialize if response["subtype"] == "success" => event(AgentEvent::Ready(self.handshake(&response["response"]))),
+                    HostRequest::Initialize => {
+                        let message = response["error"].as_str().unwrap_or("initialize failed").to_owned();
+                        event(AgentEvent::TurnEnded(TurnOutcome::Failed { error: AgentError::Provider { message } }))
+                    }
+                    HostRequest::Interrupt => Step::default(),
+                }
+            }
+            Some("control_request") => {
+                let request_id = v["request_id"].as_str().unwrap_or_default().to_owned();
+                let request = &v["request"];
+                match request["subtype"].as_str() {
+                    Some("mcp_message") if request["server_name"] == SERVER => self.mcp(&request_id, &request["message"]),
+                    Some("can_use_tool") => event(AgentEvent::Permission {
+                        reply: ReplyTo(json!({ "request_id": request_id, "tool_use_id": request["tool_use_id"] })),
+                        call: ToolCallId(request["tool_use_id"].as_str().unwrap_or_default().to_owned()),
+                        name: tool_name(request["tool_name"].as_str().unwrap_or_default()),
+                        input: request.get("input").cloned().unwrap_or(json!({})),
+                    }),
+                    _ => Step { replies: vec![control_error(&request_id, "unsupported")], events: Vec::new() },
+                }
+            }
+            Some("system") if v["subtype"] == "init" => event(AgentEvent::TurnStarted { session_id: v["session_id"].as_str().unwrap_or_default().to_owned() }),
+            Some("stream_event") if v["parent_tool_use_id"].is_null() => {
+                let ev = &v["event"];
+                let key = |index: &Value| BlockKey(self.message, index.as_u64().unwrap_or(0) as u32);
+                match ev["type"].as_str() {
+                    Some("message_start") => {
+                        self.message += 1;
+                        Step::default()
+                    }
+                    Some("content_block_delta") if ev["delta"]["type"] == "text_delta" => {
+                        let block = key(&ev["index"]);
+                        self.text_blocks.insert(block);
+                        event(AgentEvent::Text { block, delta: ev["delta"]["text"].as_str().unwrap_or_default().to_owned() })
+                    }
+                    Some("content_block_stop") if self.text_blocks.remove(&key(&ev["index"])) => event(AgentEvent::TextDone { block: key(&ev["index"]) }),
+                    _ => Step::default(),
+                }
+            }
+            Some("assistant") if v["parent_tool_use_id"].is_null() => Step {
+                replies: Vec::new(),
+                events: v["message"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|block| block["type"] == "tool_use")
+                    .map(|block| AgentEvent::ToolUse {
+                        call: ToolCallId(block["id"].as_str().unwrap_or_default().to_owned()),
+                        name: tool_name(block["name"].as_str().unwrap_or_default()),
+                        input: block.get("input").cloned().unwrap_or(json!({})),
+                    })
+                    .collect(),
+            },
+            Some("result") => event(AgentEvent::TurnEnded(self.result(&v))),
+            _ => Step::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::ToolSpec;
+
+    const INITIALIZE: &str = include_str!("../../tests/fixtures/claude/initialize.jsonl");
+    const TURN: &str = include_str!("../../tests/fixtures/claude/turn.jsonl");
+    const MCP: &str = include_str!("../../tests/fixtures/claude/mcp.jsonl");
+    const PERMISSIONS: &str = include_str!("../../tests/fixtures/claude/permissions.jsonl");
+    const INTERRUPT: &str = include_str!("../../tests/fixtures/claude/interrupt.jsonl");
+    const RESUME: &str = include_str!("../../tests/fixtures/claude/resume.jsonl");
+
+    fn frames(fixture: &str) -> Vec<Value> {
+        fixture.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}"))).collect()
+    }
+
+    fn frame<'a>(fixture: &'a str, pick: impl Fn(&Value) -> bool) -> &'a str {
+        fixture.lines().find(|l| !l.trim().is_empty() && pick(&serde_json::from_str::<Value>(l).unwrap())).expect("a frame matching the predicate")
+    }
+
+    fn json(line: &str) -> Value {
+        serde_json::from_str(line).unwrap()
+    }
+
+    fn opened() -> ClaudeCodec {
+        let mut codec = ClaudeCodec::new(None, Open { system_prompt: "You are the assistant.", tools: &TOOLS });
+        let lines = codec.open();
+        assert_eq!(json(&lines[0])["request"], json!({ "subtype": "initialize", "systemPrompt": "You are the assistant.", "sdkMcpServers": ["l1"] }));
+        codec
+    }
+
+    static TOOLS: [ToolSpec; 1] = [ToolSpec {
+        name: "get_secret_word",
+        description: "Returns the secret word. Call this when the user asks for the secret word.",
+        input_schema: || json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+    }];
+
+    /// The captured `initialize` response answers the request id the SDK used; the codec's own
+    /// id is `req_1`, so the fixture's id is rewritten to it.
+    fn initialize_response() -> String {
+        let mut v = json(frame(INITIALIZE, |v| v["type"] == "control_response"));
+        v["response"]["request_id"] = json!("req_1");
+        v.to_string()
+    }
+
+    #[test]
+    fn the_initialize_response_yields_version_plan_and_models_with_the_default_alias_hidden() {
+        let mut codec = opened();
+        let step = codec.read(&initialize_response());
+        assert!(step.replies.is_empty());
+        let [AgentEvent::Ready(handshake)] = step.events.as_slice() else { panic!("{:?}", step.events) };
+        assert_eq!(handshake.version.as_deref(), Some("2.1.301"));
+        assert_eq!(handshake.plan.as_deref(), Some("Claude Max"));
+        let ids: Vec<&str> = handshake.models.iter().map(|m| m.id.0.as_str()).collect();
+        assert_eq!(ids[..5], ["opus", "fable", "sonnet", "haiku", "claude-haiku-4-5-20251001"]);
+        assert_eq!(handshake.models.len(), 12, "13 captured minus the default alias");
+        let recommended: Vec<&str> = handshake.models.iter().filter(|m| m.recommended).map(|m| m.id.0.as_str()).collect();
+        assert_eq!(recommended, ["opus"]);
+        assert_eq!(handshake.models[0].label, "Opus 5.5");
+        assert_eq!(handshake.models[0].efforts.iter().map(|e| format!("{}={}", e.id.0, e.label)).collect::<Vec<_>>(), ["low=Low", "medium=Medium", "high=High", "xhigh=Extra high", "max=Max"]);
+        assert!(handshake.models[4].efforts.is_empty(), "a model without effort support lists none");
+        assert_eq!(handshake.models.iter().find(|m| m.id.0 == "claude-opus-4-6").unwrap().efforts.len(), 4);
+        assert_eq!(codec.read(&initialize_response()), Step::default(), "an answer to an unknown request is ignored");
+    }
+
+    #[test]
+    fn a_launch_argument_model_becomes_the_recommended_one() {
+        let recommended_with = |prefer: &str| {
+            let mut codec = ClaudeCodec::new(Some(prefer.into()), Open::PROBE);
+            codec.open();
+            let step = codec.read(&initialize_response());
+            let [AgentEvent::Ready(handshake)] = step.events.as_slice() else { panic!("{:?}", step.events) };
+            handshake.models.iter().filter(|m| m.recommended).map(|m| m.id.0.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(recommended_with("sonnet"), ["sonnet"]);
+        assert_eq!(recommended_with("nope"), ["opus"], "an unknown preference falls back to the default's model");
+    }
+
+    #[test]
+    fn the_mcp_handshake_is_answered_by_the_codec_with_the_captured_shapes() {
+        let mut codec = opened();
+        let frames = frames(MCP);
+        let requests: Vec<&Value> = frames.iter().filter(|f| f["type"] == "control_request").collect();
+        let answers: Vec<&Value> = frames.iter().filter(|f| f["type"] == "control_response").collect();
+        let init = codec.read(&requests[0].to_string());
+        assert!(init.events.is_empty());
+        let mut mine = json(&init.replies[0]);
+        mine["response"]["response"]["mcp_response"]["result"]["serverInfo"]["version"] = answers[0]["response"]["response"]["mcp_response"]["result"]["serverInfo"]["version"].clone();
+        assert_eq!(mine, *answers[0]);
+        let initialized = codec.read(&requests[1].to_string());
+        assert_eq!(json(&initialized.replies[0]), *answers[1], "a notification gets the SDK's dummy reply");
+        let list = codec.read(&requests[2].to_string());
+        assert_eq!(json(&list.replies[0]), *answers[2]);
+    }
+
+    #[test]
+    fn a_tools_call_carries_the_tool_use_id_and_its_answer_matches_the_captured_one() {
+        let mut codec = opened();
+        let frames = frames(MCP);
+        let call = frames.iter().find(|f| f["request"]["message"]["method"] == "tools/call").unwrap();
+        let step = codec.read(&call.to_string());
+        assert!(step.replies.is_empty());
+        let [AgentEvent::ToolCall { reply, call: id, name, input }] = step.events.as_slice() else { panic!("{:?}", step.events) };
+        assert_eq!((id.0.as_str(), name.as_str(), input), ("toolu_01VWceXctBsdrbyvCTabAGKN", "get_secret_word", &json!({})));
+        let answer = codec.tool_result(reply, &ModelResult { text: "pineapple".into(), is_error: false });
+        let captured = frames.iter().find(|f| f["response"]["response"]["mcp_response"]["result"]["content"][0]["text"] == "pineapple").unwrap();
+        assert_eq!(json(&answer[0]), *captured);
+        let error = codec.tool_result(reply, &ModelResult { text: "boom".into(), is_error: true });
+        assert_eq!(json(&error[0])["response"]["response"]["mcp_response"]["result"]["isError"], json!(true));
+        let unknown = codec.read(&json!({ "type": "control_request", "request_id": "r9", "request": { "subtype": "mcp_message", "server_name": "l1", "message": { "jsonrpc": "2.0", "id": 7, "method": "resources/list" } } }).to_string());
+        assert_eq!(json(&unknown.replies[0])["response"]["response"]["mcp_response"]["error"]["code"], json!(-32601));
+    }
+
+    #[test]
+    fn a_cancelled_notification_names_the_call_it_cancels() {
+        let mut codec = opened();
+        let call = frames(MCP).into_iter().find(|f| f["request"]["message"]["method"] == "tools/call").unwrap();
+        codec.read(&call.to_string());
+        let cancel = json!({ "type": "control_request", "request_id": "c1", "request": { "subtype": "mcp_message", "server_name": "l1", "message": { "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": 2 } } } });
+        let step = codec.read(&cancel.to_string());
+        assert_eq!(step.events, vec![AgentEvent::ToolCancelled { call: ToolCallId("toolu_01VWceXctBsdrbyvCTabAGKN".into()) }]);
+        assert_eq!(json(&step.replies[0])["response"]["response"]["mcp_response"]["result"], json!({}));
+    }
+
+    #[test]
+    fn can_use_tool_becomes_a_permission_event_answered_with_the_captured_allow_and_deny() {
+        let mut codec = opened();
+        let ask = frame(PERMISSIONS, |v| v["request"]["tool_name"] == "mcp__l1__get_secret_word");
+        let step = codec.read(ask);
+        let [AgentEvent::Permission { reply, call, name, input }] = step.events.as_slice() else { panic!("{:?}", step.events) };
+        assert_eq!((call.0.as_str(), name.as_str(), input), ("toolu_01VWceXctBsdrbyvCTabAGKN", "get_secret_word", &json!({})));
+        let allow = codec.permission(reply, Decision::Run, input, "");
+        assert_eq!(json(&allow[0]), json(frame(PERMISSIONS, |v| v["response"]["response"]["behavior"] == "allow")));
+        let deny = json(&codec.permission(reply, Decision::Deny, input, "The user declined this tool call.")[0]);
+        let captured = json(frame(PERMISSIONS, |v| v["response"]["response"]["behavior"] == "deny"));
+        assert_eq!(deny["response"]["response"]["message"], captured["response"]["response"]["message"]);
+        let keys = |v: &Value| v["response"]["response"].as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(keys(&deny), keys(&captured), "the deny answer has the captured keys; the captured one denied another call");
+        let other = codec.read(&json!({ "type": "control_request", "request_id": "h1", "request": { "subtype": "hook_callback" } }).to_string());
+        assert_eq!(json(&other.replies[0])["response"], json!({ "subtype": "error", "request_id": "h1", "error": "unsupported" }));
+    }
+
+    #[test]
+    fn a_turn_streams_text_keyed_by_message_and_block_then_ends_completed() {
+        let mut codec = opened();
+        let mut events = Vec::new();
+        for line in TURN.lines().filter(|l| !l.trim().is_empty()) {
+            let step = codec.read(line);
+            assert!(step.replies.is_empty(), "{line}");
+            events.extend(step.events);
+        }
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::TurnStarted { session_id: "47f4ae39-701c-42cb-8889-9c74f6359898".into() },
+                AgentEvent::Text { block: BlockKey(1, 0), delta: "391".into() },
+                AgentEvent::TextDone { block: BlockKey(1, 0) },
+                AgentEvent::TurnEnded(TurnOutcome::Completed),
+            ]
+        );
+        let second = codec.read(frame(TURN, |v| v["event"]["type"] == "message_start"));
+        assert!(second.events.is_empty());
+        let delta = codec.read(frame(TURN, |v| v["event"]["delta"]["type"] == "text_delta"));
+        assert_eq!(delta.events, vec![AgentEvent::Text { block: BlockKey(2, 0), delta: "391".into() }], "the next message restarts the block index under a new message number");
+        let stop_without_text = codec.read(&json!({ "type": "stream_event", "event": { "type": "content_block_stop", "index": 3 }, "parent_tool_use_id": null }).to_string());
+        assert_eq!(stop_without_text, Step::default(), "a stop for a block that streamed no text is not a TextDone");
+    }
+
+    #[test]
+    fn an_assistant_frame_with_a_tool_use_block_becomes_one_tool_use_event() {
+        let mut codec = opened();
+        let step = codec.read(frame(MCP, |v| v["type"] == "assistant"));
+        assert_eq!(step.events, vec![AgentEvent::ToolUse { call: ToolCallId("toolu_01VWceXctBsdrbyvCTabAGKN".into()), name: "get_secret_word".into(), input: json!({}) }]);
+        let text_only = codec.read(frame(TURN, |v| v["type"] == "assistant"));
+        assert_eq!(text_only, Step::default());
+    }
+
+    #[test]
+    fn results_map_to_completed_stopped_signed_out_and_provider_errors() {
+        let mut codec = opened();
+        let success = frame(TURN, |v| v["type"] == "result");
+        assert_eq!(codec.read(success).events, vec![AgentEvent::TurnEnded(TurnOutcome::Completed)]);
+        let denied = frame(PERMISSIONS, |v| v["type"] == "result");
+        assert_eq!(codec.read(denied).events, vec![AgentEvent::TurnEnded(TurnOutcome::Completed)], "a denied tool is not a failed turn");
+        let lost = frame(RESUME, |v| v["type"] == "result" && v["is_error"] == true);
+        assert_eq!(
+            codec.read(lost).events,
+            vec![AgentEvent::TurnEnded(TurnOutcome::Failed { error: AgentError::Provider { message: "No conversation found with session ID: 11111111-2222-4333-8444-555555555555".into() } })]
+        );
+        let mut unauthorized = json(lost);
+        unauthorized["api_error_status"] = json!(401);
+        assert_eq!(codec.read(&unauthorized.to_string()).events, vec![AgentEvent::TurnEnded(TurnOutcome::Failed { error: AgentError::SignedOut })]);
+        let mut login = json(lost);
+        login["errors"] = json!([]);
+        login["result"] = json!("Not logged in · Please run /login");
+        assert_eq!(codec.read(&login.to_string()).events, vec![AgentEvent::TurnEnded(TurnOutcome::Failed { error: AgentError::SignedOut })]);
+    }
+
+    #[test]
+    fn an_interrupt_request_matches_the_capture_and_the_aborted_result_is_stopped() {
+        let mut codec = opened();
+        let lines = codec.interrupt();
+        let captured = json(frame(INTERRUPT, |v| v["request"]["subtype"] == "interrupt"));
+        assert_eq!(json(&lines[0])["request"], captured["request"]);
+        let response = frame(INTERRUPT, |v| v["response"]["response"]["still_queued"].is_array());
+        let mut response = json(response);
+        response["response"]["request_id"] = json!("req_2");
+        assert_eq!(codec.read(&response.to_string()), Step::default());
+        assert_eq!(codec.read(frame(INTERRUPT, |v| v["type"] == "result")).events, vec![AgentEvent::TurnEnded(TurnOutcome::Stopped)]);
+    }
+
+    #[test]
+    fn the_user_turn_matches_the_captured_line() {
+        let mut codec = opened();
+        let line = codec.user_turn("What is 17 times 23? Think briefly, then reply with only the number.");
+        assert_eq!(json(&line[0]), json(frame(TURN, |v| v["type"] == "user")));
+    }
+
+    #[test]
+    fn unknown_and_unparseable_lines_yield_nothing() {
+        let mut codec = opened();
+        for line in TURN.lines().chain(INTERRUPT.lines()).chain(RESUME.lines()).filter(|l| !l.trim().is_empty()) {
+            let v = json(line);
+            let known = ["control_response", "control_request", "result"].contains(&v["type"].as_str().unwrap_or_default())
+                || (v["type"] == "system" && v["subtype"] == "init")
+                || (v["type"] == "stream_event" && (v["event"]["type"] == "message_start" || v["event"]["delta"]["type"] == "text_delta" || v["event"]["type"] == "content_block_stop"));
+            if known {
+                continue;
+            }
+            assert_eq!(codec.read(line), Step::default(), "{line}");
+        }
+        assert_eq!(codec.read("not json"), Step::default());
+        assert_eq!(codec.read(""), Step::default());
+        let subagent = json!({ "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "x" } }, "parent_tool_use_id": "toolu_parent" });
+        assert_eq!(codec.read(&subagent.to_string()), Step::default(), "a subagent's text is not the reply");
+    }
+
+    #[test]
+    fn versions_and_auth_status_parse_from_the_captured_outputs() {
+        assert_eq!(parse_version("2.1.301 (Claude Code)\n").as_deref(), Some("2.1.301"));
+        assert_eq!(parse_version("command not found"), None);
+        let signed_in = frame(INITIALIZE, |v| v["loggedIn"] == true);
+        assert_eq!(parse_auth_status(signed_in), Some((true, Some("Claude Max".into()))));
+        let signed_out = frame(INITIALIZE, |v| v["loggedIn"] == false);
+        assert_eq!(parse_auth_status(signed_out), Some((false, None)));
+        assert_eq!(parse_auth_status("not json"), None);
+    }
+
+    #[test]
+    fn plan_labels() {
+        for (sub, api, auth, label) in [
+            (Some("Claude Max"), Some("firstParty"), None, Some("Claude Max")),
+            (Some("max"), Some("firstParty"), Some("claude.ai"), Some("Claude Max")),
+            (Some("max_5x"), None, None, Some("Claude Max 5x")),
+            (Some("pro"), None, None, Some("Claude Pro")),
+            (Some("team"), None, None, Some("Claude Team")),
+            (Some("enterprise"), None, None, Some("Claude Enterprise")),
+            (Some("Some Odd Plan"), None, None, Some("Claude Some Odd Plan")),
+            (None, Some("bedrock"), None, Some("Amazon Bedrock")),
+            (None, Some("vertex"), None, Some("Google Vertex")),
+            (None, Some("firstParty"), Some("api_key"), Some("API key")),
+            (None, Some("firstParty"), Some("claude.ai"), None),
+            (None, None, Some("none"), None),
+        ] {
+            assert_eq!(plan_label(sub, api, auth).as_deref(), label, "{sub:?} {api:?} {auth:?}");
+        }
+    }
+
+    #[test]
+    fn launch_arguments_drop_engine_flags_and_lift_model_and_effort() {
+        let args = parse_launch_args("--model claude-opus-5-5 --effort=low --debug-file '/tmp/my log' --permission-mode=plan --verbose -p hello --betas x --dangerously-skip-permissions");
+        assert_eq!(args.passthrough, ["--debug-file", "/tmp/my log", "--betas", "x"]);
+        assert_eq!((args.model.as_deref(), args.effort.as_deref()), (Some("claude-opus-5-5"), Some("low")));
+        assert_eq!(args.ignored, ["--model", "--effort", "--permission-mode", "--verbose", "--dangerously-skip-permissions"]);
+        assert_eq!(parse_launch_args("  hello -x "), LaunchArgs::default());
+        assert_eq!(parse_launch_args("--betas=x --debug").passthrough, ["--betas", "x", "--debug"]);
+    }
+
+    #[test]
+    fn argv_is_the_verified_isolated_one_plus_model_effort_resume_and_passthrough() {
+        let start = SessionStart { model: Some(ModelId("opus".into())), effort: Some(EffortId("high".into())), resume: Some("abc".into()) };
+        let argv = argv(&start, &parse_launch_args("--model x --debug-file /tmp/l"));
+        assert_eq!(
+            argv.join(" "),
+            "--output-format stream-json --verbose --input-format stream-json --setting-sources= --strict-mcp-config --tools= --permission-prompt-tool=stdio --permission-mode=default --model opus --effort high --include-partial-messages --resume abc --debug-file /tmp/l"
+        );
+        let probe = argv_for(&SessionStart { model: None, effort: None, resume: None }, "");
+        assert!(!probe.iter().any(|a| a == "--model" || a == "--effort" || a == "--resume"), "{probe:?}");
+        let preferred = argv_for(&SessionStart { model: None, effort: None, resume: None }, "--model sonnet");
+        assert_eq!(preferred.iter().position(|a| a == "--model").map(|i| preferred[i + 1].as_str()), Some("sonnet"), "the probe runs the launch arguments' model");
+    }
+
+    fn argv_for(start: &SessionStart, launch_args: &str) -> Vec<String> {
+        argv(start, &parse_launch_args(launch_args))
+    }
+
+    #[test]
+    fn the_child_env_drops_what_leaks_in_and_sets_what_the_sdk_sets() {
+        let host = HostEnv { path: "/usr/bin:/opt/homebrew/bin".into(), home: "/Users/a".into(), cwd: "/data/assistant".into() };
+        let parent = [("HOME", "/Users/a"), ("CLAUDECODE", "1"), ("CLAUDE_CODE_ENTRYPOINT", "cli"), ("CLAUDE_EFFORT", "max"), ("ANTHROPIC_API_KEY", "sk"), ("NODE_OPTIONS", "--inspect"), ("LANG", "C")]
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        let cfg = ProviderConfig { provider: crate::model::ProviderKind::Claude, enabled: true, display_name: "Claude".into(), binary_path: String::new(), config_dir: "~/.claude-work".into(), launch_args: String::new() };
+        let (set, remove) = env(&cfg, &host, parent.into_iter());
+        let removed: Vec<String> = remove.iter().map(|k| k.to_string_lossy().into_owned()).collect();
+        assert_eq!(removed, ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_EFFORT", "ANTHROPIC_API_KEY", "NODE_OPTIONS"]);
+        let get = |k: &str| set.iter().find(|(n, _)| n == k).map(|(_, v)| v.to_string_lossy().into_owned());
+        assert_eq!(get("PATH").as_deref(), Some("/usr/bin:/opt/homebrew/bin"));
+        assert_eq!(get("CLAUDE_CONFIG_DIR").as_deref(), Some("/Users/a/.claude-work"));
+        assert_eq!(get("CLAUDE_CODE_ENTRYPOINT").as_deref(), Some("sdk-ts"));
+        assert_eq!(get("ENABLE_CLAUDEAI_MCP_SERVERS").as_deref(), Some("false"));
+        assert_eq!(get("HOME"), None, "HOME is inherited untouched");
+        let inherited = env(&ProviderConfig { config_dir: String::new(), ..cfg }, &host, std::iter::empty()).0;
+        assert!(!inherited.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"), "an empty config dir leaves the variable to the environment");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_binary_resolves_on_the_host_path_or_names_where_it_looked() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let claude = bin.join("claude");
+        std::fs::write(&claude, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let host = HostEnv { path: std::env::join_paths([bin.clone(), PathBuf::from("/nonexistent")]).unwrap(), home: dir.path().to_owned(), cwd: dir.path().join("assistant") };
+        let cfg = |binary: &str| ProviderConfig { provider: crate::model::ProviderKind::Claude, enabled: true, display_name: "Claude".into(), binary_path: binary.into(), config_dir: String::new(), launch_args: String::new() };
+        assert_eq!(resolve_binary(&cfg(""), &host).unwrap(), claude);
+        assert_eq!(resolve_binary(&cfg("~/bin/claude"), &host).unwrap(), claude);
+        assert_eq!(resolve_binary(&cfg("/nope"), &host).unwrap_err(), "/nope");
+        assert_eq!(resolve_binary(&cfg("missing"), &host).unwrap_err(), format!("missing on PATH ({}:/nonexistent)", bin.display()));
+    }
+}
