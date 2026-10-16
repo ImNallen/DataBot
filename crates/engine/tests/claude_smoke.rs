@@ -61,6 +61,14 @@ impl Smoke {
 }
 
 /// The CLI keeps a transcript directory named after the cwd, so a temp data dir leaves one behind.
+struct TranscriptDirs(String);
+
+impl Drop for TranscriptDirs {
+    fn drop(&mut self) {
+        remove_transcript_dirs(&self.0);
+    }
+}
+
 fn remove_transcript_dirs(marker: &str) {
     let Some(home) = std::env::var_os("HOME") else { return };
     let projects = std::path::PathBuf::from(home).join(".claude/projects");
@@ -77,6 +85,7 @@ fn remove_transcript_dirs(marker: &str) {
 async fn haiku_answers_resumes_and_waits_for_an_approval() {
     let dir = tempfile::Builder::new().prefix("l1-smoke-").tempdir().unwrap();
     let marker = dir.path().file_name().unwrap().to_string_lossy().into_owned();
+    let _transcripts = TranscriptDirs(marker);
     let engine = Engine::open(EngineConfig { data_dir: dir.path().join("data"), keys: Arc::new(MemoryKeyStore::default()), agent_path: AgentPath::LoginShell }).await.unwrap();
     let mut smoke = Smoke { events: engine.subscribe(), engine };
 
@@ -143,9 +152,8 @@ async fn haiku_answers_resumes_and_waits_for_an_approval() {
     let tools: Vec<&Entry> = view.entries.iter().filter(|s| s.turn == third.turn && matches!(s.entry, Entry::Tool { .. })).map(|s| &s.entry).collect();
     let text = smoke.reply_text(chat, third.turn).await;
     println!("turn 3: {outcome:?} in {:.1} s, tools={tools:?}, reply={text:?}", t.elapsed().as_secs_f32());
-    remove_transcript_dirs(&marker);
+    smoke.engine.shutdown().await;
     assert_eq!(answered, Ok(()), "the CLI did not wait {} s for the approval; see \"The CLI waits on `can_use_tool`\" in docs/architecture.md", APPROVAL_DELAY.as_secs());
     assert_eq!(outcome, TurnOutcome::Completed);
     assert!(tools.iter().any(|e| matches!(e, Entry::Tool { status: ToolStatus::Done { result: ToolResult::Rows { .. } }, .. })), "the approved query ran: {tools:?}");
-    smoke.engine.shutdown().await;
 }
