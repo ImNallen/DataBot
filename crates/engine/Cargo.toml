@@ -30,6 +30,9 @@ tokio = { workspace = true, features = ["io-util", "process", "time"] }
 tokio-postgres = "0.7.18"
 uuid.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [dev-dependencies]
 bytes = "1"
 tempfile = "3"

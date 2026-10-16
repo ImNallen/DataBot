@@ -20,7 +20,7 @@ const EXIT_CODE_WAIT: Duration = Duration::from_secs(2);
 
 /// The process group of every live child, so quit can kill what no task got to close. A group
 /// leaves when its child is reaped or swept, so a pid the kernel may have reused is never
-/// signalled.
+/// signalled. Windows has no groups: the id is the child's pid, and the sweep ends that process.
 #[derive(Default)]
 pub(crate) struct ProcessGroups(Mutex<HashSet<i32>>);
 
@@ -258,6 +258,8 @@ impl Agent {
             if self.groups.remove(self.pgid) {
                 kill_group(self.pgid);
             }
+            // The group kill also reaches the child's descendants; this reaches the child on every platform.
+            let _ = self.child.start_kill();
             let _ = self.child.wait().await;
         }
         self.groups.remove(self.pgid);
@@ -282,8 +284,20 @@ fn kill_group(pgid: i32) {
     }
 }
 
-#[cfg(not(unix))]
-fn kill_group(_pgid: i32) {}
+/// Windows has no process group to signal, so the registered process itself is ended.
+#[cfg(windows)]
+fn kill_group(pid: i32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    // SAFETY: the handle OpenProcess returns is closed here, and a stale pid yields a null handle.
+    unsafe {
+        let process = OpenProcess(PROCESS_TERMINATE, 0, pid as u32);
+        if !process.is_null() {
+            TerminateProcess(process, 1);
+            CloseHandle(process);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -358,6 +372,20 @@ mod tests {
             }
         }
         out
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_ends_a_child_that_ignores_eof_even_with_no_group_to_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(MemoryKeyStore::default()), agent_path: AgentPath::Fixed("".into()) }).await.unwrap();
+        let spec = LaunchSpec { program: "sh".into(), args: vec!["-c".into(), "echo ready; exec sleep 60".into()], env_set: Vec::new(), env_remove: Vec::new(), cwd: std::env::temp_dir() };
+        let (agent, _) = Agent::start(&engine.shared, spec, Box::new(LineCodec)).await.unwrap();
+        let pid = agent.pgid;
+        assert!(agent.groups.remove(pid), "the group was registered at spawn");
+        tokio::time::timeout(CLOSE_GRACE + Duration::from_secs(3), agent.close()).await.expect("close waited on a child that nothing killed");
+        // SAFETY: signal 0 only asks whether the process exists.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "process {pid} outlived close");
     }
 
     #[tokio::test]
