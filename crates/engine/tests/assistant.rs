@@ -171,7 +171,7 @@ impl Harness {
         }
     }
 
-    /// Idle follows the End entry only once the turn's process is gone; a send before it is Busy.
+    /// Idle follows the End entry at once; the turn's process may still be closing behind it.
     async fn wait_idle(&mut self, chat: ChatId) -> ChatState {
         self.wait_chat(chat, "the idle state", |s| s.status == ChatStatus::Idle).await
     }
@@ -340,8 +340,7 @@ async fn a_second_send_during_a_turn_is_busy() {
     assert_eq!(h.engine.assistant_send(chat, SendRequest { text: "two".into(), tab: None }).await.unwrap_err(), SendError::Busy);
     h.engine.assistant_stop(chat);
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Stopped);
-    h.wait_idle(chat).await;
-    assert_eq!(h.send(chat, "two").await.turn, 3, "a new turn is accepted once the old one ended");
+    assert_eq!(h.send(chat, "two").await.turn, 3, "a new turn is accepted as soon as the old one ended");
     h.wait_entry(chat, "the second turn's text", |s| s.turn == 3 && matches!(s.entry, Entry::Text { .. })).await;
     h.engine.assistant_stop(chat);
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Stopped);
@@ -506,11 +505,9 @@ async fn a_lost_session_falls_back_to_a_new_one_with_a_notice_and_a_recap() {
     let chat = h.chat(Permission::Auto);
     h.send(chat, "first").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
-    h.wait_idle(chat).await;
     let first_session = format!("fake-session-{}", h.turn_pids()[0]);
     h.send(chat, "second").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
-    h.wait_idle(chat).await;
     let argvs = h.turn_argvs();
     assert_eq!(argvs.len(), 3, "first turn, the failed resume, the retry: {argvs:?}");
     assert_eq!(argvs[1].iter().position(|a| a == "--resume").map(|i| argvs[1][i + 1].as_str()), Some(first_session.as_str()));
@@ -535,7 +532,6 @@ async fn a_session_lost_at_the_first_result_is_restarted_with_a_recap_that_leave
     let chat = h.chat(Permission::Auto);
     h.send(chat, "first").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
-    h.wait_idle(chat).await;
     let first_session = format!("fake-session-{}", h.turn_pids()[0]);
     h.send(chat, "second").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
@@ -557,13 +553,11 @@ async fn a_resume_that_fails_for_another_reason_keeps_the_session_and_fails_the_
     let chat = h.chat(Permission::Auto);
     h.send(chat, "first").await;
     h.wait_end(chat).await;
-    h.wait_idle(chat).await;
     let session = format!("fake-session-{}", h.turn_pids()[0]);
     h.use_fake("resume-crash");
     h.send(chat, "second").await;
     let (outcome, _) = h.wait_end(chat).await;
     assert!(matches!(&outcome, TurnOutcome::Failed { error: AgentError::Exited { code: Some(1), detail } } if detail.contains("fake-claude: boom")), "{outcome:?}");
-    h.wait_idle(chat).await;
     assert_eq!(h.turn_argvs().len(), 2, "no retry");
     assert!(!h.entries(chat).await.iter().any(|e| matches!(e, Entry::Notice { .. })));
     h.use_fake("card");
@@ -580,12 +574,10 @@ async fn the_notice_appears_only_once_the_replacement_session_has_started() {
     let chat = h.chat(Permission::Auto);
     h.send(chat, "first").await;
     h.wait_end(chat).await;
-    h.wait_idle(chat).await;
     h.use_fake("resume-lost-twice");
     h.send(chat, "second").await;
     let (outcome, _) = h.wait_end(chat).await;
     assert!(matches!(&outcome, TurnOutcome::Failed { error: AgentError::Exited { code: Some(1), detail } } if detail.contains("fake-claude: no session store")), "{outcome:?}");
-    h.wait_idle(chat).await;
     assert_eq!(h.turn_argvs().len(), 3, "the resume, then one fresh start");
     assert!(!h.entries(chat).await.iter().any(|e| matches!(e, Entry::Notice { .. })), "no notice for a restart that never started");
     h.use_fake("card");
@@ -646,13 +638,11 @@ async fn a_changed_config_dir_restarts_the_session_with_a_recap() {
     let chat = h.chat(Permission::Auto);
     h.send(chat, "first").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
-    h.wait_idle(chat).await;
     let other = h.dir.path().join("other-config");
     std::fs::create_dir_all(&other).unwrap();
     h.configure_provider(|p| p.config_dir = other.display().to_string());
     h.send(chat, "second").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
-    h.wait_idle(chat).await;
     let argvs = h.turn_argvs();
     assert_eq!(argvs.len(), 2, "no resume was attempted: {argvs:?}");
     assert!(!argvs[1].iter().any(|a| a == "--resume"));
@@ -672,7 +662,6 @@ async fn the_second_turn_resumes_the_session_and_a_changed_model_reaches_argv() 
     let chat = h.chat(Permission::Auto);
     h.send(chat, "one").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
-    h.wait_idle(chat).await;
     let first = h.turn_argvs()[0].clone();
     assert!(!first.iter().any(|a| a == "--resume"));
     assert_eq!(first.iter().position(|a| a == "--model").map(|i| first[i + 1].as_str()), Some("opus"));
@@ -757,7 +746,7 @@ async fn shutdown_leaves_no_child_pid_alive_and_ends_the_turn_stopped() {
 }
 
 #[tokio::test]
-async fn stop_kills_a_process_that_ignores_interrupt_and_eof_before_the_chat_goes_idle() {
+async fn stop_kills_a_process_that_ignores_interrupt_and_eof_before_the_next_turn_starts() {
     let mut h = Harness::open().await;
     h.use_fake("wedged");
     let chat = h.chat(Permission::Auto);
@@ -767,9 +756,12 @@ async fn stop_kills_a_process_that_ignores_interrupt_and_eof_before_the_chat_goe
     let started = Instant::now();
     h.engine.assistant_stop(chat);
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Stopped);
-    h.wait_chat(chat, "idle", |s| s.status == ChatStatus::Idle).await;
-    assert!(!alive(pid), "the chat went idle while its process lived");
+    assert_eq!(h.send(chat, "again").await.turn, 3, "the send right after Stop is accepted");
+    h.wait_entry(chat, "the second turn's text", |s| s.turn == 3 && matches!(s.entry, Entry::Text { .. })).await;
+    assert!(!alive(pid), "the second process started while the first lived");
+    assert_eq!(h.turn_pids().len(), 2);
     assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    h.engine.shutdown().await;
 }
 
 #[tokio::test]
@@ -789,20 +781,48 @@ async fn shutdown_kills_a_wedged_process_within_its_bound() {
     assert_eq!(h.engine.boot().chats[0].status, ChatStatus::Idle);
 }
 
+/// The first process takes 500 ms to exit after its turn. The follow-up sent the moment the End
+/// arrives is accepted, and its process starts only after that exit.
 #[tokio::test]
-async fn a_quick_follow_up_starts_only_after_the_last_process_exited() {
+async fn a_quick_follow_up_is_accepted_and_starts_only_after_the_last_process_exited() {
     let mut h = Harness::open().await;
     h.use_fake_with("card", "--fake-linger-ms 500");
     let chat = h.chat(Permission::Auto);
     h.send(chat, "one").await;
     h.wait_end(chat).await;
-    h.wait_chat(chat, "idle", |s| s.status == ChatStatus::Idle).await;
-    h.send(chat, "two").await;
+    assert_eq!(h.send(chat, "two").await.turn, 3, "the follow-up sent right after the End is accepted");
     h.wait_end(chat).await;
     let life = h.lifecycle();
     let [first, second] = h.turn_pids()[..] else { panic!("{life:?}") };
     let at = |kind: &str, pid: u32| life.iter().position(|(k, p)| k == kind && *p == pid).unwrap_or_else(|| panic!("no {kind} for {pid} in {life:?}"));
     assert!(at("exit", first) < at("argv", second), "the second process started before the first exited: {life:?}");
+}
+
+#[tokio::test]
+async fn delete_waits_for_the_last_process_to_exit() {
+    let mut h = Harness::open().await;
+    h.use_fake_with("card", "--fake-linger-ms 500");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "one").await;
+    h.wait_end(chat).await;
+    let pid = h.turn_pids()[0];
+    h.engine.assistant_delete(chat).await;
+    assert!(!alive(pid), "delete returned while the last process lived");
+    assert!(h.lifecycle().contains(&("exit".to_owned(), pid)), "the process was killed instead of exiting: {:?}", h.lifecycle());
+    h.wait_chat(chat, "the tombstone", |s| s.status == ChatStatus::Deleted).await;
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_the_last_process_to_exit_before_the_sweep() {
+    let mut h = Harness::open().await;
+    h.use_fake_with("card", "--fake-linger-ms 500");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "one").await;
+    h.wait_end(chat).await;
+    let pid = h.turn_pids()[0];
+    h.engine.shutdown().await;
+    assert!(!alive(pid), "shutdown returned while the last process lived");
+    assert!(h.lifecycle().contains(&("exit".to_owned(), pid)), "the process was killed instead of exiting: {:?}", h.lifecycle());
 }
 
 #[tokio::test]
@@ -1067,14 +1087,12 @@ mod pg {
         let chat = h.chat(Permission::Auto);
         send_on(&h, chat, "first", tab(&config, "select * from orders")).await;
         assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
-        h.wait_idle(chat).await;
         let first = text_of(&h.entries(chat).await[1]);
         assert!(first.contains("Connection: dev (PostgreSQL ") && first.contains(", database shop, connected."), "{first}");
         assert!(first.contains("Default schema: public. Shown schemas: lab, public.") && first.contains("Schema outline:\nlab.type_zoo, ~") && first.contains("public.orders, ~"), "{first}");
         assert!(first.contains("Tab SQL:\nselect * from orders\nStatement at the cursor:\nselect * from orders\n"), "{first}");
         send_on(&h, chat, "second", tab(&config, "select * from orders")).await;
         assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
-        h.wait_idle(chat).await;
         let second = text_of(&h.entries(chat).await[4]);
         assert!(second.contains("Tab SQL: unchanged since your last message.") && second.contains("Schema outline: unchanged since earlier in this chat."), "{second}");
         send_on(&h, chat, "third", tab(&config, "select * from customers")).await;

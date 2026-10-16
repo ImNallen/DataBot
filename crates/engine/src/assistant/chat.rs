@@ -14,7 +14,12 @@ use super::tools::Ask;
 use crate::Shared;
 use crate::console::now_ms;
 use crate::model::{AppEvent, ApprovalId, ApproveError, ChatId, ChatState, ChatStatus, DatabaseRef, Decision, Entry, EntrySnapshot, Permission, ToolCallId, TurnOutcome};
+use crate::provider::agent::{Agent, CLOSE_GRACE};
 use crate::store::ChatRecord;
+
+/// How long a waiter gives the last process to close: the grace `Agent::close` allows after
+/// stdin closes, then the kill and the reap.
+const CLOSING_WAIT: Duration = Duration::from_secs(CLOSE_GRACE.as_secs() + 1);
 
 pub(crate) struct Chat {
     pub id: ChatId,
@@ -30,6 +35,9 @@ pub(crate) struct ChatInner {
     /// The last published rev of the chat's own snapshot.
     pub rev: u64,
     pub turn: Option<ActiveTurn>,
+    /// The last turn's process while it closes. Idle does not wait for it: the next turn does,
+    /// before it starts its own process, and so do delete and shutdown.
+    pub closing: Option<Closing>,
     /// Entries are numbered `0..next_seq`; the record's `entry_count` catches up at turn end.
     pub next_seq: u32,
     /// Snapshots the running turn published, keyed by seq, cleared at turn end. `open` overlays
@@ -63,6 +71,26 @@ pub(crate) struct ActiveTurn {
 pub(crate) enum TurnControl {
     /// Deny pending approvals, cancel running tools, interrupt, and kill after `grace`.
     Stop { grace: Duration },
+}
+
+/// A process being closed on its own task. Every clone resolves once the child is reaped.
+#[derive(Clone)]
+pub(crate) struct Closing(watch::Receiver<bool>);
+
+impl Closing {
+    pub(crate) fn start(shared: &Shared, agent: Agent) -> Self {
+        let (reaped, handle) = watch::channel(false);
+        shared.spawn(async move {
+            agent.close().await;
+            let _ = reaped.send(true);
+        });
+        Self(handle)
+    }
+
+    /// True once the child is reaped, or once its close task is gone. False after `CLOSING_WAIT`.
+    pub(crate) async fn wait(mut self) -> bool {
+        tokio::time::timeout(CLOSING_WAIT, self.0.wait_for(|reaped| *reaped)).await.is_ok()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -135,7 +163,7 @@ pub(crate) enum Gated {
 impl Chat {
     pub(crate) fn new(id: ChatId, record: ChatRecord, stored: bool, next_seq: u32) -> Self {
         let status = if stored { ChatStatus::Idle } else { ChatStatus::Draft };
-        Self { id, inner: Mutex::new(ChatInner { record, stored, status, rev: 0, turn: None, next_seq, live: BTreeMap::new(), ledger: Ledger::default(), last_context: None }) }
+        Self { id, inner: Mutex::new(ChatInner { record, stored, status, rev: 0, turn: None, closing: None, next_seq, live: BTreeMap::new(), ledger: Ledger::default(), last_context: None }) }
     }
 
     pub(crate) fn permission(&self) -> Permission {

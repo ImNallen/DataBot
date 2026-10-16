@@ -11,7 +11,7 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::chat::{Chat, Gated, LastContext, Refusal, TurnControl, wait};
+use super::chat::{Chat, Closing, Gated, LastContext, Refusal, TurnControl, wait};
 use super::tools::{self, Ask, Executed, ParsedCall};
 use super::{context, reply};
 use crate::Shared;
@@ -40,6 +40,8 @@ pub(crate) struct TurnPlan {
     pub options: ChatOptions,
     pub user_text: String,
     pub tab: Option<TabContext>,
+    /// The last turn's process, if it is still closing. This turn starts its own only after it.
+    pub closing: Option<Closing>,
 }
 
 pub(crate) async fn run_turn(shared: Arc<Shared>, plan: TurnPlan, control: mpsc::Receiver<TurnControl>) {
@@ -51,6 +53,7 @@ pub(crate) async fn run_turn(shared: Arc<Shared>, plan: TurnPlan, control: mpsc:
         user_text: plan.user_text,
         db: plan.tab.as_ref().and_then(|t| t.db.clone()),
         tab: plan.tab,
+        closing: plan.closing,
         control: Some(control),
         connected: Ok(()),
         catalog: None,
@@ -72,6 +75,7 @@ struct Turn {
     user_text: String,
     tab: Option<TabContext>,
     db: Option<DatabaseRef>,
+    closing: Option<Closing>,
     control: Option<mpsc::Receiver<TurnControl>>,
     connected: Result<(), String>,
     catalog: Option<Arc<Catalog>>,
@@ -141,6 +145,12 @@ impl Turn {
             }
             if self.connected.is_ok() {
                 self.catalog = self.shared.catalog(&db).await.ok();
+            }
+        }
+        if let Some(closing) = self.closing.take() {
+            tokio::select! {
+                reaped = closing.wait() => if !reaped { eprintln!("chat {} starts its next process while the last one is still closing", self.chat.id.0) },
+                Some(TurnControl::Stop { .. }) = control.recv() => return TurnOutcome::Stopped,
             }
         }
         let cfg = self.provider_config();
@@ -610,8 +620,9 @@ impl Turn {
         self.chat.publish_entry(&self.shared, seq, self.seq, entry);
     }
 
-    /// In this order, so a crash at any step leaves rows `recover` can close, and so the chat is
-    /// Idle only once its process is gone: the next turn's process never overlaps this one's.
+    /// In this order, so a crash at any step leaves rows `recover` can close. The chat is Idle as
+    /// soon as its End is out; the process closes on its own task, and the next turn waits for
+    /// that before it starts its own.
     async fn finish(&mut self, outcome: TurnOutcome) {
         self.publish_texts(true);
         if outcome == TurnOutcome::Stopped {
@@ -633,15 +644,17 @@ impl Turn {
         let end = Entry::End { at_ms: now_ms(), outcome: outcome.clone(), suggestions };
         self.chat.store_entry(&self.shared, seq, self.seq, &end);
         self.chat.publish_entry(&self.shared, seq, self.seq, end);
-        if let Some(agent) = self.agent.take() {
-            agent.close().await;
-        }
+        let closing = self.agent.take().map(|agent| Closing::start(&self.shared, agent));
         {
             let mut inner = self.chat.inner.lock().unwrap();
             inner.record.entry_count = inner.next_seq;
             inner.record.updated_at_ms = now_ms();
             inner.ledger = Default::default();
             inner.turn = None;
+            // A turn stopped before it started a process leaves its predecessor's handle in place.
+            if closing.is_some() {
+                inner.closing = closing;
+            }
             inner.status = ChatStatus::Idle;
             inner.live.clear();
             if let Some(last) = inner.last_context.as_mut()

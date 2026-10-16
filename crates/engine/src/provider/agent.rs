@@ -18,7 +18,7 @@ const MAX_LINE: usize = 16 << 20;
 const STDERR_TAIL: usize = 8 << 10;
 const LINE_BUFFER: usize = 256;
 const READY_TIMEOUT: Duration = Duration::from_secs(25);
-const CLOSE_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const EXIT_CODE_WAIT: Duration = Duration::from_secs(2);
 
 /// The process group of every live child, so quit can kill what no task got to close. A group

@@ -12,11 +12,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use futures_util::future::join_all;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use chat::{ActiveTurn, Chat, TurnControl};
+use chat::{ActiveTurn, Chat, Closing, TurnControl};
 use turn::TurnPlan;
 
 use crate::Shared;
@@ -194,7 +195,7 @@ impl Shared {
             None => None,
         };
         let connection_name = request.tab.as_ref().and_then(|t| t.db.as_ref()).and_then(|db| self.config(db.connection_id)).map(|c| c.name);
-        let (seq, control_rx) = {
+        let (seq, control_rx, closing) = {
             let mut inner = chat.inner.lock().unwrap();
             if inner.turn.is_some() {
                 return Err(SendError::Busy);
@@ -210,7 +211,7 @@ impl Shared {
                 inner.record.created_at_ms = now_ms();
             }
             inner.record.updated_at_ms = now_ms();
-            (seq, control_rx)
+            (seq, control_rx, inner.closing.clone())
         };
         chat.store_record(self);
         let context = request.tab.as_ref().map(|t| SentContext { db: t.db.clone(), connection_name: connection_name.clone(), tab_title: t.title.clone() });
@@ -218,7 +219,7 @@ impl Shared {
         chat.store_entry(self, seq, seq, &entry);
         chat.publish_entry(self, seq, seq, entry);
         chat.publish_state(self);
-        let plan = TurnPlan { chat: chat.clone(), turn: seq, options, user_text: text, tab: request.tab };
+        let plan = TurnPlan { chat: chat.clone(), turn: seq, options, user_text: text, tab: request.tab, closing };
         let turn = self.spawn(turn::run_turn(self.clone(), plan, control_rx));
         let abort = turn.abort_handle();
         let task = self.spawn(supervise(self.clone(), chat.clone(), turn));
@@ -243,9 +244,10 @@ impl Shared {
     }
 
     /// Marks the chat deleted under its lock, so its turn task stores and publishes nothing
-    /// more, stops the turn and waits for it, aborts it past the bound, deletes the rows, and
-    /// emits one `Deleted` tombstone with a fresh rev, also for a chat this session never
-    /// loaded. The provider's own transcript file is left alone.
+    /// more, stops the turn and waits for it, aborts it past the bound, waits for the last
+    /// process to close, deletes the rows, and emits one `Deleted` tombstone with a fresh rev,
+    /// also for a chat this session never loaded. The provider's own transcript file is left
+    /// alone.
     pub(crate) async fn assistant_delete(&self, id: ChatId) {
         let loaded = self.assistant.get(id);
         let (record, running) = match &loaded {
@@ -268,6 +270,9 @@ impl Shared {
                 abort.abort();
             }
         }
+        if let Some(closing) = loaded.as_ref().and_then(|chat| chat.inner.lock().unwrap().closing.clone()) {
+            closing.wait().await;
+        }
         if let Err(e) = self.store.delete_chat(id) {
             eprintln!("chat {} delete failed: {e}", id.0);
         }
@@ -277,10 +282,11 @@ impl Shared {
         self.emit(AppEvent::ChatChanged(ChatState { id, rev: self.next_chat_rev(), title: record.title, updated_at_ms: record.updated_at_ms, options: record.options, status: ChatStatus::Deleted, entry_count: record.entry_count }));
     }
 
-    /// Stops every running turn and waits for the tasks, bounded. Then every agent process group
-    /// still registered gets SIGKILL on this thread, whether a turn's, a probe's, or one a task
-    /// past the bound still holds, and those tasks are aborted and awaited briefly. A turn ended
-    /// that way gets its End from its supervisor.
+    /// Stops every running turn and waits for the tasks, then for every process still closing,
+    /// the stopped turns' included, all within one bound. Then every agent process group still
+    /// registered gets SIGKILL on this thread, whether a turn's, a probe's, or one a task past
+    /// the bound still holds, and those tasks are aborted and awaited briefly. A turn ended that
+    /// way gets its End from its supervisor.
     pub(crate) async fn shutdown(&self) {
         let mut tasks: FuturesUnordered<JoinHandle<()>> = FuturesUnordered::new();
         let mut aborts = Vec::new();
@@ -291,7 +297,10 @@ impl Shared {
                 aborts.extend(active.abort.take());
             }
         }
-        let _ = tokio::time::timeout(SHUTDOWN_WAIT, drain(&mut tasks)).await;
+        let deadline = tokio::time::Instant::now() + SHUTDOWN_WAIT;
+        let _ = tokio::time::timeout_at(deadline, drain(&mut tasks)).await;
+        let closing: Vec<Closing> = self.assistant.all().iter().filter_map(|chat| chat.inner.lock().unwrap().closing.clone()).collect();
+        let _ = tokio::time::timeout_at(deadline, join_all(closing.into_iter().map(Closing::wait))).await;
         for abort in aborts {
             abort.abort();
         }
