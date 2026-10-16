@@ -128,6 +128,13 @@ routes! { e;
     history_clear() => { e.clear_history(); ok(()) };
     workspace_save(workspace: Workspace) => { e.save_workspace(workspace); ok(()) };
     settings_set(settings: Settings) => { e.set_settings(settings); ok(()) };
+    assistant_open(chat_id: ChatId) => e.assistant_open(chat_id).await;
+    assistant_configure(chat_id: ChatId, options: ChatOptions) => e.assistant_configure(chat_id, options);
+    assistant_send(chat_id: ChatId, request: SendRequest) => e.assistant_send(chat_id, request).await;
+    assistant_stop(chat_id: ChatId) => { e.assistant_stop(chat_id); ok(()) };
+    assistant_approve(chat_id: ChatId, approval: ApprovalId, decision: Decision) => e.assistant_approve(chat_id, approval, decision);
+    assistant_delete(chat_id: ChatId) => { e.assistant_delete(chat_id).await; ok(()) };
+    provider_refresh() => { e.provider_refresh(); ok(()) };
 }
 
 #[cfg(test)]
@@ -135,7 +142,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use engine::{EngineConfig, MemoryKeyStore};
+    use engine::{AgentPath, EngineConfig, MemoryKeyStore};
     use serde_json::json;
 
     use super::*;
@@ -175,6 +182,7 @@ mod tests {
         let engine = Engine::open(EngineConfig {
             data_dir: dir.path().to_owned(),
             keys: Arc::new(MemoryKeyStore::default()),
+            agent_path: AgentPath::Fixed("".into()),
         })
         .await
         .unwrap();

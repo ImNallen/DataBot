@@ -1,16 +1,25 @@
 use super::split::{dollar_tag, skip_block_comment, skip_dollar_quoted, skip_quoted};
 
 #[derive(Debug, PartialEq)]
-enum Token<'a> {
+pub(super) enum Token<'a> {
     Word(&'a str),
+    Quoted(&'a str),
+    UnicodeEscape,
+    Dot,
     Open,
     Close,
     Comma,
     Number(&'a str),
+    /// A run of operator characters, lexed as Postgres lexes it, with `!=` read as `<>`.
+    Operator(&'a str),
     Other,
 }
 
-fn tokens(sql: &str) -> Vec<Token<'_>> {
+fn is_operator_char(c: u8) -> bool {
+    b"+-*/<>=~!@#%^&|`?".contains(&c)
+}
+
+pub(super) fn tokens(sql: &str) -> Vec<Token<'_>> {
     let bytes = sql.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -20,9 +29,15 @@ fn tokens(sql: &str) -> Vec<Token<'_>> {
                 i = sql[i..].find('\n').map_or(bytes.len(), |n| i + n)
             }
             b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
-            b'\'' | b'"' => {
+            b'"' => {
+                let end = skip_quoted(bytes, i, b'"');
+                let closed = end > i + 1 && bytes[end - 1] == b'"';
+                out.push(Token::Quoted(&sql[i + 1..if closed { end - 1 } else { end }]));
+                i = end;
+            }
+            b'\'' => {
                 out.push(Token::Other);
-                i = skip_quoted(bytes, i, bytes[i]);
+                i = skip_quoted(bytes, i, b'\'');
             }
             b'$' if dollar_tag(bytes, i).is_some() => {
                 out.push(Token::Other);
@@ -39,7 +54,13 @@ fn tokens(sql: &str) -> Vec<Token<'_>> {
                 {
                     i += 1;
                 }
-                out.push(Token::Word(&sql[start..i]));
+                let word = &sql[start..i];
+                if word.eq_ignore_ascii_case("u") && bytes.get(i) == Some(&b'&') && matches!(bytes.get(i + 1), Some(b'"' | b'\'')) {
+                    out.push(Token::UnicodeEscape);
+                    i += 1;
+                } else {
+                    out.push(Token::Word(word));
+                }
             }
             c if c.is_ascii_digit() => {
                 let start = i;
@@ -48,9 +69,28 @@ fn tokens(sql: &str) -> Vec<Token<'_>> {
                 }
                 out.push(Token::Number(&sql[start..i]));
             }
+            c if is_operator_char(c) => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && is_operator_char(bytes[i]) && !sql[i..].starts_with("--") && !sql[i..].starts_with("/*") {
+                    i += 1;
+                }
+                // A multi-character operator ends in + or - only when it also has one of ~ ! @ # % ^ & | ` ?
+                if !bytes[start..i].iter().any(|b| b"~!@#%^&|`?".contains(b)) {
+                    while i - start > 1 && matches!(bytes[i - 1], b'+' | b'-') {
+                        i -= 1;
+                    }
+                }
+                out.push(match &sql[start..i] {
+                    "=>" => Token::Other,
+                    "!=" => Token::Operator("<>"),
+                    op => Token::Operator(op),
+                });
+            }
             c if c.is_ascii_whitespace() => i += 1,
             c => {
                 out.push(match c {
+                    b'.' => Token::Dot,
                     b'(' => Token::Open,
                     b')' => Token::Close,
                     b',' => Token::Comma,

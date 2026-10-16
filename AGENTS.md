@@ -15,6 +15,9 @@ Each rule below keeps a class of bug out of the app. Break one only after you ch
 - The backend emits whole `ConsoleState` and `ConnectionState` snapshots with a rising `rev`. `state/live.ts` keeps the higher `rev` and nothing else writes to it. Only the output log uses deltas.
 - A connection is a Postgres instance, and catalogs are per database. Key catalogs, catalog versions, primary-key lookups, and OID maps by `DatabaseRef { connectionId, database }`, never by `ConnectionId` alone, because OIDs repeat across databases. `ConnectionState` is the only source of catalog versions.
 - A run moves the tab's session into the run task. Commit, rollback, or a second run during a run returns `Busy`. Keep that shape so concurrent use of one session stays impossible.
+- SQL the model writes runs only through `assistant::tools::run_query`. It opens its own session, runs one statement in a `READ ONLY` transaction, and drops the session without a commit. On a tab's session the query could read or change the tab's open transaction, its `SET`s, and its temp tables. On a metadata session a `set_config` or an advisory lock would outlive the call. A structure test in `assistant/mod.rs` fails if a file under `assistant/` other than `tools.rs` calls a session's client.
+- A provider's protocol stays in `crates/engine/src/provider/<name>.rs`, behind the `Provider` and sans-IO `Codec` traits in `provider/mod.rs`. Keep its message shapes and flags out of `assistant/` and `model.rs`, so that a CLI update breaks one codec instead of the chat code and the contract. A structure test fails if a file under `assistant/` names a provider or its wire format.
+- An approval is checked again where the tool runs. The turn asks the approval ledger (`Chat::gate` in `assistant/chat.rs`) at `can_use_tool` and again at the MCP `tools/call`, and a call runs only on a recorded `Run` whose input equals the approved input. A check at the ask alone would let a CLI that skips the ask, or that calls with other arguments, run a query nobody approved.
 
 ## Add or change an IPC command
 
@@ -27,7 +30,7 @@ Each rule below keeps a class of bug out of the app. Break one only after you ch
 
 Tauri runs a sync command on the main thread, where no tokio runtime is active, and a bare `tokio::spawn` there aborts the app. Start engine background work with `Shared::spawn` in `crates/engine/src/lib.rs`, which uses the runtime handle the engine stores at open. The test `sync_commands_never_reach_a_bare_tokio_call` in `src-tauri/src/main.rs` fails if a sync command reaches a bare tokio call. The dev-bridge and the pg tests run inside tokio, so they cannot catch this.
 
-The app saves `Workspace`, `Settings`, and each connection's `ConnectionView` (the sidebar's database and schema choices, in `crates/engine/src/view.rs`) as JSON in SQLite. A type that is saved must still load data written by an older build. To add a field to such a type, give it a fallback in a hand-written `Deserialize`, as `Layout` does in `model.rs` and `ConnectionView` does in `view.rs`. Do not use `#[serde(default)]` on the struct, because specta then marks every field optional in `bindings.ts`.
+The app saves `Workspace`, `Settings`, each connection's `ConnectionView` (the sidebar's database and schema choices, in `crates/engine/src/view.rs`), and each chat (`ChatRecord` in `store.rs`, and one `Entry` per transcript row) as JSON in SQLite. A type that is saved must still load data written by an older build. To add a field to such a type, give it a fallback in a hand-written `Deserialize`, as `Layout` does in `model.rs` and `ConnectionView` does in `view.rs`. A stored entry that fails to parse loads as `Entry::Unreadable`, so a field added to an `Entry` variant without a fallback hides every older entry of that kind. Do not use `#[serde(default)]` on the struct, because specta then marks every field optional in `bindings.ts`.
 
 ## Run the checks
 
@@ -35,13 +38,14 @@ Run the checks that cover your change before you open a PR. Docker is needed onl
 
 | Command | Covers | Needs |
 |---|---|---|
-| `cargo test --workspace` | engine units, bindings drift, bridge coverage | nothing |
+| `cargo test --workspace` | engine units, the assistant against `fake-claude`, bindings drift, bridge coverage | nothing |
 | `cargo test -p engine --features pg-tests` | engine against a real server | `pnpm db:up` |
 | `pnpm typecheck` | the frontend types | nothing |
 | `pnpm test` | vitest units for state, formatting, and shell | nothing |
 | `pnpm build` | the production bundle | nothing |
 | `pnpm self-check` | the engine booted inside the Tauri binary | `pnpm db:up` |
 | `dev/bridge-smoke.sh` | the dev-bridge over HTTP, end to end | `pnpm db:up` and `cargo build -p dev-bridge` first. The script starts its own bridge. |
+| `cargo test -p engine --features claude-smoke --test claude_smoke -- --nocapture` | the assistant through the installed `claude`: its argv and environment, a resumed session, and an approval held for 75 s | `pnpm db:up` and a signed-in `claude`. It spends three Haiku turns on that account. |
 
 `pnpm db:up` starts Postgres 16 on `localhost:5433` with the seeded `shop` and `reporting` databases from `dev/seed.sql`. The `lab.type_zoo` table in `shop` holds one column per awkward type, for value-rendering tests. The `public.orders` table in `shop` has defaults, keys, indexes, and triggers, for the sidebar's table detail. Docker runs the seed only on a fresh volume, so after a change to `dev/seed.sql`, run `docker compose -f dev/docker-compose.yml down -v && pnpm db:up`.
 
@@ -53,6 +57,8 @@ A passing typecheck does not show that a UI change works. Drive the real UI agai
 2. Open `http://localhost:5173` in a browser tool such as agent-browser or Playwright. `src/dev/bridgeShim.ts` forwards every IPC call to the bridge, so the generated bindings run unchanged.
 3. Select elements by `data-testid`. Add a `data-testid` to any new control you need to reach.
 4. Connect to `postgres://l1data:l1data@localhost:5433/shop` and exercise the change. Tree rows have `data-testid="tree-node-<connection>/<database>/<schema>/..."`. The count pills that open the database and schema pickers are `db-pill-<connection>` and `schema-pill-<connection>/<database>`.
+
+To drive the assistant, use the real CLI or the fake one. The real `claude` must be installed and signed in, and each turn spends that account's usage. For scripted turns with no account, run `cargo build -p engine --bin fake-claude`. Then, in **Settings** > **Providers**, set **Binary path** to `target/debug/fake-claude` and **Launch arguments** to `--fake-scenario <name>`, where `<name>` is one of `card`, `query`, `query-tampered`, `ask-differs`, `describe`, `slow`, `stop-then-query`, `wedged`, `crash`, `resume-lost`, `resume-lost-late`, `resume-lost-twice`, `resume-crash`, `signed-out-start`, or `echo`. `--fake-sql '<sql>'` sets the query the `query` scenario asks to run, and `--fake-linger-ms <n>` delays its exit on EOF. The relative path works because `pnpm bridge` runs from the repo root. The comment at the top of `crates/engine/src/bin/fake_claude.rs` describes each scenario. The main controls are `assistant-input`, `assistant-send`, `approval-run`, `sql-card-uses`, `sql-run-new-tab`, and `provider-row-Claude`.
 
 The bridge has three limits. It runs in Chromium, not WKWebView. It has no native dialogs, so **Export** fails there. It serves commands inside a tokio runtime, so it cannot show a sync command that crashes the desktop app. For window chrome, file dialogs, a new or changed sync command, or anything WebKit-specific, run `pnpm tauri dev` and check the real window. On macOS, `pnpm screenshot` rewrites `docs/images/l1-data.png` from the running app.
 

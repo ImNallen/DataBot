@@ -935,6 +935,7 @@ pub struct Layout {
     pub results_height: u16,
     pub sidebar_width: u16,
     pub right_panel_width: u16,
+    pub assistant_chat: Option<ChatId>,
 }
 
 impl Default for Layout {
@@ -946,12 +947,13 @@ impl Default for Layout {
             results_height: 320,
             sidebar_width: 256,
             right_panel_width: 341,
+            assistant_chat: None,
         }
     }
 }
 
-// Hand-written so workspaces saved before the panel widths existed still load. `#[serde(default)]`
-// would do it too, but specta would then mark every Layout field optional in the TS bindings.
+// Hand-written so workspaces saved before the panel widths or the assistant chat existed still load.
+// `#[serde(default)]` would do it too, but specta would then mark every Layout field optional in the TS bindings.
 impl<'de> Deserialize<'de> for Layout {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -963,6 +965,7 @@ impl<'de> Deserialize<'de> for Layout {
             results_height: u16,
             sidebar_width: Option<u16>,
             right_panel_width: Option<u16>,
+            assistant_chat: Option<ChatId>,
         }
         let s = Saved::deserialize(d)?;
         let default = Self::default();
@@ -973,6 +976,7 @@ impl<'de> Deserialize<'de> for Layout {
             results_height: s.results_height,
             sidebar_width: s.sidebar_width.unwrap_or(default.sidebar_width),
             right_panel_width: s.right_panel_width.unwrap_or(default.right_panel_width),
+            assistant_chat: s.assistant_chat,
         })
     }
 }
@@ -1063,15 +1067,27 @@ pub struct Settings {
     pub panel_motion_ms: u16,
     /// Shade each colored connection in the sidebar tree instead of drawing its dot.
     pub tint_connections: bool,
+    /// One per `ProviderKind::ALL`, in that order.
+    pub providers: Vec<ProviderConfig>,
+    /// Seconds between background provider status checks; 0 turns them off.
+    pub provider_health_check_secs: u32,
 }
 
 const DEFAULT_PANEL_MOTION_MS: u16 = 150;
+const DEFAULT_PROVIDER_HEALTH_CHECK_SECS: u32 = 300;
 
 const DEFAULT_LIGHT_THEME: &str = "l1-light";
 const DEFAULT_DARK_THEME: &str = "l1-dark";
 
+fn provider_configs(saved: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
+    ProviderKind::ALL
+        .iter()
+        .map(|&kind| saved.iter().find(|c| c.provider == kind).cloned().unwrap_or_else(|| default_config(kind)))
+        .collect()
+}
+
 // Hand-written for the same reason as `TableQuery`: settings saved by older builds still load
-// (`theme` became `colorScheme`; the theme, font, density, motion, and tint fields came later), and the TS binding keeps every field required.
+// (`theme` became `colorScheme`; the theme, font, density, motion, tint, and provider fields came later), and the TS binding keeps every field required.
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -1094,6 +1110,8 @@ impl<'de> Deserialize<'de> for Settings {
             panel_motion_ms: Option<u16>,
             #[serde(default)]
             tint_connections: bool,
+            providers: Option<Vec<ProviderConfig>>,
+            provider_health_check_secs: Option<u32>,
         }
         let s = Stored::deserialize(d)?;
         Ok(Settings {
@@ -1110,6 +1128,8 @@ impl<'de> Deserialize<'de> for Settings {
             density: s.density,
             panel_motion_ms: s.panel_motion_ms.unwrap_or(DEFAULT_PANEL_MOTION_MS),
             tint_connections: s.tint_connections,
+            providers: provider_configs(s.providers.unwrap_or_default()),
+            provider_health_check_secs: s.provider_health_check_secs.unwrap_or(DEFAULT_PROVIDER_HEALTH_CHECK_SECS),
         })
     }
 }
@@ -1130,6 +1150,8 @@ impl Default for Settings {
             density: Density::Standard,
             panel_motion_ms: DEFAULT_PANEL_MOTION_MS,
             tint_connections: false,
+            providers: provider_configs(Vec::new()),
+            provider_health_check_secs: DEFAULT_PROVIDER_HEALTH_CHECK_SECS,
         }
     }
 }
@@ -1142,6 +1164,9 @@ pub struct BootSnapshot {
     pub consoles: Vec<ConsoleState>,
     pub workspace: Workspace,
     pub settings: Settings,
+    pub providers: Vec<ProviderState>,
+    /// Stored chats, newest first, at most 200.
+    pub chats: Vec<ChatState>,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -1155,6 +1180,10 @@ pub enum AppEvent {
         entries: Vec<OutputEntry>,
     },
     HistoryAppended(HistoryEntry),
+    ProviderChanged(ProviderState),
+    ChatChanged(ChatState),
+    /// Coalesced to at most 20/s per chat while a text block streams.
+    ChatEntryChanged(EntrySnapshot),
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -1345,6 +1374,384 @@ pub enum CountError {
 pub enum ExportError {
     Gone,
     Io { message: String },
+}
+
+/// Minted by the frontend (`crypto.randomUUID()`), like `TabId`. A chat reaches the store with its
+/// first message; until then it is a draft held in memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+pub struct ChatId(pub Uuid);
+
+/// Engine-wide monotonic. Lives only while the turn that asked for it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+pub struct ApprovalId(pub u64);
+
+/// The provider's id for one tool use (`toolu_…` for Claude). Opaque outside the codec.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+pub struct ToolCallId(pub String);
+
+/// A model as its provider names it on its command line (`opus`). Valid only against the last probe.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+pub struct ModelId(pub String);
+
+/// An effort level as its provider names it (`high`). Valid only for a model that lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+pub struct EffortId(pub String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Type)]
+pub enum ProviderKind {
+    Claude,
+}
+
+impl ProviderKind {
+    pub const ALL: [ProviderKind; 1] = [ProviderKind::Claude];
+}
+
+pub fn default_config(kind: ProviderKind) -> ProviderConfig {
+    match kind {
+        ProviderKind::Claude => ProviderConfig {
+            provider: kind,
+            enabled: true,
+            display_name: "Claude".into(),
+            binary_path: String::new(),
+            config_dir: String::new(),
+            launch_args: String::new(),
+        },
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConfig {
+    pub provider: ProviderKind,
+    pub enabled: bool,
+    pub display_name: String,
+    /// Empty means the provider's binary name, looked up on the login shell's PATH. `~` expands.
+    pub binary_path: String,
+    /// Empty means the inherited environment variable, else the provider's default directory.
+    pub config_dir: String,
+    /// Extra arguments as typed. The provider drops the flags the engine owns.
+    pub launch_args: String,
+}
+
+impl<'de> Deserialize<'de> for ProviderConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Stored {
+            provider: ProviderKind,
+            enabled: Option<bool>,
+            display_name: Option<String>,
+            binary_path: Option<String>,
+            config_dir: Option<String>,
+            launch_args: Option<String>,
+        }
+        let s = Stored::deserialize(d)?;
+        let default = default_config(s.provider);
+        Ok(Self {
+            provider: s.provider,
+            enabled: s.enabled.unwrap_or(default.enabled),
+            display_name: s.display_name.unwrap_or(default.display_name),
+            binary_path: s.binary_path.unwrap_or(default.binary_path),
+            config_dir: s.config_dir.unwrap_or(default.config_dir),
+            launch_args: s.launch_args.unwrap_or(default.launch_args),
+        })
+    }
+}
+
+/// What never changes for a kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInfo {
+    pub default_name: String,
+    pub default_binary: String,
+    /// The environment variable that names the config directory: `CLAUDE_CONFIG_DIR`.
+    pub config_env: String,
+    pub config_dir_default: String,
+    pub sign_in_command: String,
+    /// Launch-argument flags the engine ignores, listed under the field.
+    pub owned_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderState {
+    /// Not `kind`: `AppEvent` is tagged on `kind`.
+    pub provider: ProviderKind,
+    pub rev: u64,
+    pub info: ProviderInfo,
+    /// The engine-owned flags in the saved launch arguments, as typed, which it drops.
+    pub ignored_flags: Vec<String>,
+    /// A probe runs. `outcome` stays on screen meanwhile.
+    pub checking: bool,
+    pub checked_at_ms: Option<i64>,
+    /// `None` until the first probe finishes.
+    pub outcome: Option<ProbeOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ProbeOutcome {
+    Ready { version: String, plan: Option<String>, models: Vec<ModelOption> },
+    SignedOut { version: String },
+    NotFound { binary: String },
+    /// Found, but the version check, the sign-in check, or the handshake failed or timed out.
+    Broken { version: Option<String>, message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    pub id: ModelId,
+    pub label: String,
+    pub description: String,
+    /// Empty when the model takes no effort setting.
+    pub efforts: Vec<EffortOption>,
+    /// New chats start on it.
+    pub recommended: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EffortOption {
+    pub id: EffortId,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum Permission {
+    /// Every `run_query` waits for Run or Deny.
+    AskFirst,
+    /// A read that calls only vetted built-in functions runs without asking. Anything else asks,
+    /// with `ApprovalReason::Unvetted` naming what.
+    Auto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatOptions {
+    pub provider: ProviderKind,
+    pub model: ModelId,
+    pub effort: Option<EffortId>,
+    pub permission: Permission,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatState {
+    pub id: ChatId,
+    /// From one engine-wide counter that every chat and entry snapshot shares.
+    pub rev: u64,
+    /// The first line of the first message, cut at 60 chars. Empty for a draft.
+    pub title: String,
+    pub updated_at_ms: i64,
+    pub options: ChatOptions,
+    pub status: ChatStatus,
+    /// Entries are numbered `0..entry_count`.
+    pub entry_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ChatStatus {
+    /// Opened, never sent to. Not stored, not listed.
+    Draft,
+    Idle,
+    /// `turn` is the seq of the user entry that started it.
+    Running { turn: u32, started_at_ms: i64, phase: TurnPhase },
+    /// A tombstone, so the live store drops the chat by the same keep-higher rule.
+    Deleted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum TurnPhase {
+    Starting,
+    Working,
+    AwaitingApproval,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatView {
+    pub state: ChatState,
+    /// Every entry in seq order, the running turn's as of now.
+    pub entries: Vec<EntrySnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EntrySnapshot {
+    pub chat_id: ChatId,
+    pub seq: u32,
+    pub rev: u64,
+    /// The seq of the user entry that opened this entry's turn. A user entry names itself.
+    pub turn: u32,
+    pub entry: Entry,
+}
+
+/// Stored verbatim in `chat_entries.json`. A stored row this build cannot parse loads as `Unreadable`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum Entry {
+    User { at_ms: i64, text: String, context: Option<SentContext>, attachment: Option<Attachment> },
+    Text { blocks: Vec<ReplyBlock>, done: bool },
+    Tool { call: ToolCallId, tool: ToolUse, status: ToolStatus },
+    /// Shown when the engine had to change course, such as a lost provider session.
+    Notice { text: String },
+    /// Closes every turn.
+    End { at_ms: i64, outcome: TurnOutcome, suggestions: Vec<String> },
+    Unreadable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SentContext {
+    pub db: Option<DatabaseRef>,
+    /// As named at send, so the chip reads right after a rename or a delete.
+    pub connection_name: Option<String>,
+    pub tab_title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub tab_title: String,
+    pub columns: Vec<String>,
+    /// What the model saw: at most 100 rows, cells cut at 200 chars.
+    pub rows: Vec<Vec<Option<String>>>,
+    pub total_rows: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ReplyBlock {
+    Markdown { text: String },
+    /// A fenced SQL block. `relations` and `vetted` are filled when the fence closes.
+    Sql { sql: String, relations: Vec<String>, vetted: bool, complete: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ToolUse {
+    DescribeTables { tables: Vec<String> },
+    SearchCatalog { query: String },
+    RunQuery { sql: String, purpose: String, relations: Vec<String> },
+    /// A tool the engine does not serve. Always refused.
+    Other { name: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ToolStatus {
+    Running,
+    AwaitingApproval { approval: ApprovalId, reason: ApprovalReason },
+    Done { result: ToolResult },
+    /// `message` is what the model got.
+    Failed { message: String },
+    /// `stopped` is true when Stop denied it, false when the user pressed Deny.
+    Denied { stopped: bool },
+    /// The turn ended before an answer.
+    Expired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ApprovalReason {
+    AskFirst,
+    /// The query uses what the engine cannot vouch for as read-only: the called functions off
+    /// its allowlist, as written, plus `U& escape` or `SELECT INTO`. Auto asks for these too.
+    Unvetted { functions: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ToolResult {
+    Described { found: Vec<String>, missing: Vec<String> },
+    Found { matches: u16 },
+    /// The preview the model saw. `more` is true when the query had more rows.
+    Rows { columns: Vec<String>, rows: Vec<Vec<Option<String>>>, more: bool, elapsed_ms: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum TurnOutcome {
+    Completed,
+    Stopped,
+    /// The app quit or crashed mid-turn. Written when the chat next opens.
+    Lost,
+    Failed { error: AgentError },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum AgentError {
+    NotFound { binary: String },
+    SignedOut,
+    /// `detail` is the end of its stderr.
+    Exited { code: Option<i32>, detail: String },
+    /// An API failure, a rate limit, an overload.
+    Provider { message: String },
+}
+
+#[derive(Debug, Clone, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SendRequest {
+    pub text: String,
+    pub tab: Option<TabContext>,
+}
+
+/// The active tab when the user pressed Send. The engine reads SQL out of `text` itself.
+#[derive(Debug, Clone, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TabContext {
+    pub tab_id: TabId,
+    pub title: String,
+    pub db: Option<DatabaseRef>,
+    pub text: String,
+    /// UTF-16 offsets, as for `RunRequest::Script`.
+    pub target: RunTarget,
+    /// The result the tab shows, when the attach button is on.
+    pub attach: Option<ResultRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnAccepted {
+    /// The seq of the stored user entry.
+    pub turn: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Type)]
+pub enum Decision {
+    Run,
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum SendError {
+    Busy,
+    EmptyMessage,
+    ProviderOff { provider: ProviderKind },
+    /// The chat's model left the provider's list since it was picked.
+    UnknownModel { model: ModelId },
+    /// A newer run replaced the attached result.
+    AttachmentGone,
+    Store { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum ChatError {
+    UnknownModel { model: ModelId },
+    UnsupportedEffort { effort: EffortId },
+    Store { message: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind")]
+pub enum ApproveError {
+    /// Answered already, denied by Stop, expired, or another chat's.
+    NotPending,
 }
 
 #[cfg(test)]
@@ -1544,5 +1951,113 @@ mod tests {
         assert_eq!(layout.results_height, 280);
         assert_eq!(layout.sidebar_width, 256);
         assert_eq!(layout.right_panel_width, 341);
+    }
+
+    const CHAT: &str = "00000000-0000-0000-0000-000000000003";
+
+    #[test]
+    fn layout_saved_before_the_assistant_chat_existed_loads_with_none() {
+        let saved = json!({ "sidebar": true, "results": true, "rightPanel": "Assistant", "resultsHeight": 320, "sidebarWidth": 256, "rightPanelWidth": 341 });
+        let layout: Layout = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(layout.assistant_chat, None);
+        let mut with_chat = saved;
+        with_chat["assistantChat"] = json!(CHAT);
+        let layout: Layout = serde_json::from_value(with_chat).unwrap();
+        assert_eq!(layout.assistant_chat, Some(ChatId(uuid(CHAT))));
+    }
+
+    fn claude(enabled: bool, display_name: &str, binary_path: &str, config_dir: &str, launch_args: &str) -> ProviderConfig {
+        ProviderConfig {
+            provider: ProviderKind::Claude,
+            enabled,
+            display_name: display_name.into(),
+            binary_path: binary_path.into(),
+            config_dir: config_dir.into(),
+            launch_args: launch_args.into(),
+        }
+    }
+
+    #[test]
+    fn settings_saved_before_providers_existed_load_the_claude_default() {
+        let s: Settings = serde_json::from_value(json!({
+            "maxRows": 10, "maxResultBytes": 20, "tablePageSize": 30, "stopOnError": false
+        }))
+        .unwrap();
+        assert_eq!(s.providers, vec![claude(true, "Claude", "", "", "")]);
+        assert_eq!(s.provider_health_check_secs, 300);
+    }
+
+    #[test]
+    fn a_duplicate_provider_is_dropped_and_the_first_kept() {
+        let first = json!({ "provider": "Claude", "enabled": false, "displayName": "Work", "binaryPath": "~/bin/claude", "configDir": "~/.claude-work", "launchArgs": "--debug" });
+        let s: Settings = serde_json::from_value(json!({
+            "maxRows": 10, "maxResultBytes": 20, "tablePageSize": 30, "stopOnError": false, "providerHealthCheckSecs": 0,
+            "providers": [first, { "provider": "Claude", "enabled": true, "displayName": "Second", "binaryPath": "", "configDir": "", "launchArgs": "" }]
+        }))
+        .unwrap();
+        assert_eq!(s.providers, vec![claude(false, "Work", "~/bin/claude", "~/.claude-work", "--debug")]);
+        assert_eq!(s.provider_health_check_secs, 0);
+        let value = serde_json::to_value(&s).unwrap();
+        assert_eq!((value["providers"].clone(), value["providerHealthCheckSecs"].clone()), (json!([first]), json!(0)));
+    }
+
+    #[test]
+    fn a_provider_config_saved_without_launch_args_loads_with_an_empty_string() {
+        let config: ProviderConfig =
+            serde_json::from_value(json!({ "provider": "Claude", "enabled": false, "displayName": "Claude", "binaryPath": "/opt/claude", "configDir": "" })).unwrap();
+        assert_eq!(config, claude(false, "Claude", "/opt/claude", "", ""));
+        let err = serde_json::from_value::<ProviderConfig>(json!({ "enabled": true })).unwrap_err();
+        assert_eq!(err.to_string(), "missing field `provider`");
+    }
+
+    #[test]
+    fn provider_changed_keeps_its_own_tag() {
+        let state = ProviderState {
+            provider: ProviderKind::Claude,
+            rev: 4,
+            info: ProviderInfo {
+                default_name: "Claude".into(),
+                default_binary: "claude".into(),
+                config_env: "CLAUDE_CONFIG_DIR".into(),
+                config_dir_default: "~/.claude".into(),
+                sign_in_command: "claude auth login".into(),
+                owned_flags: vec!["--verbose".into()],
+            },
+            ignored_flags: vec!["--verbose".into()],
+            checking: true,
+            checked_at_ms: Some(1700),
+            outcome: Some(ProbeOutcome::SignedOut { version: "2.1.301".into() }),
+        };
+        assert_eq!(
+            serde_json::to_value(AppEvent::ProviderChanged(state)).unwrap(),
+            json!({
+                "kind": "ProviderChanged", "provider": "Claude", "rev": 4,
+                "info": {
+                    "defaultName": "Claude", "defaultBinary": "claude", "configEnv": "CLAUDE_CONFIG_DIR",
+                    "configDirDefault": "~/.claude", "signInCommand": "claude auth login", "ownedFlags": ["--verbose"]
+                },
+                "ignoredFlags": ["--verbose"],
+                "checking": true, "checkedAtMs": 1700, "outcome": { "kind": "SignedOut", "version": "2.1.301" }
+            })
+        );
+    }
+
+    #[test]
+    fn a_tool_entry_awaiting_approval_round_trips() {
+        let value = json!({
+            "kind": "Tool", "call": "toolu_01",
+            "tool": { "kind": "RunQuery", "sql": "select pg_sleep(1)", "purpose": "wait", "relations": [] },
+            "status": { "kind": "AwaitingApproval", "approval": 7, "reason": { "kind": "Unvetted", "functions": ["pg_sleep"] } }
+        });
+        let entry: Entry = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            entry,
+            Entry::Tool {
+                call: ToolCallId("toolu_01".into()),
+                tool: ToolUse::RunQuery { sql: "select pg_sleep(1)".into(), purpose: "wait".into(), relations: vec![] },
+                status: ToolStatus::AwaitingApproval { approval: ApprovalId(7), reason: ApprovalReason::Unvetted { functions: vec!["pg_sleep".into()] } },
+            }
+        );
+        assert_eq!(serde_json::to_value(&entry).unwrap(), value);
     }
 }

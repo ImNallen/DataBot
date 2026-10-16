@@ -11,7 +11,7 @@ use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
-use engine::{Engine, EngineConfig, MemoryKeyStore};
+use engine::{AgentPath, Engine, EngineConfig, MemoryKeyStore};
 use futures_util::Stream;
 use serde_json::{Map, Value, json};
 use tokio_stream::StreamExt;
@@ -88,6 +88,7 @@ async fn main() {
     let engine = Engine::open(EngineConfig {
         data_dir,
         keys: Arc::new(MemoryKeyStore::default()),
+        agent_path: AgentPath::LoginShell,
     })
     .await
     .expect("open engine");
@@ -104,5 +105,10 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(ADDR).await.expect("bind dev-bridge port");
     eprintln!("dev-bridge on http://{ADDR} (data dir {})", engine.data_dir().display());
-    axum::serve(listener, app).await.expect("serve");
+    // Not a graceful shutdown: that would wait for the `/events` stream, which never ends.
+    tokio::select! {
+        served = axum::serve(listener, app) => served.expect("serve"),
+        _ = tokio::signal::ctrl_c() => eprintln!("dev-bridge: stopping assistant processes"),
+    }
+    engine.shutdown().await;
 }

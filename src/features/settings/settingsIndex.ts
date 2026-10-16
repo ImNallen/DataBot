@@ -47,6 +47,19 @@ export const SETTINGS_INDEX = [
       { id: "stopOnError", label: "Stop a script at the first error", group: "Scripts", keywords: "errors script abort fail skip" },
     ],
   },
+  {
+    id: "providers",
+    label: "Providers",
+    settings: [
+      {
+        id: "providerList",
+        label: "Providers",
+        group: null,
+        keywords: "ai assistant claude codex cli binary path config directory launch arguments sign in plan version model",
+      },
+      { id: "providerHealthCheck", label: "Health check interval", group: "Advanced", keywords: "refresh status version models background interval seconds" },
+    ],
+  },
 ] as const satisfies readonly IndexedSection[];
 
 export type SettingsSectionId = (typeof SETTINGS_INDEX)[number]["id"];

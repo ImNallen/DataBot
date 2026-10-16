@@ -1,7 +1,7 @@
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { RangeSetBuilder } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
-import { tags as t } from "@lezer/highlight";
+import { tagHighlighter, tags as t } from "@lezer/highlight";
 
 const panelControl = {
   height: "24px",
@@ -80,20 +80,26 @@ export const editorTheme = EditorView.theme({
   ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "var(--code-search-current)" },
 });
 
-const highlight = HighlightStyle.define([
-  { tag: [t.keyword, t.operatorKeyword, t.modifier, t.bool, t.null, t.typeName], color: "var(--color-keyword)" },
-  { tag: [t.string, t.special(t.string)], color: "var(--color-green)" },
-  { tag: [t.number], color: "var(--color-amber)" },
-  { tag: [t.lineComment, t.blockComment, t.comment], color: "var(--color-dim)" },
-  { tag: [t.name, t.standard(t.name), t.propertyName, t.variableName], color: "var(--code)" },
-  { tag: t.special(t.name), color: "var(--code)" },
-  { tag: [t.operator, t.punctuation, t.paren, t.bracket], color: "var(--code-punct)" },
-]);
+const SQL_TOKENS = [
+  { tag: [t.keyword, t.operatorKeyword, t.modifier, t.bool, t.null, t.typeName], color: "var(--color-keyword)", className: "text-keyword" },
+  { tag: [t.string, t.special(t.string)], color: "var(--color-green)", className: "text-green" },
+  { tag: [t.number], color: "var(--color-amber)", className: "text-amber" },
+  { tag: [t.lineComment, t.blockComment, t.comment], color: "var(--color-dim)", className: "text-dim" },
+  { tag: [t.name, t.standard(t.name), t.propertyName, t.variableName], color: "var(--code)", className: "text-(color:--code)" },
+  { tag: t.special(t.name), color: "var(--code)", className: "text-(color:--code)" },
+  { tag: [t.operator, t.punctuation, t.paren, t.bracket], color: "var(--code-punct)", className: "text-(color:--code-punct)" },
+];
 
-export const editorHighlighting = syntaxHighlighting(highlight);
+export const editorHighlighting = syntaxHighlighting(HighlightStyle.define(SQL_TOKENS.map(({ tag, color }) => ({ tag, color }))));
+
+export const staticSqlHighlighter = tagHighlighter(SQL_TOKENS.map(({ tag, className }) => ({ tag, class: className })));
 
 const NOT_CALLS = new Set(["in", "values", "exists", "any", "all", "some", "over", "filter", "within", "using", "not", "and", "or", "on", "as", "from", "into", "table", "returning", "select"]);
 const callMark = Decoration.mark({ class: "cm-call" });
+
+export function isKeywordCall(word: string, next: string): boolean {
+  return next === "(" && !NOT_CALLS.has(word.toLowerCase());
+}
 
 function callDecorations(view: EditorView): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
@@ -102,8 +108,9 @@ function callDecorations(view: EditorView): DecorationSet {
       from,
       to,
       enter(node) {
-        if (node.name !== "Keyword" || view.state.sliceDoc(node.to, node.to + 1) !== "(") return;
-        if (!NOT_CALLS.has(view.state.sliceDoc(node.from, node.to).toLowerCase())) builder.add(node.from, node.to, callMark);
+        if (node.name === "Keyword" && isKeywordCall(view.state.sliceDoc(node.from, node.to), view.state.sliceDoc(node.to, node.to + 1))) {
+          builder.add(node.from, node.to, callMark);
+        }
       },
     });
   }

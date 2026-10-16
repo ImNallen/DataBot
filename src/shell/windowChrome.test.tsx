@@ -140,12 +140,14 @@ it("moves the right-panel toggle into the open panel's header in place of a clos
   expect(panel).toContain('data-tauri-drag-region="deep"');
 });
 
-it("holds the Assistant placeholder in the right panel, with no query history", () => {
+it("heads the right panel with Assistant, new chat, and chat history before the panel toggles, over the chat composer", () => {
   withLayout({ rightPanel: "Assistant" });
   const panel = renderToStaticMarkup(<RightPanel hosted={null} />);
   expect(panel).toContain(">Assistant</span>");
-  expect(panel).toContain("AI chat is coming soon.");
-  expect(panel).not.toMatch(/history/i);
+  const order = ['data-testid="assistant-new"', 'data-testid="assistant-history"', RESULTS, TOGGLE, 'data-testid="assistant-panel"'].map((id) => panel.indexOf(id));
+  expect(order.every((at, i) => at > (order[i - 1] ?? 0))).toBe(true);
+  expect(panel).toMatch(/<textarea[^>]*data-testid="assistant-input"[^>]*placeholder="Ask about your data, send follow-ups, or attach a result"/);
+  expect(panel).not.toContain("coming soon");
 });
 
 it("insets the toggle from the window edge by the same amount in either header", () => {

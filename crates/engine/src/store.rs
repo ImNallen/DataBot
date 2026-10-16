@@ -3,10 +3,10 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension, params};
 use rusqlite::functions::FunctionFlags;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
-use crate::model::{ConnectionConfig, ConnectionId, HistoryEntry, HistoryOutcome, HistoryPage, HistoryQuery};
+use crate::model::{ChatId, ChatOptions, ConnectionConfig, ConnectionId, Entry, HistoryEntry, HistoryOutcome, HistoryPage, HistoryQuery, ProviderKind};
 use crate::secrets::Sealed;
 use crate::view::ConnectionView;
 
@@ -22,7 +22,7 @@ pub enum StoreError {
 
 pub const HISTORY_KEEP: i64 = 10_000;
 
-const MIGRATIONS: [&str; 4] = [
+const MIGRATIONS: [&str; 5] = [
     "
     CREATE TABLE connections (id TEXT PRIMARY KEY, json TEXT NOT NULL);
     CREATE TABLE history (
@@ -41,6 +41,17 @@ const MIGRATIONS: [&str; 4] = [
     "CREATE TABLE secrets (connection_id TEXT PRIMARY KEY, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL);",
     "CREATE TABLE connection_views (connection_id TEXT PRIMARY KEY, json TEXT NOT NULL);",
     "ALTER TABLE history ADD COLUMN is_write INTEGER NOT NULL DEFAULT 0;",
+    "
+    CREATE TABLE chats (id TEXT PRIMARY KEY, updated_ms INTEGER NOT NULL, json TEXT NOT NULL);
+    CREATE INDEX chats_updated ON chats (updated_ms);
+    CREATE TABLE chat_entries (
+        chat_id TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL,
+        turn INTEGER NOT NULL,
+        json TEXT NOT NULL,
+        PRIMARY KEY (chat_id, seq)
+    ) WITHOUT ROWID;
+",
 ];
 
 pub struct Store {
@@ -50,6 +61,25 @@ pub struct Store {
 struct StoreState {
     conn: Connection,
     history_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRecord {
+    pub title: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub options: ChatOptions,
+    pub session: Option<ProviderSession>,
+    pub entry_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSession {
+    pub provider: ProviderKind,
+    pub id: String,
+    pub config_dir: String,
 }
 
 pub struct HistoryInsert {
@@ -297,10 +327,91 @@ impl Store {
     }
 }
 
+impl Store {
+    const PUT_ENTRY: &str = "INSERT INTO chat_entries (chat_id, seq, turn, json) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (chat_id, seq) DO UPDATE SET turn = excluded.turn, json = excluded.json";
+
+    pub fn chats(&self, limit: u32) -> Result<Vec<(ChatId, ChatRecord)>, StoreError> {
+        self.with(|c| {
+            let mut stmt = c.prepare("SELECT id, json FROM chats ORDER BY updated_ms DESC, id LIMIT ?1")?;
+            let rows = stmt.query_map([limit], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            let mut chats = Vec::new();
+            for row in rows {
+                let (id, json) = row?;
+                match (id.parse(), serde_json::from_str(&json)) {
+                    (Ok(uuid), Ok(record)) => chats.push((ChatId(uuid), record)),
+                    (Err(e), _) => eprintln!("chat {id} has a bad id, left out of the list: {e}"),
+                    (_, Err(e)) => eprintln!("chat {id} unreadable, left out of the list: {e}"),
+                }
+            }
+            Ok(chats)
+        })
+    }
+
+    pub fn chat(&self, id: ChatId) -> Result<Option<ChatRecord>, StoreError> {
+        self.with(|c| {
+            let json: Option<String> = c.query_row("SELECT json FROM chats WHERE id = ?1", [id.0.to_string()], |r| r.get(0)).optional()?;
+            Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+        })
+    }
+
+    pub fn chat_entries(&self, id: ChatId) -> Result<Vec<(u32, u32, Entry)>, StoreError> {
+        self.with(|c| {
+            let mut stmt = c.prepare("SELECT seq, turn, json FROM chat_entries WHERE chat_id = ?1 ORDER BY seq")?;
+            let rows = stmt.query_map([id.0.to_string()], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u32>(1)?, r.get::<_, String>(2)?)))?;
+            rows.map(|row| {
+                let (seq, turn, json) = row?;
+                let entry = serde_json::from_str(&json).unwrap_or_else(|e| {
+                    eprintln!("chat {} entry {seq} unreadable: {e}", id.0);
+                    Entry::Unreadable
+                });
+                Ok((seq, turn, entry))
+            })
+            .collect()
+        })
+    }
+
+    pub fn put_chat(&self, id: ChatId, record: &ChatRecord) -> Result<(), StoreError> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO chats (id, updated_ms, json) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (id) DO UPDATE SET updated_ms = excluded.updated_ms, json = excluded.json",
+                params![id.0.to_string(), record.updated_at_ms, serde_json::to_string(record)?],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn put_entry(&self, id: ChatId, seq: u32, turn: u32, entry: &Entry) -> Result<(), StoreError> {
+        self.with(|c| {
+            c.execute(Self::PUT_ENTRY, params![id.0.to_string(), seq, turn, serde_json::to_string(entry)?])?;
+            Ok(())
+        })
+    }
+
+    pub fn put_entries(&self, id: ChatId, rows: &[(u32, u32, Entry)]) -> Result<(), StoreError> {
+        self.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            for (seq, turn, entry) in rows {
+                tx.execute(Self::PUT_ENTRY, params![id.0.to_string(), seq, turn, serde_json::to_string(entry)?])?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    pub fn delete_chat(&self, id: ChatId) -> Result<(), StoreError> {
+        self.with(|c| {
+            c.execute("DELETE FROM chats WHERE id = ?1", [id.0.to_string()])?;
+            Ok(())
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Settings, SslMode};
+    use crate::model::{EffortId, ModelId, Permission, Settings, SslMode, TurnOutcome};
 
     fn store() -> (Store, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -418,5 +529,110 @@ mod tests {
         assert_eq!(count, HISTORY_KEEP);
         let all = s.history(&HistoryQuery { text: None, connection_id: None, before_id: None, limit: u16::MAX }).unwrap();
         assert_eq!(all.entries.last().unwrap().sql, "q5", "the five oldest rows are gone");
+    }
+
+    fn chat_id(n: u128) -> ChatId {
+        ChatId(uuid::Uuid::from_u128(n))
+    }
+
+    fn record(title: &str, updated_at_ms: i64) -> ChatRecord {
+        ChatRecord {
+            title: title.into(),
+            created_at_ms: 1,
+            updated_at_ms,
+            options: ChatOptions { provider: ProviderKind::Claude, model: ModelId("opus".into()), effort: Some(EffortId("high".into())), permission: Permission::AskFirst },
+            session: None,
+            entry_count: 0,
+        }
+    }
+
+    fn user(text: &str) -> Entry {
+        Entry::User { at_ms: 5, text: text.into(), context: None, attachment: None }
+    }
+
+    fn entry_count(s: &Store) -> i64 {
+        s.with(|c| Ok(c.query_row("SELECT count(*) FROM chat_entries", [], |r| r.get(0))?)).unwrap()
+    }
+
+    #[test]
+    fn migration_5_adds_the_chat_tables_to_a_version_4_store_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.sqlite3");
+        {
+            let c = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..4] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", 4).unwrap();
+            c.execute("INSERT INTO kv (key, json) VALUES ('workspace', '{}')", []).unwrap();
+        }
+        let first = record("first", 10);
+        Store::open(&path).unwrap().put_chat(chat_id(1), &first).unwrap();
+        let s = Store::open(&path).unwrap();
+        let version: i64 = s.with(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?)).unwrap();
+        assert_eq!(version, 5);
+        assert_eq!(s.chats(10).unwrap(), vec![(chat_id(1), first)]);
+        assert_eq!(s.kv_get::<serde_json::Value>("workspace").unwrap(), Some(serde_json::json!({})));
+    }
+
+    #[test]
+    fn chats_and_entries_round_trip_newest_first() {
+        let (s, _dir) = store();
+        let (old, new) = (chat_id(1), chat_id(2));
+        s.put_chat(old, &record("old", 10)).unwrap();
+        s.put_chat(new, &record("new", 20)).unwrap();
+        assert_eq!(s.chats(10).unwrap(), vec![(new, record("new", 20)), (old, record("old", 10))]);
+        assert_eq!(s.chats(1).unwrap(), vec![(new, record("new", 20))]);
+
+        let resumed = ChatRecord {
+            session: Some(ProviderSession { provider: ProviderKind::Claude, id: "4f1c".into(), config_dir: "~/.claude".into() }),
+            entry_count: 3,
+            ..record("old", 30)
+        };
+        s.put_chat(old, &resumed).unwrap();
+        assert_eq!(s.chats(10).unwrap(), vec![(old, resumed.clone()), (new, record("new", 20))]);
+        assert_eq!(s.chat(old).unwrap(), Some(resumed));
+        assert_eq!(s.chat(chat_id(9)).unwrap(), None);
+
+        let done = Entry::End { at_ms: 9, outcome: TurnOutcome::Completed, suggestions: vec!["Show totals".into()] };
+        s.put_entries(old, &[(2, 0, Entry::Text { blocks: vec![], done: false }), (0, 0, user("hi")), (1, 0, Entry::Notice { text: "restarted".into() })]).unwrap();
+        s.put_entry(old, 2, 0, &done).unwrap();
+        s.put_entry(new, 0, 0, &user("other chat")).unwrap();
+        assert_eq!(s.chat_entries(old).unwrap(), vec![(0, 0, user("hi")), (1, 0, Entry::Notice { text: "restarted".into() }), (2, 0, done)]);
+        assert!(s.put_entry(chat_id(9), 0, 0, &user("orphan")).is_err(), "an entry needs its chat row");
+    }
+
+    #[test]
+    fn an_unreadable_row_never_hides_the_rest() {
+        let (s, _dir) = store();
+        let (good, bad) = (chat_id(1), chat_id(2));
+        s.put_chat(good, &record("good", 10)).unwrap();
+        s.put_chat(bad, &record("bad", 20)).unwrap();
+        s.put_entries(good, &[(0, 0, user("hi")), (1, 0, user("again"))]).unwrap();
+        s.with(|c| {
+            c.execute("UPDATE chat_entries SET json = '{\"kind\": \"Hologram\"}' WHERE seq = 0", [])?;
+            c.execute("UPDATE chats SET json = '{\"title\": 7}' WHERE id = ?1", [bad.0.to_string()])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(s.chat_entries(good).unwrap(), vec![(0, 0, Entry::Unreadable), (1, 0, user("again"))]);
+        assert_eq!(s.chats(10).unwrap(), vec![(good, record("good", 10))]);
+    }
+
+    #[test]
+    fn deleting_a_chat_deletes_its_entries_only() {
+        let (s, _dir) = store();
+        let (gone, kept) = (chat_id(1), chat_id(2));
+        s.put_chat(gone, &record("gone", 10)).unwrap();
+        s.put_chat(kept, &record("kept", 20)).unwrap();
+        s.put_entries(gone, &[(0, 0, user("a")), (1, 0, user("b"))]).unwrap();
+        s.put_entry(kept, 0, 0, &user("c")).unwrap();
+        assert_eq!(entry_count(&s), 3);
+
+        s.delete_chat(gone).unwrap();
+        assert_eq!(entry_count(&s), 1);
+        assert_eq!(s.chat(gone).unwrap(), None);
+        assert_eq!(s.chat_entries(kept).unwrap(), vec![(0, 0, user("c"))]);
+        assert_eq!(s.chats(10).unwrap(), vec![(kept, record("kept", 20))]);
     }
 }

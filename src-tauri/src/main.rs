@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use engine::model::{AppEvent, ColorScheme};
-use engine::{Engine, EngineConfig, KeyStore, KeyringKeyStore, MemoryKeyStore};
+use engine::{AgentPath, Engine, EngineConfig, KeyStore, KeyringKeyStore, MemoryKeyStore};
 use specta_typescript::Typescript;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -47,6 +47,13 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ipc::history_clear,
             ipc::workspace_save,
             ipc::settings_set,
+            ipc::assistant_open,
+            ipc::assistant_configure,
+            ipc::assistant_send,
+            ipc::assistant_stop,
+            ipc::assistant_approve,
+            ipc::assistant_delete,
+            ipc::provider_refresh,
         ])
         .typ::<AppEvent>()
         .dangerously_cast_bigints_to_number()
@@ -71,7 +78,7 @@ fn engine_config(app: &tauri::App) -> Result<EngineConfig, Box<dyn Error>> {
         Some("memory") => Arc::new(MemoryKeyStore::default()),
         _ => Arc::new(KeyringKeyStore),
     };
-    Ok(EngineConfig { data_dir, keys })
+    Ok(EngineConfig { data_dir, keys, agent_path: AgentPath::LoginShell })
 }
 
 // Tauri's default macOS menu binds Cmd+W to Close Window, which would swallow the key before the webview's
@@ -299,8 +306,27 @@ fn main() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running L1 Data");
+        .build(tauri::generate_context!())
+        .expect("error while building L1 Data")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                stop_assistant_processes(app);
+            }
+        });
+}
+
+const SHUTDOWN_MARGIN: std::time::Duration = std::time::Duration::from_secs(2);
+const SHUTDOWN_TIMEOUT: std::time::Duration = engine::SHUTDOWN_BOUND.saturating_add(SHUTDOWN_MARGIN);
+
+/// Quit must leave no `claude` behind and must not hang on one that ignores Stop. The exit event
+/// arrives on the main thread, outside the runtime, so the engine's own handle blocks on it; the
+/// timeout is built inside the async block because a tokio timer needs the runtime at creation.
+fn stop_assistant_processes(app: &AppHandle) {
+    let engine = app.state::<Arc<Engine>>();
+    let bounded = engine.runtime().block_on(async { tokio::time::timeout(SHUTDOWN_TIMEOUT, engine.shutdown()).await });
+    if bounded.is_err() {
+        eprintln!("assistant shutdown did not finish within {} s", SHUTDOWN_TIMEOUT.as_secs());
+    }
 }
 
 #[cfg(test)]
@@ -350,7 +376,7 @@ mod tests {
             }
             checked += 1;
         }
-        assert_eq!(checked, 11, "the sync commands in ipc.rs");
+        assert_eq!(checked, 15, "the sync commands in ipc.rs");
     }
 
     #[test]

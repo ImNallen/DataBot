@@ -65,7 +65,7 @@ export type WorkspaceData = {
   cursor: { line: number; col: number };
 };
 
-const DEFAULT_LAYOUT: Layout = { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341 };
+const DEFAULT_LAYOUT: Layout = { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341, assistantChat: null };
 export const DEFAULT_SETTINGS: Settings = {
   maxRows: 200_000,
   maxResultBytes: 512 * 1024 * 1024,
@@ -80,6 +80,8 @@ export const DEFAULT_SETTINGS: Settings = {
   density: "Standard",
   panelMotionMs: 150,
   tintConnections: false,
+  providers: [{ provider: "Claude", enabled: true, displayName: "Claude", binaryPath: "", configDir: "", launchArgs: "" }],
+  providerHealthCheckSecs: 300,
 };
 
 /**

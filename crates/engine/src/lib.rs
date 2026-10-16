@@ -1,9 +1,11 @@
+mod assistant;
 mod catalog;
 mod connection;
 mod console;
 mod detail;
 mod history;
 pub mod model;
+mod provider;
 mod results;
 mod secrets;
 mod session;
@@ -25,18 +27,22 @@ use tokio::sync::broadcast;
 use connection::{CatalogSlot, ConnEntry, ConnSlot, ConnectParams, DbSlot, Instance, Wanted};
 use console::{Console, Owed, PlannedStmt, RunPlan, SessionSlot};
 use model::*;
+use provider::ProbeDepth;
 use secrets::Vault;
 use session::Session;
 use store::{HistoryInsert, Store};
 use view::{ConnectionView, Known, Selection};
 
+pub use assistant::SHUTDOWN_BOUND;
 pub use connection::draft_from_url;
+pub use provider::AgentPath;
 pub use secrets::{KeyStore, KeyringKeyStore, MemoryKeyStore, SecretError};
 pub use store::StoreError;
 
 pub struct EngineConfig {
     pub data_dir: PathBuf,
     pub keys: Arc<dyn KeyStore>,
+    pub agent_path: AgentPath,
 }
 
 pub struct Engine {
@@ -62,6 +68,10 @@ pub(crate) struct Shared {
     /// sync entry point works from any thread: Tauri runs sync commands inline on the main
     /// thread, where a bare `tokio::spawn` panics.
     runtime: tokio::runtime::Handle,
+    providers: provider::Providers,
+    assistant: assistant::Assistant,
+    process_groups: Arc<provider::agent::ProcessGroups>,
+    next_chat_rev: AtomicU64,
 }
 
 const EVENT_BUFFER: usize = 1024;
@@ -69,6 +79,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const DB_FILE: &str = "l1-data.sqlite3";
 const KV_WORKSPACE: &str = "workspace";
 const KV_SETTINGS: &str = "settings";
+const BOOT_CHATS: u32 = 200;
 
 impl Shared {
     pub(crate) fn emit(&self, ev: AppEvent) {
@@ -135,6 +146,10 @@ impl Shared {
         self.next_catalog_version.fetch_add(1, Ordering::Relaxed)
     }
 
+    pub(crate) fn next_chat_rev(&self) -> u64 {
+        self.next_chat_rev.fetch_add(1, Ordering::Relaxed)
+    }
+
     fn saved_password(&self, id: ConnectionId) -> Result<Option<String>, ConnectError> {
         let keychain = |message: String| ConnectError::Keychain { message };
         let Some(sealed) = self.store.secret(id).map_err(|e| keychain(e.to_string()))? else { return Ok(None) };
@@ -145,9 +160,10 @@ impl Shared {
         self.consoles.read().unwrap().values().cloned().collect()
     }
 
-    /// Databases of `id` that may have a slot (`keep`): the home database, the shown ones, and
-    /// the database of every console on the connection. The ones that get a slot without being
-    /// asked (`open`) are the same minus the shown databases past the auto-open cap.
+    /// Databases of `id` that may have a slot (`keep`): the home database, the shown ones, the
+    /// database of every console on the connection, and the database of every running assistant
+    /// turn. The ones that get a slot without being asked (`open`) are the same minus the shown
+    /// databases past the auto-open cap.
     fn wanted(&self, instance: &Instance) -> Wanted {
         let mut keep = BTreeSet::from([instance.home.clone()]);
         for console in self.all_consoles() {
@@ -156,6 +172,7 @@ impl Shared {
                 keep.insert(config.database);
             }
         }
+        keep.extend(self.assistant.running_databases(instance.config.id));
         let shown = instance.shown();
         let mut open = keep.clone();
         open.extend(view::auto_open(&shown));
@@ -411,6 +428,13 @@ impl Shared {
         });
     }
 
+    /// The catalog of one database, loaded on first use. Only the home database, the shown ones,
+    /// the databases of this connection's consoles, and those of running assistant turns get one.
+    async fn catalog(self: &Arc<Self>, db: &DatabaseRef) -> Result<Arc<Catalog>, CatalogError> {
+        let (instance, slot) = self.slot(db)?;
+        self.ensure_catalog(&instance, &slot).await
+    }
+
     async fn connect(self: &Arc<Self>, id: ConnectionId) -> Result<ServerInfo, ConnectError> {
         loop {
             let connecting = match self.connections.read().unwrap().get(&id).map(|e| &e.slot) {
@@ -566,26 +590,38 @@ impl Engine {
         let store = Store::open(&cfg.data_dir.join(DB_FILE))?;
         let settings = store.kv_get::<Settings>(KV_SETTINGS)?.unwrap_or_default();
         let (events, _) = broadcast::channel(EVENT_BUFFER);
-        Ok(Arc::new(Self {
-            shared: Arc::new(Shared {
-                data_dir: cfg.data_dir,
-                vault: Vault::new(cfg.keys),
-                store,
-                settings: RwLock::new(settings),
-                connections: RwLock::new(HashMap::new()),
-                consoles: RwLock::new(HashMap::new()),
-                events,
-                next_run: AtomicU64::new(1),
-                next_catalog_version: AtomicU64::new(1),
-                view_edits: tokio::sync::Mutex::new(()),
-                timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
-                runtime: tokio::runtime::Handle::current(),
-            }),
-        }))
+        let shared = Arc::new(Shared {
+            data_dir: cfg.data_dir,
+            vault: Vault::new(cfg.keys),
+            store,
+            settings: RwLock::new(settings),
+            connections: RwLock::new(HashMap::new()),
+            consoles: RwLock::new(HashMap::new()),
+            events,
+            next_run: AtomicU64::new(1),
+            next_catalog_version: AtomicU64::new(1),
+            view_edits: tokio::sync::Mutex::new(()),
+            timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
+            runtime: tokio::runtime::Handle::current(),
+            providers: provider::Providers::new(cfg.agent_path),
+            assistant: assistant::Assistant::new(),
+            process_groups: Arc::new(provider::agent::ProcessGroups::default()),
+            next_chat_rev: AtomicU64::new(1),
+        });
+        tokio::fs::create_dir_all(shared.assistant_dir()).await?;
+        shared.probe_all(ProbeDepth::Full);
+        shared.spawn(provider::health_loop(Arc::downgrade(&shared)));
+        Ok(Arc::new(Self { shared }))
     }
 
     pub fn data_dir(&self) -> &Path {
         &self.shared.data_dir
+    }
+
+    /// The runtime the engine's tasks run on, for a caller outside any runtime, such as the
+    /// shell's exit handler.
+    pub fn runtime(&self) -> tokio::runtime::Handle {
+        self.shared.runtime.clone()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<AppEvent> {
@@ -604,7 +640,16 @@ impl Engine {
             eprintln!("workspace load failed: {e}");
             None
         });
-        BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings() }
+        let chats = s.store.chats(BOOT_CHATS).unwrap_or_else(|e| {
+            eprintln!("chats load failed: {e}");
+            Vec::new()
+        });
+        let mut live_chats = s.assistant.live_states();
+        let chats = chats
+            .into_iter()
+            .map(|(id, r)| live_chats.remove(&id).unwrap_or_else(|| ChatState { id, rev: 0, title: r.title, updated_at_ms: r.updated_at_ms, options: r.options, status: ChatStatus::Idle, entry_count: r.entry_count }))
+            .collect();
+        BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings(), providers: s.provider_states(), chats }
     }
 
     pub async fn save_connection(&self, d: ConnectionDraft) -> Result<ConnectionConfig, SaveError> {
@@ -715,11 +760,8 @@ impl Engine {
         Ok(())
     }
 
-    /// The catalog of one database, loaded on first use. Only the home database, the shown ones,
-    /// and the databases of this connection's consoles get a catalog.
     pub async fn catalog(&self, db: DatabaseRef) -> Result<Arc<Catalog>, CatalogError> {
-        let (instance, slot) = self.shared.slot(&db)?;
-        self.shared.ensure_catalog(&instance, &slot).await
+        self.shared.catalog(&db).await
     }
 
     pub async fn refresh_catalog(&self, db: DatabaseRef) -> Result<u64, CatalogError> {
@@ -1202,7 +1244,47 @@ impl Engine {
         if let Err(e) = self.shared.store.kv_set(KV_SETTINGS, &s) {
             eprintln!("settings save failed: {e}");
         }
-        *self.shared.settings.write().unwrap() = s;
+        let before = std::mem::replace(&mut *self.shared.settings.write().unwrap(), s.clone());
+        self.shared.reprobe_changed(&before.providers, &s.providers);
+    }
+
+    /// The chat with every entry, the running turn's as of now. An unknown id opens a draft with
+    /// default options, held in memory until its first message.
+    pub async fn assistant_open(&self, chat: ChatId) -> Result<ChatView, ChatError> {
+        self.shared.assistant_open(chat)
+    }
+
+    /// Validates the model and effort against the provider's last probe. Applies at the next turn.
+    pub fn assistant_configure(&self, chat: ChatId, options: ChatOptions) -> Result<ChatState, ChatError> {
+        self.shared.assistant_configure(chat, options)
+    }
+
+    /// Stores the user entry and starts the turn. `Busy` while a turn runs.
+    pub async fn assistant_send(&self, chat: ChatId, request: SendRequest) -> Result<TurnAccepted, SendError> {
+        self.shared.assistant_send(chat, request).await
+    }
+
+    pub fn assistant_stop(&self, chat: ChatId) {
+        self.shared.assistant_stop(chat)
+    }
+
+    pub fn assistant_approve(&self, chat: ChatId, approval: ApprovalId, decision: Decision) -> Result<(), ApproveError> {
+        self.shared.assistant_approve(chat, approval, decision)
+    }
+
+    pub async fn assistant_delete(&self, chat: ChatId) {
+        self.shared.assistant_delete(chat).await
+    }
+
+    /// Full probe of every enabled provider. Fire and forget.
+    pub fn provider_refresh(&self) {
+        self.shared.probe_all(ProbeDepth::Full);
+    }
+
+    /// Stops every assistant turn, then kills any agent process still alive. The shell calls it
+    /// on quit. It returns within `SHUTDOWN_BOUND`, so the shell's own bound must be larger.
+    pub async fn shutdown(&self) {
+        self.shared.shutdown().await
     }
 }
 
@@ -1215,6 +1297,7 @@ mod tests {
         let engine = Engine::open(EngineConfig {
             data_dir: dir.path().join("nested"),
             keys: Arc::new(MemoryKeyStore::default()),
+            agent_path: AgentPath::Fixed("".into()),
         })
         .await
         .unwrap();
@@ -1245,6 +1328,18 @@ mod tests {
         assert_eq!(boot.settings.max_rows, 200_000);
     }
 
+    #[tokio::test]
+    async fn boot_lists_stored_chats_newest_first_as_idle() {
+        let (engine, _dir) = engine().await;
+        let options = ChatOptions { provider: ProviderKind::Claude, model: ModelId("opus".into()), effort: None, permission: Permission::Auto };
+        let record = |title: &str, updated_at_ms| store::ChatRecord { title: title.into(), created_at_ms: 1, updated_at_ms, options: options.clone(), session: None, entry_count: 4 };
+        let (old, new) = (ChatId(uuid::Uuid::from_u128(1)), ChatId(uuid::Uuid::from_u128(2)));
+        engine.shared.store.put_chat(old, &record("old", 10)).unwrap();
+        engine.shared.store.put_chat(new, &record("new", 20)).unwrap();
+        let state = |id, title: &str, updated_at_ms| ChatState { id, rev: 0, title: title.into(), updated_at_ms, options: options.clone(), status: ChatStatus::Idle, entry_count: 4 };
+        assert_eq!(engine.boot().chats, vec![state(new, "new", 20), state(old, "old", 10)]);
+    }
+
     const PLAINTEXT: &str = "plaintext-hunter2";
 
     fn db_bytes(dir: &Path) -> Vec<u8> {
@@ -1271,7 +1366,7 @@ mod tests {
     #[tokio::test]
     async fn passwordless_save_clear_and_delete_never_touch_the_keychain() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(NoKeychain) }).await.unwrap();
+        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(NoKeychain), agent_path: AgentPath::Fixed("".into()) }).await.unwrap();
         let saved = engine.save_connection(ConnectionDraft { password: PasswordInput::Clear, ..draft("dev") }).await.unwrap();
         let kept = engine
             .save_connection(ConnectionDraft { id: Some(saved.id), password: PasswordInput::Keep, ..draft("dev") })
@@ -1287,7 +1382,7 @@ mod tests {
     async fn connections_settings_and_workspace_persist_across_open() {
         let dir = tempfile::tempdir().unwrap();
         let keys = Arc::new(MemoryKeyStore::default());
-        let cfg = || EngineConfig { data_dir: dir.path().to_owned(), keys: keys.clone() };
+        let cfg = || EngineConfig { data_dir: dir.path().to_owned(), keys: keys.clone(), agent_path: AgentPath::Fixed("".into()) };
         let password = |engine: &Engine, id| engine.shared.saved_password(id).unwrap();
         let saved = {
             let engine = Engine::open(cfg()).await.unwrap();

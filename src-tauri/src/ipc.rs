@@ -191,3 +191,45 @@ pub fn workspace_save(engine: State<'_, Arc<Engine>>, workspace: Workspace) {
 pub fn settings_set(engine: State<'_, Arc<Engine>>, settings: Settings) {
     engine.set_settings(settings)
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn assistant_open(engine: State<'_, Arc<Engine>>, chat_id: ChatId) -> Result<ChatView, ChatError> {
+    engine.assistant_open(chat_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn assistant_configure(engine: State<'_, Arc<Engine>>, chat_id: ChatId, options: ChatOptions) -> Result<ChatState, ChatError> {
+    engine.assistant_configure(chat_id, options)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn assistant_send(engine: State<'_, Arc<Engine>>, chat_id: ChatId, request: SendRequest) -> Result<TurnAccepted, SendError> {
+    engine.assistant_send(chat_id, request).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn assistant_stop(engine: State<'_, Arc<Engine>>, chat_id: ChatId) {
+    engine.assistant_stop(chat_id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn assistant_approve(engine: State<'_, Arc<Engine>>, chat_id: ChatId, approval: ApprovalId, decision: Decision) -> Result<(), ApproveError> {
+    engine.assistant_approve(chat_id, approval, decision)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn assistant_delete(app: AppHandle, chat_id: ChatId) {
+    app.state::<Arc<Engine>>().assistant_delete(chat_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn provider_refresh(engine: State<'_, Arc<Engine>>) {
+    engine.provider_refresh()
+}

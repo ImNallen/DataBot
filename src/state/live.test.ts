@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AppEvent, BootSnapshot, ConnectionState, ConsoleState, DatabaseState, OutputEntry } from "../ipc/bindings";
-import { applyEvent, emptyLive, hydrateLive, OUTPUT_LIMIT, wantedCatalogs } from "./live";
+import type { AppEvent, BootSnapshot, ChatState, ChatStatus, ConnectionState, ConsoleState, DatabaseState, EntrySnapshot, OutputEntry, ProviderState } from "../ipc/bindings";
+import { applyEvent, emptyLive, hydrateChatLive, hydrateLive, OUTPUT_LIMIT, seedTranscriptLive, wantedCatalogs, type LiveData } from "./live";
 
 const CONN = "c0000000-0000-4000-8000-000000000001";
 const TAB = "t0000000-0000-4000-8000-000000000001";
@@ -17,6 +17,25 @@ function consoleAt(rev: number, txn: ConsoleState["txn"] = "Idle"): ConsoleState
 }
 
 const consoleChanged = (c: ConsoleState): AppEvent => ({ kind: "ConsoleChanged", ...c });
+
+const CHAT = "a0000000-0000-4000-8000-000000000001";
+const OTHER_CHAT = "a0000000-0000-4000-8000-000000000002";
+const RUNNING: ChatStatus = { kind: "Running", turn: 0, startedAtMs: 5, phase: "Working" };
+
+function chatAt(rev: number, status: ChatStatus = { kind: "Idle" }, id = CHAT): ChatState {
+  return { id, rev, title: "Top customers", updatedAtMs: 1000, options: { provider: "Claude", model: "opus", effort: "high", permission: "AskFirst" }, status, entryCount: 2 };
+}
+
+function entryAt(seq: number, rev: number, text: string, chatId = CHAT): EntrySnapshot {
+  return { chatId, seq, rev, turn: 0, entry: { kind: "Notice", text } };
+}
+
+function providerAt(rev: number, checking: boolean): ProviderState {
+  const info = { defaultName: "Claude", defaultBinary: "claude", configEnv: "CLAUDE_CONFIG_DIR", configDirDefault: "~/.claude", signInCommand: "claude auth login", ownedFlags: [] };
+  return { provider: "Claude", rev, info, ignoredFlags: [], checking, checkedAtMs: null, outcome: null };
+}
+
+const applyAll = (s: LiveData, events: AppEvent[]) => events.reduce(applyEvent, s);
 
 describe("live.apply", () => {
   it("keeps the higher rev regardless of arrival order", () => {
@@ -48,12 +67,89 @@ describe("live.apply", () => {
       connections: [],
       live: [{ id: CONN, rev: 4, status: { kind: "Connecting" } }],
       consoles: [consoleAt(1)],
-      workspace: { tabs: [], active: null, layout: { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341 } },
-      settings: { maxRows: 1, maxResultBytes: 1, tablePageSize: 1, stopOnError: true, colorScheme: "System", lightTheme: "l1-light", darkTheme: "l1-dark", customThemes: [], interfaceFont: { family: "Inter", size: 13 }, codeFont: { family: "JetBrains Mono", size: 13 }, density: "Standard", panelMotionMs: 150, tintConnections: false },
+      workspace: { tabs: [], active: null, layout: { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341, assistantChat: null } },
+      settings: { maxRows: 1, maxResultBytes: 1, tablePageSize: 1, stopOnError: true, colorScheme: "System", lightTheme: "l1-light", darkTheme: "l1-dark", customThemes: [], interfaceFont: { family: "Inter", size: 13 }, codeFont: { family: "JetBrains Mono", size: 13 }, density: "Standard", panelMotionMs: 150, tintConnections: false, providers: [], providerHealthCheckSecs: 300 },
+      providers: [],
+      chats: [],
     };
     const s = hydrateLive(early, boot);
     expect(s.connections[CONN]?.status.kind).toBe("Connected");
     expect(s.consoles[TAB]?.rev).toBe(1);
+  });
+
+  it("hydrate takes providers and chats from boot, and keeps a newer chat that raced it", () => {
+    const early = applyEvent(emptyLive, { kind: "ChatChanged", ...chatAt(5, RUNNING) });
+    const boot = hydrateLive(early, {
+      connections: [],
+      live: [],
+      consoles: [],
+      workspace: { tabs: [], active: null, layout: { sidebar: true, results: true, rightPanel: null, resultsHeight: 320, sidebarWidth: 256, rightPanelWidth: 341, assistantChat: CHAT } },
+      settings: { maxRows: 1, maxResultBytes: 1, tablePageSize: 1, stopOnError: true, colorScheme: "System", lightTheme: "l1-light", darkTheme: "l1-dark", customThemes: [], interfaceFont: { family: "Inter", size: 13 }, codeFont: { family: "JetBrains Mono", size: 13 }, density: "Standard", panelMotionMs: 150, tintConnections: false, providers: [], providerHealthCheckSecs: 300 },
+      providers: [providerAt(1, true)],
+      chats: [chatAt(0), chatAt(0, { kind: "Idle" }, OTHER_CHAT)],
+    });
+    expect(boot.providers).toEqual({ Claude: providerAt(1, true) });
+    expect(boot.chats).toEqual({ [CHAT]: chatAt(5, RUNNING), [OTHER_CHAT]: chatAt(0, { kind: "Idle" }, OTHER_CHAT) });
+  });
+
+  it("keeps the higher provider snapshot and strips the event tag", () => {
+    const s = applyAll(emptyLive, [
+      { kind: "ProviderChanged", ...providerAt(2, false) },
+      { kind: "ProviderChanged", ...providerAt(1, true) },
+    ]);
+    expect(s.providers).toEqual({ Claude: providerAt(2, false) });
+  });
+
+  it("keeps the higher chat snapshot regardless of arrival order", () => {
+    const s = applyAll(emptyLive, [
+      { kind: "ChatChanged", ...chatAt(3, RUNNING) },
+      { kind: "ChatChanged", ...chatAt(2) },
+    ]);
+    expect(s.chats).toEqual({ [CHAT]: chatAt(3, RUNNING) });
+  });
+
+  it("applies entry events only to a transcript it holds, keeping the higher rev per seq", () => {
+    const held = hydrateChatLive(emptyLive, { state: chatAt(1), entries: [entryAt(0, 1, "first")] });
+    const s = applyAll(held, [
+      { kind: "ChatEntryChanged", ...entryAt(1, 4, "Hel") },
+      { kind: "ChatEntryChanged", ...entryAt(1, 3, "H") },
+      { kind: "ChatEntryChanged", ...entryAt(0, 6, "not held", OTHER_CHAT) },
+    ]);
+    expect(s.transcripts).toEqual({ [CHAT]: { 0: entryAt(0, 1, "first"), 1: entryAt(1, 4, "Hel") } });
+  });
+
+  it("hydrateChat loads a chat whole and keeps an entry that streamed in newer", () => {
+    let s = hydrateChatLive(emptyLive, { state: chatAt(2), entries: [entryAt(0, 1, "first")] });
+    s = applyEvent(s, { kind: "ChatEntryChanged", ...entryAt(1, 9, "newer") });
+    s = hydrateChatLive(s, { state: chatAt(3), entries: [entryAt(0, 1, "first"), entryAt(1, 8, "older")] });
+    expect(s.chats).toEqual({ [CHAT]: chatAt(3) });
+    expect(s.transcripts).toEqual({ [CHAT]: { 0: entryAt(0, 1, "first"), 1: entryAt(1, 9, "newer") } });
+  });
+
+  it("a seeded transcript keeps an entry event that raced the open, and the older view hydrated on top does not replace it", () => {
+    let s = seedTranscriptLive(emptyLive, CHAT);
+    s = applyEvent(s, { kind: "ChatEntryChanged", ...entryAt(1, 9, "newer") });
+    s = hydrateChatLive(s, { state: chatAt(3), entries: [entryAt(0, 1, "first"), entryAt(1, 8, "older")] });
+    expect(s.transcripts).toEqual({ [CHAT]: { 0: entryAt(0, 1, "first"), 1: entryAt(1, 9, "newer") } });
+  });
+
+  it("seeding leaves a held transcript as it is and holds nothing for a deleted chat", () => {
+    const held = hydrateChatLive(emptyLive, { state: chatAt(1), entries: [entryAt(0, 1, "first")] });
+    const deleted = applyEvent(emptyLive, { kind: "ChatChanged", ...chatAt(7, { kind: "Deleted" }) });
+    expect([seedTranscriptLive(held, CHAT).transcripts, seedTranscriptLive(deleted, CHAT).transcripts]).toEqual([{ [CHAT]: { 0: entryAt(0, 1, "first") } }, {}]);
+  });
+
+  it("a deleted chat drops its transcript, and nothing older brings it back", () => {
+    const held = hydrateChatLive(emptyLive, { state: chatAt(1), entries: [entryAt(0, 1, "first")] });
+    expect(Object.keys(held.transcripts)).toEqual([CHAT]);
+    let s = applyEvent(held, { kind: "ChatChanged", ...chatAt(7, { kind: "Deleted" }) });
+    s = applyAll(s, [
+      { kind: "ChatChanged", ...chatAt(6) },
+      { kind: "ChatEntryChanged", ...entryAt(1, 5, "late") },
+    ]);
+    s = hydrateChatLive(s, { state: chatAt(6), entries: [entryAt(0, 1, "first")] });
+    expect(s.chats).toEqual({ [CHAT]: chatAt(7, { kind: "Deleted" }) });
+    expect(s.transcripts).toEqual({});
   });
 
   it("wants the Ready catalogs of connected instances and the last good one behind a failed reload", () => {

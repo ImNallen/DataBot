@@ -36,6 +36,7 @@ pnpm typecheck                             # tsc --noEmit
 pnpm bindings                              # rewrite src/ipc/bindings.ts without opening a window
 pnpm self-check                            # debug binary boots Engine inside Tauri, connects, prints JSON, exits
 cargo build -p dev-bridge && dev/bridge-smoke.sh   # curl flow against the bridge, checks the SSE stream
+cargo test -p engine --features claude-smoke --test claude_smoke -- --nocapture   # the assistant through the installed claude CLI
 pnpm screenshot                            # macOS: rewrite docs/images/l1-data.png from the real app
 pnpm icons                                 # rewrite src-tauri/icons from src-tauri/app-icon.svg
 ```
@@ -133,6 +134,10 @@ async fn manual_tab_isolated_until_commit_and_abort_rolls_back() {
 7. **One full-catalog snapshot per database, keyed by `DatabaseRef { connectionId, database }`, loaded in five queries.** It lists every schema except `pg_toast` and temp schemas with a `system` flag (`information_schema` or the reserved `pg_` prefix) and a `tableCount` (tables, partitioned tables, and foreign tables, the number the tree and the schema picker both show), names the database's `defaultSchema` (the first existing non-system entry of `current_schemas(false)`, else `public`, else the first non-system schema; a role whose search path starts with `pg_catalog` still defaults to a user schema), and carries relations with `reltuples`, columns with their `TypeCategory` and PK and FK flags, and functions for the non-system schemas plus the system schemas the user has checked in the schema picker. Functions never load for a system schema (`pg_catalog` alone has about 3,000). Defaults, constraints, indexes, and triggers are not in it: `relation_detail(db, oid)` reads them for one relation when the tree opens it, so a DDL refresh never scans `pg_constraint`, `pg_index`, or `pg_trigger` for the whole database, and the frontend refetches an open relation's detail when the catalog version moves. The tree and its search filter, CodeMirror completion, and the PK lookups for table pages and staged edits are all derived from the catalog of the database they address; OIDs are never compared across databases. The connection snapshot is the single source of catalog versions: `ConnStatus::Connected.instance` lists every database with its `CatalogStatus` (`Idle`, `Loading`, `Ready { version }`, `Failed`), and the frontend fetches `catalog_get(db)` when the served version is newer than what it holds. `Failed` carries the last good catalog's version, and `catalog_get` keeps serving that catalog, so a failed reload shows its error in the tree beside the schemas it already had, with a Retry; the frontend drops only views whose database serves no version (`Idle`, `Loading`, or a `Failed` first load). Versions come from one engine-wide counter, so a reconnect never reissues one. Successful DDL schedules a refresh of the console's database; a slot's `RefreshGate` coalesces a burst into at most two loads.
 8. **Contract generation.** Every IPC type lives in `crates/engine` with `#[derive(Serialize, Deserialize, specta::Type)]`. `src-tauri` registers commands with `tauri-specta` and adds `AppEvent` as a plain exported type; the shell forwards `Engine::subscribe()` with `app.emit("app-event", ev)`, which sidesteps the release-candidate event API. Debug builds export `src/ipc/bindings.ts`, and a test fails if the checked-in file differs.
 9. **SQL text is interpreted only in Rust.** That includes table-browse SQL: `RunRequest::TablePage` makes the engine build `SELECT * FROM "schema"."table" WHERE <filters> ORDER BY <user order>, <pk> LIMIT n OFFSET m` with its own identifier and literal quoting and the catalog's PK columns. The user's `WHERE` and `ORDER BY` text goes in as written, and the engine refuses the page if the result isn't one statement. Staged row edits go through `table_apply`, which builds the `INSERT`, `UPDATE`, and `DELETE` statements the same way.
+10. **The assistant drives the user's own agent CLI as engine-owned child processes, one per turn.** The engine starts the installed `claude` under the user's sign-in, so a chat runs on the user's Claude subscription and L1 Data holds no API key. The process starts with `--setting-sources=`, `--strict-mcp-config`, and `--tools=`, so the user's settings, hooks, plugins, `CLAUDE.md`, and MCP servers stay off, and so do the CLI's built-in tools. The model gets three tools from an in-process MCP server named `l1`: `describe_tables`, `search_catalog`, and `run_query`. The turn task owns its process the way a run task owns a session. `ChatInner.turn` holds the running turn, and a second send while it is set returns `SendError::Busy`, so two turns cannot share a process. When the turn ends, it publishes its End and the chat goes Idle at once; the process closes on its own task, which closes its stdin, gives it 2 s to exit before it sends `SIGKILL` to the process group, and ends once the process is reaped. `ChatInner.closing` keeps that task's handle, and the next turn waits for it, bounded at 3 s, before it starts its own process with `--resume <session id>`, so the two never overlap; delete and quit wait for it the same way. Quit stops every turn through `Engine::shutdown`, which `main.rs` calls on `RunEvent::Exit` and the dev-bridge calls on Ctrl-C. It sends Stop with a 1 s grace, waits 3 s for the turn tasks, aborts what is left, kills every registered process group on its own thread, and waits 1 s more; `main.rs` bounds the whole call at 6 s.
+   - **Approvals live in an engine ledger, checked at the ask and again at execution.** Each turn keeps one ledger keyed by the provider's tool-call id. The CLI's `can_use_tool` request consults it first, and that is where the user's wait for **Run** happens. The card, the ledger, and the allow reply's `updatedInput` all hold that request's input, which can differ from the earlier `tool_use` block's. The MCP `tools/call` consults it again, and a call runs only on a recorded `Run` whose input equals the approved input. A CLI that skips the ask, or calls with other arguments, still cannot run a query nobody approved, and a refused call hears why. After Stop, both consults deny at once. Catalog tools never ask. A `run_query` statement that is not a read is refused without asking. `sql::vet` decides what may run unattended and fails closed: a read is `Clear` only when it has no `U&` escape and no `SELECT … INTO`, every function it calls, bare or `pg_catalog.`-qualified, is on the vetted allowlist of built-ins, and so is every operator it uses, bare or as `OPERATOR(pg_catalog.op)`, since an operator is a function. **Ask first** asks for every query, **Auto** asks for anything not `Clear`, and both name what `vet` found through `ApprovalReason::Unvetted`. Views, functions, and casts to or from types defined in the database are not inspected, so the user's role is the last limit. A permission change applies from the next tool call.
+   - **The model's queries run on their own READ ONLY sessions.** `assistant::tools::run_query` opens a fresh session for each call, with `default_transaction_read_only = on`. It runs `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` with a 30 s `statement_timeout` and a 5 s `lock_timeout`, and `prepare` refuses a second statement. It reads text rows through the simple protocol, keeps at most 50 rows and 8 KB of cells with each cell cut at 200 chars, stops before a row that would cross either cap, cuts the cells of a first row that would cross the bytes alone to an equal share of them, and drops the session without a commit. It never borrows a tab's session or a metadata session, so a tab's open transaction, `SET`s, and temp tables stay out of reach, and a session-level `set_config` or advisory lock dies with the call. `describe_tables` runs no model text. It reads keys and indexes with the engine's own OID-scoped detail queries on the database's metadata session, as the tree does.
+   - **Claude's protocol stays behind a sans-IO codec in `provider/`.** `provider/claude.rs` turns stream-json lines into provider-neutral `AgentEvent`s and builds the lines to write back, with no pipes, tasks, or clock. `provider/agent.rs` drives the process. `assistant/` sees only the `Provider` and `Codec` traits, so a second provider is a new `ProviderKind` and a new file in `provider/`. One structure test fails if a file under `assistant/` names a provider or its wire format. Another fails if any file there except `tools.rs` calls a session's client.
 
 ### Rust types (crates/engine/src/model.rs, the IPC contract)
 
@@ -366,20 +371,27 @@ pub struct ConsoleConfigSnapshot { pub connection_id: Option<ConnectionId>, pub 
 pub struct Layout {
     pub sidebar: bool, pub results: bool, pub right_panel: Option<RightPanel>, pub results_height: u16,
     pub sidebar_width: u16 /* 256 */, pub right_panel_width: u16 /* 341 */,
+    pub assistant_chat: Option<ChatId>,   // the chat the assistant panel shows, reopened after a restart
 }
-// Layout has a hand-written Deserialize: workspaces saved before the widths existed load with the defaults.
+// Layout has a hand-written Deserialize: workspaces saved before the widths or `assistant_chat` existed load with the defaults.
 #[derive(Clone, Serialize, Deserialize, Type)] pub enum RightPanel { Assistant, Schema, History }
 // Only Assistant is drawn. `restore` in state/workspace.ts maps any saved panel to Assistant.
 
 #[derive(Clone, Serialize, Type)]
-pub struct Settings { pub max_rows: u32 /* 200_000 */, pub max_result_bytes: u64 /* 512 MiB */, pub table_page_size: u32 /* 500 */, pub stop_on_error: bool, pub theme: Theme /* System */ }
+pub struct Settings {
+    pub max_rows: u32 /* 200_000 */, pub max_result_bytes: u64 /* 512 MiB */, pub table_page_size: u32 /* 500 */, pub stop_on_error: bool, pub theme: Theme /* System */,
+    pub providers: Vec<ProviderConfig>,    // one per ProviderKind::ALL, in that order
+    pub provider_health_check_secs: u32,   // 300; 0 turns the background check off
+}
 #[derive(Clone, Copy, Default, Serialize, Deserialize, Type)] pub enum Theme { #[default] System, Light, Dark }
-// Settings has a hand-written Deserialize: settings saved before `theme` existed load with Theme::System.
+// Settings has a hand-written Deserialize: settings saved before `theme` existed load with Theme::System,
+// and settings saved before `providers` existed load the Claude default.
 
 #[derive(Serialize, Type)]
 pub struct BootSnapshot {
     pub connections: Vec<ConnectionConfig>, pub live: Vec<ConnectionState>,
     pub consoles: Vec<ConsoleState>, pub workspace: Workspace, pub settings: Settings,
+    pub providers: Vec<ProviderState>, pub chats: Vec<ChatState>,   // chats: stored, newest first, at most 200
 }
 
 // ---- the one event (emitted as "app-event") -------------------------------------
@@ -390,7 +402,86 @@ pub enum AppEvent {
     ConsoleChanged(ConsoleState),                       // throttled to <= 10/s per console while streaming
     ConsoleOutput { tab_id: TabId, entries: Vec<OutputEntry> },
     HistoryAppended(HistoryEntry),
+    ProviderChanged(ProviderState),
+    ChatChanged(ChatState),
+    ChatEntryChanged(EntrySnapshot),                    // coalesced to <= 20/s per chat while a text block streams
 }
+```
+
+#### Assistant types
+
+The assistant's contract is in the same file. This excerpt shows the shapes a reader needs. `model.rs` also defines the id newtypes (`ChatId`, `ApprovalId`, `ToolCallId`, `ModelId`, `EffortId`), `ProviderInfo`, `ModelOption`, the reply and tool payloads, and the error enums. The panel follows the three assistant variants of `AppEvent`: `ProviderChanged`, `ChatChanged`, and `ChatEntryChanged`. Each carries a whole snapshot with a rising `rev`. Chats and entries share one engine-wide counter.
+
+```rust
+// ---- providers ------------------------------------------------------------------
+pub enum ProviderKind { Claude }      // ProviderKind::ALL; provider(kind) in provider/mod.rs matches it exhaustively
+/// Saved in Settings.providers, one per kind. Hand-written Deserialize: a missing field takes default_config(provider).
+pub struct ProviderConfig {
+    pub provider: ProviderKind, pub enabled: bool, pub display_name: String,
+    pub binary_path: String,          // "" = `claude` on the agent PATH; `~` expands
+    pub config_dir: String,           // "" = the inherited CLAUDE_CONFIG_DIR, else ~/.claude
+    pub launch_args: String,          // as typed; the engine drops the flags it owns
+}
+pub struct ProviderState {
+    pub provider: ProviderKind,       // not `kind`: AppEvent is tagged on kind (model::tests::provider_changed_keeps_its_own_tag)
+    pub rev: u64,
+    pub info: ProviderInfo,           // default name and binary, config variable, sign-in command, owned flags
+    pub ignored_flags: Vec<String>,   // the owned flags found in the saved launch arguments, as typed
+    pub checking: bool,               // a probe runs; `outcome` stays on screen meanwhile
+    pub checked_at_ms: Option<i64>,
+    pub outcome: Option<ProbeOutcome>,   // None until the first probe finishes; kept in memory only
+}
+#[serde(tag = "kind")]
+pub enum ProbeOutcome {
+    Ready { version: String, plan: Option<String> /* "Claude Max" */, models: Vec<ModelOption> },   // each model lists its effort levels
+    SignedOut { version: String },
+    NotFound { binary: String },      // what was looked up, and where
+    Broken { version: Option<String>, message: String },
+}
+
+// ---- chats ----------------------------------------------------------------------
+pub struct ChatOptions { pub provider: ProviderKind, pub model: ModelId, pub effort: Option<EffortId>, pub permission: Permission /* AskFirst | Auto */ }
+pub struct ChatState {
+    pub id: ChatId,                   // minted by the frontend, like TabId
+    pub rev: u64,
+    pub title: String,                // the first line of the first message, cut at 60 chars; "" for a draft
+    pub updated_at_ms: i64, pub options: ChatOptions, pub status: ChatStatus,
+    pub entry_count: u32,             // entries are 0..entry_count; the live counter, bumped as entries are appended
+}
+#[serde(tag = "kind")]
+pub enum ChatStatus {
+    Draft,                            // opened, never sent to; not stored, not listed
+    Idle,
+    Running { turn: u32, started_at_ms: i64, phase: TurnPhase /* Starting | Working | AwaitingApproval */ },
+    Deleted,                          // a tombstone, so the live store drops the chat by the keep-higher rule
+}
+
+/// One transcript row. `turn` is the seq of the user entry that opened the turn.
+pub struct EntrySnapshot { pub chat_id: ChatId, pub seq: u32, pub rev: u64, pub turn: u32, pub entry: Entry }
+/// Stored verbatim in chat_entries.json. A row this build cannot parse loads as Unreadable.
+#[serde(tag = "kind")]
+pub enum Entry {
+    User { at_ms: i64, text: String, context: Option<SentContext>, attachment: Option<Attachment> },
+    Text { blocks: Vec<ReplyBlock> /* Markdown { text } | Sql { sql, relations, vetted, complete } */, done: bool },
+    Tool { call: ToolCallId, tool: ToolUse /* DescribeTables | SearchCatalog | RunQuery { sql, purpose, relations } | Other */, status: ToolStatus },
+    Notice { text: String },          // the engine changed course, such as a provider session it could not resume
+    End { at_ms: i64, outcome: TurnOutcome /* Completed | Stopped | Lost | Failed { error: AgentError } */, suggestions: Vec<String> },
+    Unreadable,
+}
+#[serde(tag = "kind")]
+pub enum ToolStatus {
+    Running,
+    AwaitingApproval { approval: ApprovalId, reason: ApprovalReason /* AskFirst | Unvetted { functions } */ },
+    Done { result: ToolResult },
+    Failed { message: String },       // what the model got
+    Denied { stopped: bool },         // true when Stop denied it, false when the user pressed Deny
+    Expired,                          // still open when the turn ended
+}
+
+// ---- requests -------------------------------------------------------------------
+/// The active tab at Send. The engine reads the SQL out of `text` itself, at the UTF-16 `target`.
+pub struct SendRequest { pub text: String, pub tab: Option<TabContext> }
+pub struct TabContext { pub tab_id: TabId, pub title: String, pub db: Option<DatabaseRef>, pub text: String, pub target: RunTarget, pub attach: Option<ResultRef> }
 ```
 
 ### IPC command list (src-tauri/src/ipc.rs)
@@ -428,7 +519,14 @@ Each command is one line delegating to `Engine`. tauri-specta uses `ErrorHandlin
 | `history_group` | `HistoryGroupQuery` | `Result<HistoryGroupPage, HistoryError>` | Full SQL and paged runs for one group at the requested revision. |
 | `history_clear` | – | `()` | |
 | `workspace_save` | `Workspace` | `()` | Debounced 500 ms by the UI. Last write wins (single writer). |
-| `settings_set` | `Settings` | `()` | |
+| `settings_set` | `Settings` | `()` | Re-probes each enabled provider whose `enabled` flag, binary path, config directory, or launch arguments changed. |
+| `assistant_open` | `chatId: ChatId` | `Result<ChatView, ChatError>` | Every entry, with the running turn's as of now. An unknown id opens a draft with default options, held in memory until its first send. Closes what a crash left open, with a `Lost` end and `Expired` for waiting tools. Idempotent, and mints no rev: stored rows come at the chat's own rev, so two opens of an unchanged chat return the same view. |
+| `assistant_configure` | `chatId, options: ChatOptions` | `Result<ChatState, ChatError>` | Sync. Checks the model and effort against the last `Ready` probe, and keeps them as they are when there is none. Applies at the next turn. Works on drafts. |
+| `assistant_send` | `chatId, request: SendRequest` | `Result<TurnAccepted, SendError>` | Stores the chat row on the first send and the `User` entry, starts the turn, and returns. `Busy` while a turn runs or the chat is being deleted. A missing binary or a signed-out CLI ends the turn with a typed `End`, never a send error. |
+| `assistant_stop` | `chatId` | `()` | Sync, idempotent. Denies waiting approvals, cancels running tool calls, sends `interrupt`, waits up to 5 s, then kills the process group. A later ask or call from the process is denied at once. |
+| `assistant_approve` | `chatId, approval: ApprovalId, decision: Decision` | `Result<(), ApproveError>` | Sync. `NotPending` once the approval was answered, denied by Stop, or expired, and for another chat's approval. |
+| `assistant_delete` | `chatId` | `()` | Takes `AppHandle`, like `console_cancel`. Marks the chat deleted under its lock, so the turn task stores and publishes nothing more, stops a running turn and waits up to 5 s, aborts it past that, deletes the rows, and emits one `ChatStatus::Deleted` tombstone with a fresh rev, also for a stored chat not loaded this session. Leaves the CLI's transcript file alone. |
+| `provider_refresh` | – | `()` | Sync, fire and forget. A full probe of every enabled provider. |
 
 ```rust
 #[derive(Deserialize, Type)]
@@ -504,7 +602,9 @@ Writing uses one command, `table_apply(tab, TableChanges)`. It borrows the tab's
 pub struct Engine { shared: Arc<Shared> }
 pub(crate) struct Shared { /* data_dir, vault, store, settings, connections, consoles, events, next_run, timezone */ }
 
-pub struct EngineConfig { pub data_dir: PathBuf, pub keys: Arc<dyn KeyStore> }
+pub struct EngineConfig { pub data_dir: PathBuf, pub keys: Arc<dyn KeyStore>, pub agent_path: AgentPath }
+// AgentPath::LoginShell (the app and the dev-bridge) or AgentPath::Fixed(path) (tests pass an empty one,
+// so no installed agent CLI ever runs under `cargo test`)
 
 impl Engine {
     pub async fn open(cfg: EngineConfig) -> Result<Arc<Self>, StoreError>;   // opens SQLite, runs migrations
@@ -539,10 +639,19 @@ impl Engine {
     pub fn save_workspace(&self, w: Workspace);
     pub fn settings(&self) -> Settings;                                      // main.rs: the window's first theme
     pub fn set_settings(&self, s: Settings);
+
+    pub async fn assistant_open(&self, chat: ChatId) -> Result<ChatView, ChatError>;
+    pub fn assistant_configure(&self, chat: ChatId, options: ChatOptions) -> Result<ChatState, ChatError>;
+    pub async fn assistant_send(&self, chat: ChatId, request: SendRequest) -> Result<TurnAccepted, SendError>;
+    pub fn assistant_stop(&self, chat: ChatId);
+    pub fn assistant_approve(&self, chat: ChatId, approval: ApprovalId, decision: Decision) -> Result<(), ApproveError>;
+    pub async fn assistant_delete(&self, chat: ChatId);
+    pub fn provider_refresh(&self);
+    pub async fn shutdown(&self);                                            // quit: stops every turn, then kills any agent process still alive, within engine::SHUTDOWN_BOUND (4 s); the shell's timeout is that plus a margin
 }
 ```
 
-The surface is 27 methods. 23 of them match the 23 registered commands one to one. `open`, `data_dir`, `subscribe`, and `settings` serve the shell, the dev-bridge, and tests. Behind it the engine hides:
+The block above is an excerpt. `Engine` has 43 public methods, and 37 of them match the 37 registered commands one to one. `open`, `data_dir`, `runtime`, `subscribe`, `settings`, and `shutdown` serve the shell, the dev-bridge, and tests. Behind it the engine hides:
 
 - TLS mode mapping and keychain reads
 - Session lifecycle, lazy reconnects, and `search_path` / `TimeZone` setup
@@ -557,6 +666,7 @@ The surface is 27 methods. 23 of them match the 23 registered commands one to on
 - UTF-16 offset mapping
 - Table-browse, count, and edit SQL with its own quoting
 - Staged edits applied under one transaction or savepoint
+- Agent CLI processes, their protocol, the approval ledger, and the assistant's read-only query sessions
 
 The frontend sequences two calls for one operation in two places only. `runTab` configures a tab's console before its first run, and the pager's Last button counts rows with `exact_row_count` before it loads the page.
 
@@ -693,7 +803,7 @@ Session-loss rules:
 
 ### Frontend (React 19, TypeScript, Vite)
 
-- **Framework: React 19.** Query history uses a Radix dialog with a selectable list and SQL preview. Radix covers dialogs, dropdown menus, and context menus. TanStack Virtual covers the grid, and `@tabler/icons-react` supplies the icons. react-resizable-panels holds only the editor and results split. The right panel draws an Assistant placeholder. The AI chat is not built yet. Agents write React most reliably, which speeds the verify loop.
+- **Framework: React 19.** Query history uses a Radix dialog with a selectable list and SQL preview. Radix covers dialogs, dropdown menus, and context menus. TanStack Virtual covers the grid, and `@tabler/icons-react` supplies the icons. react-resizable-panels holds only the editor and results split. The right panel holds the assistant chat from `features/assistant/`. Agents write React most reliably, which speeds the verify loop.
 - **Editor: CodeMirror 6, used directly** (no wrapper library). One shared `EditorView` is mounted for the tab editor, and the `EditorState` is swapped per tab, so undo history survives tab switches. Query history mounts a separate read-only view with the same SQL highlighting and theme. A table tab's editor starts with `browseQuery(schema, table)`. `sql({ dialect: PostgreSQL, schema, upperCaseKeywords: true })` provides highlighting and schema completion. A second completion source, `qualifiedTables`, offers every table as `schema.table` and inserts `"schema"."table"`. After a failed script run, `showDiagnostics` calls `setDiagnostics` to mark `QueryError.position`.
 - **Grid: a hand-built DOM grid on `@tanstack/react-virtual`.** Every row has the same height, `round((code font size + 11) × density factor)`, which is 24 px at the defaults. Column widths are measured in the chosen code and interface fonts. Rows and columns are always virtualized. The header is one line with a category icon (a key icon for a primary-key column) and the name. The type shows in the tooltip. On a table tab a header click sorts and Shift-click adds a sort key. A sticky row-number column is on the left. Numeric categories are right aligned with digit grouping, inserted textually so precision is never lost. NULL renders as a dim `NULL`. Cut cells show an ellipsis button that opens the `cell` overlay with the full value. Selection of a cell range is copied as TSV, up to 50,000 rows. On an editable table tab the grid also edits cells, adds rows, and marks rows deleted (see Frontend phase in Implementation reconciliation).
 - **Styling: Tailwind v4** with CSS variables for every colour. `index.css` holds the dark values from the mockup and a `:root[data-theme="light"]` block that overrides each one. The CodeMirror theme and syntax colours read the same variables. `shell/theme.ts` sets `data-theme` and `color-scheme` on the root element before the first render. It follows `prefers-color-scheme` while the setting is System. `shell/appearance.ts` paints the font, density, and motion settings the same way, as root custom properties. Tailwind's `--spacing` is `0.25rem × --density`, so every spacing utility follows the density. Interface text uses `text-ui-N` tokens, defined as `N px × --ui-scale`, instead of `text-[Npx]`. The SQL editor and the result grid cells use `--code-font` and `--code-size`. The side columns, Radix dialogs, and menus animate over `--panel-duration`.
@@ -708,11 +818,15 @@ type LiveData = {
   consoles: Record<TabId, ConsoleState>;
   output: Record<TabId, OutputEntry[]>;                // ring buffer, 5,000 per tab; the Output panel renders all of it
   historyTail: HistoryEntry[];                         // last 200 HistoryAppended entries, newest first
+  providers: Partial<Record<ProviderKind, ProviderState>>;
+  chats: Record<ChatId, ChatState>;
+  transcripts: Record<ChatId, Record<number, EntrySnapshot>>;   // by seq, only for chats the panel opened; other chats' entry events are dropped
 };
 // wantedCatalogs(connections): every Ready catalog of every Connected instance, keyed by DbKey (connection id + NUL + database).
 // boot.ts prunes useCatalog to that set and calls ensure for each entry.
 type LiveState = LiveData & {
   hydrate(b: BootSnapshot): void;
+  hydrateChat(view: ChatView): void;                   // assistant_open's whole chat; a newer streamed entry wins
   apply(e: AppEvent): void;                            // keep-higher-rev; exhaustive switch on e.kind
 };
 // export const useLive = create<LiveState>()(...)
@@ -776,6 +890,7 @@ type TableEdits = {
 
 // features/results/tableQuery.ts: useFilterDrafts, filter rows the user is still filling in, per tab
 // state/status.ts: pure derivations (isRunning, hasUncommittedWork, connectionTone, shownResult, runSummary)
+// state/transcript.ts: pure. groupTurns(entries) groups a chat's entries into turns by their `turn` stamp.
 ```
 
 The UI derives its status values instead of storing them:
@@ -797,6 +912,9 @@ Everything lives under `app_data_dir()` (override with `L1_DATA_DATA_DIR` in deb
 - `history(id INTEGER PK, at_ms, connection_id, connection_name, database, sql, elapsed_ms, outcome_json, is_write)`, indexed on `(connection_id, id)`. Legacy `history_list` search is `LIKE`. Grouped browsing uses literal substring search across SQL, recorded connection name, database, and error message. Pruned to the newest 10,000 entries on insert. Migration 4 adds and backfills `is_write` in the same transaction as its version bump.
 - `kv(key TEXT PK, json TEXT)`. Holds `workspace` and `settings`.
 - `secrets(connection_id TEXT PK, nonce BLOB, ciphertext BLOB)`. One sealed password per connection. Migration 2 adds it.
+- `chats(id TEXT PK, updated_ms, json)`, indexed on `updated_ms`, and `chat_entries(chat_id, seq, turn, json)` with the key `(chat_id, seq)`. Migration 5 adds both. Deleting a chat deletes its entries. A chat's `json` is a `ChatRecord`, which holds the title, the options, the entry count, and the provider session the next turn resumes, with the config directory the CLI made it under. Each entry's `json` is one `Entry`. A chat row that fails to parse is logged and left out of the list, and an entry row that fails to parse loads as `Entry::Unreadable`.
+
+Provider configs and the health check interval are part of `settings` in `kv`. Probe results stay in memory, so a launch never shows a stale sign-in.
 
 The OS credential store holds one item, a random 32-byte master key, with service `dev.l1data.app` and user `master-key`. macOS therefore asks for keychain access once, not once per connection. Each password is sealed with XChaCha20-Poly1305 under that key, with a random nonce and the connection id as associated data, and the result is stored in the `secrets` table. All passwords do not go into one keychain item because Windows Credential Manager caps an item at 2560 bytes. The first saved password creates the key. Reading a password never creates one. If the key is missing or a password fails to open (wiped keychain, copied data dir, memory store restart), the connection behaves as if it had no password, and the user enters it again at the `MissingPassword` prompt. `trait KeyStore { load, save }` has two implementations: `KeyringKeyStore` and `MemoryKeyStore`. The second exists for tests and e2e, selected by `L1_DATA_SECRET_STORE=memory` in debug builds only. SQLite access is a `std::sync::Mutex<rusqlite::Connection>`. Writes are single-row and sub-millisecond, so they run inline.
 
@@ -813,13 +931,24 @@ crates/engine/
   src/session.rs              # Session: client + driver task + notices + death watch; CancelHandle
   src/console.rs              # Console, SessionSlot, run task
   src/txn.rs                  # pure transaction state machine
-  src/sql/{mod,split,classify}.rs  # pure lexer, picker, classifier
+  src/sql/{mod,split,classify,relations}.rs  # pure lexer, picker, classifier, relation names and read checks
   src/text.rs                 # UTF-16 mapping, type_ref, synthesize_tag, quoting, browse/count/edit SQL
   src/results.rs              # Arena, pages, CSV writer
   src/catalog.rs              # 4 catalog queries -> Catalog
   src/store.rs                # SQLite: migrations, connections, history, kv, secrets
   src/secrets.rs              # Vault + KeyStore (Keyring/Memory)
+  src/provider/mod.rs         # Provider and sans-IO Codec traits, HostEnv, probes, health loop
+  src/provider/agent.rs       # one CLI process: its own process group, stdout reader, stderr tail, close and kill
+  src/provider/claude.rs      # Claude: argv, child env, launch arguments, probe parsing, stream-json codec
+  src/assistant/{mod,chat,turn}.rs   # chats, the approval ledger, the turn loop
+  src/assistant/tools.rs      # the three tools, the approval policy, run_query; the only file here that calls a session's client
+  src/assistant/{context,reply}.rs   # pure: the per-turn context block, reply parsing, recover, recap
+  src/assistant/system_prompt.md
+  src/bin/fake_claude.rs      # fake-claude: a stand-in CLI with named scenarios, not shipped
   tests/pg.rs                 # pg-tests feature: Harness + every scenario
+  tests/assistant.rs          # Engine with fake-claude; its pg module runs under pg-tests
+  tests/claude_smoke.rs       # claude-smoke feature: the installed claude CLI
+  tests/fixtures/claude/*.jsonl   # protocol lines captured from claude 2.1.301
 src-tauri/
   src/main.rs                 # builder, specta export, event forwarder task, plugins, macOS menu, self-check
   src/ipc.rs                  # #[tauri::command] one-liners
@@ -829,12 +958,13 @@ src/                          # frontend
   main.tsx  boot.ts  index.css
   ipc/bindings.ts             # GENERATED, checked in
   ipc/errors.ts               # typed IPC errors -> user-facing text
-  state/{live,workspace,catalog,relationDetail,rowCache,status,tableEdits}.ts
+  state/{live,workspace,catalog,relationDetail,rowCache,status,tableEdits,transcript}.ts
   shell/{AppLayout,TopBar,TabBar,Overlays,RightPanel,PixelColumn,ResizeHandle,WindowChrome,WindowEdgeActions}.tsx
   shell/{theme,hostedWindow,commands}.ts
   ui/primitives.tsx           # shared buttons, menus, dialogs, context menus
   ui/textMatch.ts             # substring matching and highlight ranges for the search boxes
-  features/settings/{sections,SettingsScreen,SettingsSidebarBody,SettingLayout,AppearanceSection,QueriesSection}.tsx  features/settings/settingsIndex.ts
+  features/settings/{sections,SettingsScreen,SettingsSidebarBody,SettingLayout,AppearanceSection,QueriesSection,ProvidersSection}.tsx  features/settings/settingsIndex.ts
+  features/assistant/{AssistantPanel,Transcript,ReplyText,SqlCard,SqlHighlight,ToolCard,Composer,ChatHistory,providerIcons}.tsx  features/assistant/{assistantActions,assistantText}.ts
   features/sidebar/{Sidebar,SidebarSearch,ConnectionTree}.tsx  features/sidebar/{treeFilter,detailText}.ts
   features/connections/{ConnectionDialog,connectionColors}.tsx  features/connections/connectionActions.ts
   features/editor/{SqlEditor.tsx,editorStates.ts,runActions.ts,sqlIdent.ts,theme.ts}
@@ -869,6 +999,8 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - store: migrations run once, history paging and pruning
    - model: wire casing, `RunRequest` tags, the nested `ConnectError` tag, settings and layouts saved by older versions still load
    - `Engine` without a DB: boot on an empty dir, passwordless saves never touch the keychain, persistence across `open`, draft validation
+   - assistant units: the Claude codec against the lines in `tests/fixtures/claude/`, argv, child env, launch-argument parsing, reply parsing into Markdown and SQL blocks, the context block's budgets, the tool policy, `relation_names` and `vet` with the cases the review raised, `recover`, chats and entries in the store, and the two structure tests
+   - `Engine` with `fake-claude` (`tests/assistant.rs`), picked through `binaryPath` and `launchArgs = --fake-scenario <name>` as a user would: the probe, a streamed reply with suggestions, `Busy`, Ask first and Deny, a `tools/call` whose arguments differ from the approved input, a `tools/call` with other arguments while its ask is unanswered, an ask whose input differs from its `tool_use` block, Auto, Stop denying a pending approval and a later ask and call, Stop and shutdown killing a process that ignores interrupt and EOF, a follow-up accepted at the End and started only after the last process exited, delete and shutdown waiting for that exit, a crash's stderr tail, the recap after a session lost at start or at the first result or after a changed config directory, a resume that fails for another reason, a restart whose process never starts, a sign-in failure at start, a missing assistant directory, the default options rule, a resumed session and a changed model in argv, recovery after a mid-turn crash, shutdown, delete during a turn and of an unloaded chat, and two opens with one rev
 2. **Engine against real Postgres** (`pnpm db:up && cargo test -p engine --features pg-tests`). `Harness` uses `MemoryKeyStore`, a temp data dir, and `L1_DATA_TEST_PG` (default `postgres://l1data:l1data@localhost:5433/shop`). Scenarios:
    - connect reports a 16.x server version
    - catalog of `shop` contains the mockup's tables with PKs and estimates after `ANALYZE`
@@ -893,7 +1025,8 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - `table_apply` commits every change or none, and in manual mode waits for Commit while a failure keeps the open transaction
    - table pages sort and filter in the engine
    - SQL comments in WHERE and ORDER BY keep the page limit
-3. **Frontend units** (`pnpm test`, vitest, 16 files):
+   - assistant queries: Postgres refuses each write the lexer let through, a session advisory lock dies with the call, the statement timeout and the row and cell caps hold, no row crosses the byte budget and a first row that would is cut to fit, a wide row stays within the budget in the stored result and the model text, a manual tab's uncommitted insert stays untouched and unseen by an approved count, `describe_tables` lists a foreign key and an index, the context sends the schema outline once per provider session, every vetted name is a `pg_catalog` function with no volatile overload, every vetted operator symbol is a `pg_catalog` operator with no volatile implementation, the keyword lists match the server's, and Auto asks for a `U&`-escaped call
+3. **Frontend units** (`pnpm test`, vitest, 38 files):
    - `live.apply` rev ordering and exhaustiveness
    - numeric grouping on text (`-1234567.890` → `-1,234,567.890`), page labels, elapsed time, TSV
    - catalog → `SQLNamespace`, substring matching, the tree filter, and the settings filter
@@ -903,6 +1036,7 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - header sort cycling and the `ORDER BY` text round trip
    - browse-query quoting and serialized settings writes in `runActions`
    - grid header icons and key navigation, history list paging, settings screen, window chrome, theme, global shortcuts, the bridge shim
+   - the assistant: `live.apply` for providers, chats, entries, and tombstones, turn grouping, tool lines, provider status text, ignored launch arguments, send requests with UTF-16 offsets and an attached result, Replace tab as one undo, the resync check, SQL cards, and the panel's pickers, approval card, and failure states
 4. **Contract drift**: a `src-tauri` test (`export_bindings_up_to_date`) renders bindings to a string and asserts equality with `src/ipc/bindings.ts`. A second test asserts the dev-bridge dispatch table covers exactly the registered command names. The dev-bridge also tests that `app_boot` replies with the snapshot and that bad requests are bridge errors, not command errors.
 5. **UI against the real engine** (`pnpm bridge`). `crates/dev-bridge` hosts the same `Engine` (MemoryKeyStore, temp `L1_DATA_DATA_DIR`) behind `POST /invoke/:cmd` and an SSE stream of `AppEvent`. In vite dev outside Tauri, `src/dev/bridgeShim.ts` installs `mockIPC` from `@tauri-apps/api/mocks` (with `shouldMockEvents`) that forwards every command to the bridge and re-emits SSE frames as `app-event`. The generated bindings run unchanged. An agent drives it with agent-browser or Playwright, selecting by `data-testid`:
    - create connection via the dialog, test it, save it, and see "Live" plus `customers 18.4k`-style estimates in the tree
@@ -911,7 +1045,12 @@ Tracing a run from the button to the grid takes four files: `runActions.ts` → 
    - run `select slow_echo(30)`, click Cancel, see the results status show `Cancelled · …`
    - switch to Manual: insert, then a second tab's count is unchanged; Commit, and the count changes
    - reload the page: tabs, text, and history are restored
-6. **Real shell.** `pnpm self-check` launches the debug binary with `L1_DATA_SELF_CHECK=1`: it boots `Engine` inside Tauri, connects to the dev DB, runs `SELECT 1` and loads the catalog, prints JSON, and exits 0. `pnpm screenshot` covers WKWebView rendering on macOS. It starts a throwaway Postgres, seeds a workspace through the dev-bridge, launches the debug app on that data dir, and captures its window with `screencapture` into `docs/images/l1-data.png`. Driving the real webview with `@wdio/tauri-service` (embedded provider, verified to support macOS) is not built.
+   - **Settings** > **Providers** with the real `claude` reads `v2.1.301 · Signed in · Claude Max`, a bad binary path reads Not found, and Reset restores it
+   - the mockup question streams a reply. In Ask first, `run_query` waits for Run, the SQL card reads "Uses orders, customers", and Run in new tab, Insert at cursor, Replace tab with ⌘Z, a suggestion chip, and Stop each work. Auto runs a query without asking, and a `DELETE` is refused and comes back as an Open in new tab card
+   - after a bridge restart, the chat reopens from history and a resumed turn answers from memory
+   - with no signed-in CLI, `fake-claude` stands in. Build it with `cargo build -p engine --bin fake-claude`, then set **Binary path** to `target/debug/fake-claude` and **Launch arguments** to `--fake-scenario <name>`; the comment at the top of `crates/engine/src/bin/fake_claude.rs` lists every scenario, and `card`, `query`, `slow`, `wedged`, `crash`, and `resume-lost` are the ones to start with
+6. **Real shell.** `pnpm self-check` launches the debug binary with `L1_DATA_SELF_CHECK=1`: it boots `Engine` inside Tauri, connects to the dev DB, runs `SELECT 1` and loads the catalog, prints JSON, and exits 0. `pnpm screenshot` covers WKWebView rendering on macOS. It starts a throwaway Postgres, seeds a workspace and an assistant chat that `fake-claude` answers through the dev-bridge, launches the debug app on that data dir, and captures its window with `screencapture` into `docs/images/l1-data.png`. Driving the real webview with `@wdio/tauri-service` (embedded provider, verified to support macOS) is not built.
+7. **Real CLI.** `cargo test -p engine --features claude-smoke --test claude_smoke -- --nocapture` needs a signed-in `claude` and `pnpm db:up`. It spends three Haiku turns at low effort. It checks what `fake-claude` cannot: the CLI accepts the argv and the child env, a resumed session remembers the earlier turn, and a `can_use_tool` ask approved after 75 s still runs its query.
 
 ## Synthesis decision
 
@@ -1006,7 +1145,7 @@ Frontend phase (PRs #4 and #11 to #13). These PRs built the live store, the edit
 - **Row caches are module-level.** `rowCacheFor` keys a `RowCache` by `ResultRef`, so a cache outlives the components that read it. The first cache for a new `runId` evicts the tab's older ones, and `closeTab` calls `dropRowCaches`.
 - **Settings writes are serialized.** `saveSettings` updates the store first, so a second change builds on the first. Each `settings_set` waits for the previous one and sends the settings as they are when it runs, so the last write carries every change.
 - **Keys.** ⌘W closes the active tab. The macOS menu in `main.rs` mirrors Tauri's default menu with Close Window moved to ⇧⌘W, so ⌘W reaches the webview. Global shortcuts live in `shell/commands.ts`.
-- **History is a grouped browser, and the right panel is a placeholder.** The sidebar's clock button opens the 960 by 640 History dialog. The left list selects a preview without changing any tab editor state. The preview owns a separate read-only CodeMirror with line numbers and the existing editor theme, SQL highlighting, and function styles. The right panel outside the dialog draws only an Assistant placeholder.
+- **History is a grouped browser.** The sidebar's clock button opens the 960 by 640 History dialog. The left list selects a preview without changing any tab editor state. The preview owns a separate read-only CodeMirror with line numbers and the existing editor theme, SQL highlighting, and function styles. The right panel held only an Assistant placeholder until the Assistant phase below.
 - **History grouping and metadata belong to Rust.** `history_browse` groups retained runs by exact SQL text, connection ID, and database. It returns bounded titles and excerpts, run counts, failure counts, and representative run metadata. A leading comment supplies the title when present. The group ID is its oldest retained run ID. Groups page by latest run ID, newest first, with at most 100 groups per response. The UI requests 50. All, Failed, and Writes counts cover groups matching the search before the selected filter. Any matching member admits its whole group. A failed filter admits groups with any error and represents each with its latest error. Other filters use the latest run. Cancelled runs stay separate from errors.
 - **History details stay paged.** `history_group` returns the exact SQL once and up to 100 run records, newest first, with a maximum elapsed time over the whole group for duration bars. The UI requests 50 runs. A group timeline includes all retained runs, even when only one member matched the search.
 - **History pages share a revision.** The store mutex protects the SQLite connection and an in-memory history revision. A successful insert with pruning, or clear, increments the revision while holding that lock. Later browse pages and group requests must carry the first page's revision. A mismatch returns `HistoryError::Stale`. React discards old search and detail responses, refetches on stale revisions or a `HistoryAppended` tail change, and preserves the selected group when it remains on the refreshed page. It does not aggregate the live tail into history groups.
@@ -1019,6 +1158,30 @@ Frontend phase (PRs #4 and #11 to #13). These PRs built the live store, the edit
 - **There is no status bar.** The transaction mode menu is in the TopBar on every tab. It also carries the lost-transaction notice, "rolled back" in red with a tooltip. Ln/Col is in the results header on every tab. The connection, database, server version, and UTF-8 chips are gone, so the status bar no longer shows `connection · database` as the database-addressing bullet says. The `results` palette token is gone too, so the results pane paints `background`. A saved custom theme that still has a `results` color loads, because `customVariant` in `themes/catalog.ts` and the importers keep only keys that `isToken` accepts.
 - **Search filters in place (PR: filter the sidebar tree and settings in place).** The ⌘P palettes and cmdk are gone. Each sidebar search box is a text input that narrows what sits under it, and ⌘P reveals the sidebar and focuses the current screen's box. The tree filter searches the domain the palette searched, the shown schemas of the shown databases of connected instances, and matches the names of tables, views, columns, and functions by substring, not fuzzily. A match shows under its connection, database, and schema rows, so the `database.schema` hint that the database-addressing bullet describes is gone. `filterTree` in `features/sidebar/treeFilter.ts` builds the narrowed tree as one typed value, and `ConnectionTree` draws it with its own rows instead of the normal nodes, which carry the pickers and the loading and error rows. `ConnectionTree` holds which connections have had their first-connect reveal, so the normal nodes that remount when the query clears do not reopen a home database the user closed. Enter opens the first listed table or view whose name has every word at a word start, else the first listed, so "ord it" opens `order_items` rather than `order_audit`.
 - **The connection dialog is a connection manager (PR: redesign the connection dialog).** The dialog lists the saved connections beside the form, and choosing one reopens the `connection` overlay with that id. The form is dirty when its fields, password edit, or URL text differ from what the selected connection opens with (`isDirty` in `connectionForm.ts`), and it reports that to the dialog. While the form is dirty, choosing another connection, **New**, **Close**, the X, Esc, or a backdrop click opens a nested "Discard unsaved changes?" prompt instead, and the dialog runs the stored action only on **Discard**. A successful save closes with no prompt. The prompt is a nested Radix dialog, not the workspace `confirm` overlay, because the overlay is a single slot and opening it would close the connection dialog. A new connection's URL field calls `connection_parse_url` on each edit and fills the fields from the draft; a response older than the latest edit is ignored, and a parse error shows only after a blur or once the text has `://` or `=`. An empty name saves as `host / database`. `ConnectionConfig.color` holds an id from `CONNECTION_COLORS` in `connectionColors.tsx` (`red`, `amber`, `green`, `blue`, `purple`), which maps each id to a fixed hue; any other stored value renders as no color. The tree's connection row and the TopBar's connection name show the color as a dot.
+
+Assistant phase (the chat panel, **Settings** > **Providers**, and the engine behind them). Decision 10 and the assistant types above are the design. Each item is a place the code differs from or adds to it.
+
+- **One process per turn, not a warm process.** A `claude` process took 0.45 to 0.5 s from spawn to its `initialize` response over five runs. That cost did not pay for a warm-process slot, its reaper, and its fingerprint, so each turn starts its own process and resumes the session with `--resume`.
+- **The process driver is `provider/agent.rs`.** The design put it at `assistant/agent.rs`. The Full probe's no-turn handshake drives a process too, and `provider` importing from `assistant` would make the two modules depend on each other.
+- **`application_name` is set after connect.** `Session::open_assistant` calls `Session::open`, then runs `SET application_name = 'L1 Data assistant'` and `SET default_transaction_read_only = on`, instead of passing the name as a connect parameter.
+- **Stop fails a running tool.** A tool call that Stop cancels mid-run ends `ToolStatus::Failed { message: "Stopped by the user." }`, which is the text the model receives. `Expired` is for a call still open when the turn ends, and for one a crash left open.
+- **Revs on open.** Stored rows carry no rev. `assistant_open` serves them at the chat's own rev, which every event for them preceded, and keeps the running turn's snapshot revs, so the live store's keep-higher rule still takes the newest of each and two opens of an unchanged chat return the same view. `boot` lists each stored chat that is not loaded yet with `rev: 0`, so that chat's first event replaces the listed state. `ChatInner.live` holds only the running turn's snapshots; `finish` clears it.
+- **The agent PATH is an `EngineConfig` field.** `EngineConfig.agent_path` is `AgentPath::LoginShell` in the app and the dev-bridge. It reads the login shell's PATH once and appends the usual install directories, because a Finder-launched app gets launchd's PATH, which misses `claude`. Tests pass `AgentPath::Fixed` with an empty PATH, so `cargo test` never starts a login shell or the installed `claude`.
+- **Launch-argument `--model` and `--effort` set defaults.** Typed into a provider's launch arguments, they choose the model and effort a new chat starts with. The model matches by alias or by resolved id, so `--model claude-opus-5-5` selects Opus 5.5. The engine does not pass them through, because each chat's pickers set its model and effort, and the field does not list them as ignored.
+- **The resync check runs from boot.** `startAssistantSync` in `boot.ts` reopens an idle chat whose `ChatState.entryCount` is more than the entries the panel holds. A missed `ChatEntryChanged` therefore heals while the panel is closed.
+- **Unvetted SQL opens without running.** A SQL card whose block is not `vetted` offers **Open in new tab** (`sql-open-new-tab`) in place of **Run in new tab**. A tool row's **Open in tab** opens its query without running it. A statement the model wrote runs only when the user presses Run.
+- **The CLI waits on `can_use_tool`.** The design capped tool execution at 45 s in case a 60 s MCP call timer also covered the wait for approval. The `claude-smoke` test approves after 75 s and the query still runs, so the CLI does not time out a waiting `can_use_tool`. The 45 s cap on execution stays.
+- **Invoke keys.** The assistant commands add `chatId`, `options`, `approval`, and `decision` to the command parameter names.
+- **Markdown.** `ReplyText` renders replies with `react-markdown` and `remark-gfm`. It skips raw HTML and draws links and images as text. `SqlCard` highlights SQL with `@lezer/highlight` and the editor's token table, with no `EditorView` per card.
+- **Vetted calls, not a denylist.** The design's `side_effect_calls` named functions to refuse, and a `U&"…"` identifier, `query_to_xml`, or an unlisted function slipped past it. `sql::vet` in `sql/relations.rs` replaces it and fails closed, as decision 10 now says. `VETTED` lists the built-ins an analytics query calls, each stable or immutable, plus six volatile size helpers that only read file sizes. Whether `name(` is a call or syntax comes from the token before it and from the server's keyword table in `sql/keywords.rs`, which `dev/pg-keywords.sh` regenerates and a pg-test checks: reserved and column-name keywords are never functions, an identifier before the name makes it a clause such as `JOIN` or `LIKE`, and `ROLLUP` and `CUBE` are syntax only inside `GROUP BY`. The tokenizer emits a `UnicodeEscape` token for `U&`. `VETTED_OPERATORS` lists the operator symbols the same way, each a `pg_catalog` operator with no volatile implementation, which a pg-test checks: the tokenizer emits an `Operator` token for each run of operator characters, lexed as Postgres lexes it (a comment start ends the run, a trailing `+` or `-` leaves a run with none of `~ ! @ # % ^ & | ` ?`, `!=` reads as `<>`, and `=>` is not an operator), `vet` judges the symbol like a call, bare or as `OPERATOR(schema.op)`, and the `*` after a dot is a column list. `1 ## 2` asks and names `operator ##`. `reply::vetted` uses the same verdict, so a card that calls an unvetted function offers **Open in new tab**. Three shapes ask although they read: `group by a, rollup (b)`, a `LIKE` whose left operand is a column named by an unreserved keyword such as `name`, and `GROUPING SETS` after a comma.
+- **One input per approval.** `can_use_tool` can carry other arguments than the `tool_use` block that created the card. `ensure_tool` refreshes the card from the ask, the ledger records that input, and the allow reply echoes it as `updatedInput`. `on_gate` in `assistant/turn.rs` serves both consults, denies at once once `stop_deadline` is set, and `settle` answers either site from a `Refusal` the ledger records (policy text, declined, stopped, cancelled, expired, mismatch), so a refused `tools/call` hears the policy's own message rather than "not approved". A `tools/call` whose input differs from a pending ask's is refused at once: the card and the allow reply keep the asked input, and the ask stays answerable. `ToolCancelled` also denies a pending approval for its call.
+- **The next turn waits for the last process, and a kill sweep at quit.** `finish` publishes the End and Idle as soon as the outcome is known and hands the process to a close task; `ChatInner.closing` keeps a handle that resolves once the child is reaped. The next turn's task waits for it before it starts its process, bounded by the close's 2 s grace plus 1 s, and `assistant_delete` and `shutdown` wait for it too. A chat that stayed Running until the exit showed Stop and refused a send for the second the real CLI takes to exit after stdin closes. `Shared.process_groups` registers every live agent process group at spawn and drops it when the child is reaped; `Agent::drop` signals only a group still registered, so a reaped pid is never signalled. `Engine::shutdown` kills every registered group on its own thread after its wait, as decision 10 says. After its grace, `close` also kills the child itself through the handle it holds, and on Windows, which has no process groups, the sweep ends each registered process by pid, so a CLI that ignores interrupt and EOF cannot outlive a turn or quit there either. `Agent::next` remembers the end of stream, so a cancelled poll loses neither it nor the exit code. A supervisor task in `assistant/supervisor.rs` awaits each turn task and gives a turn that panicked or was aborted its End through its private `end_abruptly`, which closes open rows as `recover` does; nothing else can reach it.
+- **Delete marks the chat first.** `assistant_delete` sets `ChatStatus::Deleted` under the chat's lock before anything else; `store_entry`, `store_record`, `publish_entry`, `publish_state`, and the supervisor's `end_abruptly` all take the lock through `Chat::unless_deleted`, which returns nothing for a deleted chat, so a turn task past the wait cannot write the row back. The one tombstone is emitted after the rows are gone, also for a chat this session never loaded.
+- **Only the CLI's own lost-session signal restarts a chat.** `Provider::session_lost` names it (for Claude, "No conversation found" in the `result` frame or on stderr). The turn clears the session and retries once as a new session with a recap only when a resumed start fails that way, or when the first `result` of a resumed turn says so before any text or tool use. Any other failure keeps the session and ends the turn `Failed`. The Notice is written once the replacement process has started, and the recap leaves out the turn being sent. `StartError::Reported` carries an error the CLI answered with, so a sign-in failure at start ends `SignedOut`.
+- **New chats start in Ask first.** `default_options` never copies a permission. It takes the newest chat's model and effort only when the last Ready probe lists them and the launch arguments name neither; else the recommended model with the launch arguments' effort when listed, else `high`, else the last level; with no Ready probe, the provider's fallback.
+- **The engine lists the ignored flags.** `ProviderState.ignored_flags` is the engine's own tokenization of the saved launch arguments, so the settings page shows what the engine drops, and the TypeScript tokenizer is gone. `ProviderInfo.owned_flags` stays on the wire. `ENGINE_FLAGS` also owns `--plugin-dir`, `--agents`, `--append-system-prompt-file`, and `--no-session-persistence`. Passthrough arguments go before the engine's flags in argv, so when the CLI reads a flag from both, the engine's wins. The child env also drops `ANTHROPIC_AUTH_TOKEN`.
+- **Paths and directories.** A relative binary path is made absolute against the engine's own working directory, because the process starts in the assistant directory. A missing assistant directory is reported as such, not as a missing binary, since both fail `spawn` with the same error.
+- **The cursor statement has its own budget.** The context block cuts the statement at the cursor at 4,000 chars, separately from the tab SQL's 8,000.
 
 ## Open questions and risks
 
@@ -1040,13 +1203,17 @@ Still open:
 - **Risk:** table pages use `LIMIT n OFFSET m`. Postgres reads and discards every skipped row, so deep pages of a large table get slower.
 - **Risk:** the pager's total is the catalog's `reltuples` estimate (`of ~241,183`) until the user presses Last, which fetches the exact count. A filtered table shows only a lower bound (`of 500+`) until then.
 - **Risk:** `RightPanel::Schema` and `RightPanel::History` stay in the contract with no UI. `restore` maps them to `Assistant`.
+- **Risk:** the assistant speaks the stream-json control protocol that the Claude Agent SDK uses with the CLI: `initialize`, `can_use_tool`, the SDK MCP messages, and `interrupt`. It is not a documented public API, so a CLI release can change it. The codec tests over the lines captured from `claude` 2.1.301 pin the shapes the engine depends on, and the `claude-smoke` test checks them against the installed CLI.
+- Assistant queries are not recorded in query history or in a tab's output log. They show only in the chat.
+- Deleting a chat leaves the CLI's own transcript file under the config directory.
+- On Windows the engine kills only the CLI process, not its children. On Unix the CLI runs in its own process group and the engine kills the group. To do the same, Windows would need a Job object.
+- The dev-bridge seals passwords under an in-memory key, so after a bridge restart a connection needs its password again. Until the user reconnects, the assistant's context reads `Not connected: password missing`. The desktop app keeps the key in the keychain.
 
 ## Next implementation step
 
 The engine and the frontend are built and proven against Docker (`cargo test -p engine --features pg-tests`, `pnpm test`, `pnpm self-check`, `dev/bridge-smoke.sh`). Remaining work, in no set order:
 
 - End-to-end tests in the real WKWebView with `@wdio/tauri-service`.
-- The AI assistant. The right panel is a placeholder.
 - Import. The button shows a "coming soon" toast.
 - Export formats besides CSV. The menu lists them as disabled "Soon" items.
 - Removing the dead `RightPanel::Schema` and `RightPanel::History` variants.

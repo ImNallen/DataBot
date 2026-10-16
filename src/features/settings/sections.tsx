@@ -1,13 +1,14 @@
-import { IconPalette, IconSql, type Icon } from "@tabler/icons-react";
+import { IconPalette, IconSparkles, IconSql, type Icon } from "@tabler/icons-react";
 import type { ComponentType } from "react";
 import { useWorkspace } from "../../state/workspace";
 import { CodeFontSetting, DensitySetting, InterfaceFontSetting, PanelMotionSetting, TintConnectionsSetting } from "./AppearanceControls";
 import { ColorSchemeSetting, ThemesSetting } from "./AppearanceSection";
+import { HealthCheckSetting, ProviderListSetting } from "./ProvidersSection";
 import { MaxRowsSetting, StopOnErrorSetting, TablePageSizeSetting } from "./QueriesSection";
 import { Card } from "./SettingLayout";
 import { sectionLabel, sectionSettings, settingRuns, type SettingEntry, type SettingId, type SettingsSectionId } from "./settingsIndex";
 
-export const SECTION_ICONS = { appearance: IconPalette, queries: IconSql } satisfies Record<SettingsSectionId, Icon>;
+export const SECTION_ICONS = { appearance: IconPalette, queries: IconSql, providers: IconSparkles } satisfies Record<SettingsSectionId, Icon>;
 
 const SETTING_VIEWS = {
   colorScheme: ColorSchemeSetting,
@@ -20,6 +21,8 @@ const SETTING_VIEWS = {
   maxRows: MaxRowsSetting,
   tablePageSize: TablePageSizeSetting,
   stopOnError: StopOnErrorSetting,
+  providerList: ProviderListSetting,
+  providerHealthCheck: HealthCheckSetting,
 } satisfies Record<SettingId, ComponentType>;
 
 export function SettingViews({ settings }: { settings: readonly SettingEntry[] }) {

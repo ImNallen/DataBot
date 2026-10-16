@@ -11,7 +11,7 @@
     "build": "vite build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "screenshot": "cargo build -q -p dev-bridge -p l1-data && dev/screenshot.sh",
+    "screenshot": "cargo build -q -p dev-bridge -p l1-data -p engine && dev/screenshot.sh",
     "bindings": "UPDATE_BINDINGS=1 cargo test -q -p l1-data export_bindings_up_to_date",
     "icons": "dev/icons.sh",
     "self-check": "cargo build -q -p l1-data && L1_DATA_SELF_CHECK=1 L1_DATA_SECRET_STORE=memory L1_DATA_DATA_DIR=\"$(mktemp -d)\" ./target/debug/l1-data"
@@ -40,7 +40,9 @@
     "jsonc-parser": "^3.3.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.14.4",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
