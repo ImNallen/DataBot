@@ -41,6 +41,8 @@ enum Line {
 
 pub(crate) enum Next {
     Event(AgentEvent),
+    /// A line the codec answered on its own; the answer waits in the outbox for `flush`.
+    Flush,
     Eof { code: Option<i32> },
 }
 
@@ -128,6 +130,9 @@ impl Agent {
             let code = agent.exit_code().await;
             return Err(StartError::Exited { code, detail: agent.failure_detail(&e.to_string()) });
         }
+        // Events that arrive before the handshake answer are kept aside for `next` to hand out
+        // after it, in order.
+        let mut early = VecDeque::new();
         let ready = tokio::time::timeout(READY_TIMEOUT, async {
             loop {
                 match agent.next().await {
@@ -141,7 +146,8 @@ impl Agent {
                         let code = agent.exit_code().await;
                         return Err(StartError::Exited { code, detail: agent.failure_detail(&detail) });
                     }
-                    Next::Event(other) => agent.pending.push_back(other),
+                    Next::Event(other) => early.push_back(other),
+                    Next::Flush => {}
                     Next::Eof { code } => return Err(StartError::Exited { code, detail: agent.failure_detail("") }),
                 }
                 if let Err(e) = agent.flush().await {
@@ -152,7 +158,11 @@ impl Agent {
         })
         .await;
         match ready {
-            Ok(Ok(handshake)) => Ok((agent, handshake)),
+            Ok(Ok(handshake)) => {
+                early.append(&mut agent.pending);
+                agent.pending = early;
+                Ok((agent, handshake))
+            }
             Ok(Err(e)) => Err(e),
             Err(_) => Err(StartError::Timeout),
         }
@@ -174,8 +184,12 @@ impl Agent {
             match self.lines.recv().await {
                 Some(Line::Out(line)) => {
                     let step = self.codec.read(&line);
+                    let answered = !step.replies.is_empty();
                     self.outbox.extend(step.replies);
                     self.pending.extend(step.events);
+                    if answered && self.pending.is_empty() {
+                        return Next::Flush;
+                    }
                 }
                 Some(Line::Eof) | None => return Next::Eof { code: self.exit_code().await },
             }

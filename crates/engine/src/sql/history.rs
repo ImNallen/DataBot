@@ -1,8 +1,11 @@
 use super::split::{dollar_tag, skip_block_comment, skip_dollar_quoted, skip_quoted};
 
 #[derive(Debug, PartialEq)]
-enum Token<'a> {
+pub(super) enum Token<'a> {
     Word(&'a str),
+    /// A double-quoted identifier, without its quotes.
+    Quoted(&'a str),
+    Dot,
     Open,
     Close,
     Comma,
@@ -10,7 +13,7 @@ enum Token<'a> {
     Other,
 }
 
-fn tokens(sql: &str) -> Vec<Token<'_>> {
+pub(super) fn tokens(sql: &str) -> Vec<Token<'_>> {
     let bytes = sql.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -20,9 +23,15 @@ fn tokens(sql: &str) -> Vec<Token<'_>> {
                 i = sql[i..].find('\n').map_or(bytes.len(), |n| i + n)
             }
             b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
-            b'\'' | b'"' => {
+            b'"' => {
+                let end = skip_quoted(bytes, i, b'"');
+                let closed = end > i + 1 && bytes[end - 1] == b'"';
+                out.push(Token::Quoted(&sql[i + 1..if closed { end - 1 } else { end }]));
+                i = end;
+            }
+            b'\'' => {
                 out.push(Token::Other);
-                i = skip_quoted(bytes, i, bytes[i]);
+                i = skip_quoted(bytes, i, b'\'');
             }
             b'$' if dollar_tag(bytes, i).is_some() => {
                 out.push(Token::Other);
@@ -51,6 +60,7 @@ fn tokens(sql: &str) -> Vec<Token<'_>> {
             c if c.is_ascii_whitespace() => i += 1,
             c => {
                 out.push(match c {
+                    b'.' => Token::Dot,
                     b'(' => Token::Open,
                     b')' => Token::Close,
                     b',' => Token::Comma,

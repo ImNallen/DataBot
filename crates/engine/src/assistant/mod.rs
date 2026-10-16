@@ -1,0 +1,321 @@
+//! The chats and the seven operations behind the assistant commands. Everything here is
+//! provider-neutral: a structure test keeps the provider's wire format out of this directory.
+
+pub(crate) mod chat;
+mod context;
+mod reply;
+pub(crate) mod tools;
+mod turn;
+
+use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+
+use chat::{ActiveTurn, Chat, TurnControl};
+use turn::TurnPlan;
+
+use crate::Shared;
+use crate::console::now_ms;
+use crate::model::*;
+use crate::provider::provider;
+use crate::store::{ChatRecord, StoreError};
+
+pub(crate) const RECAP_MAX_CHARS: usize = 16_000;
+const TITLE_CHARS: usize = 60;
+const STOP_GRACE: Duration = Duration::from_secs(5);
+const QUIT_GRACE: Duration = Duration::from_secs(1);
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
+const DELETE_WAIT: Duration = Duration::from_secs(5);
+
+pub(crate) struct Assistant {
+    chats: RwLock<HashMap<ChatId, Arc<Chat>>>,
+    next_approval: AtomicU64,
+}
+
+impl Assistant {
+    pub(crate) fn new() -> Self {
+        Self { chats: RwLock::new(HashMap::new()), next_approval: AtomicU64::new(1) }
+    }
+
+    pub(crate) fn next_approval(&self) -> ApprovalId {
+        ApprovalId(self.next_approval.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn get(&self, id: ChatId) -> Option<Arc<Chat>> {
+        self.chats.read().unwrap().get(&id).cloned()
+    }
+
+    fn all(&self) -> Vec<Arc<Chat>> {
+        self.chats.read().unwrap().values().cloned().collect()
+    }
+
+    /// Databases of `connection` that a running turn uses, so their catalog slots open.
+    pub(crate) fn running_databases(&self, connection: ConnectionId) -> BTreeSet<String> {
+        self.all()
+            .iter()
+            .filter_map(|chat| chat.inner.lock().unwrap().turn.as_ref().and_then(|t| t.db.clone()))
+            .filter(|db| db.connection_id == connection)
+            .map(|db| db.database)
+            .collect()
+    }
+
+    /// The live state of every loaded chat, which boot overlays on the stored list.
+    pub(crate) fn live_states(&self) -> HashMap<ChatId, ChatState> {
+        self.all().iter().map(|chat| (chat.id, chat.state())).collect()
+    }
+}
+
+impl Shared {
+    /// The registry entry, loaded from the store or created as a draft. A stored chat's rows are
+    /// recovered first, so whatever a crash left open is closed before anyone reads it.
+    fn chat(&self, id: ChatId) -> Result<Arc<Chat>, StoreError> {
+        if let Some(chat) = self.assistant.get(id) {
+            return Ok(chat);
+        }
+        let (record, stored, next_seq) = match self.store.chat(id)? {
+            Some(mut record) => {
+                let entries = self.store.chat_entries(id)?;
+                let fixes = reply::recover(&entries, now_ms());
+                if !fixes.is_empty() {
+                    self.store.put_entries(id, &fixes)?;
+                }
+                let next_seq = entries.iter().chain(fixes.iter()).map(|(seq, _, _)| seq + 1).max().unwrap_or(0).max(record.entry_count);
+                if next_seq != record.entry_count {
+                    record.entry_count = next_seq;
+                    self.store.put_chat(id, &record)?;
+                }
+                (record, true, next_seq)
+            }
+            None => (ChatRecord { title: String::new(), created_at_ms: now_ms(), updated_at_ms: now_ms(), options: self.default_options(), session: None, entry_count: 0 }, false, 0),
+        };
+        let chat = self.assistant.chats.write().unwrap().entry(id).or_insert_with(|| Arc::new(Chat::new(id, record, stored, next_seq))).clone();
+        Ok(chat)
+    }
+
+    /// The newest stored chat's options, else the first enabled provider's recommended model at
+    /// `high` effort when the model lists it, and Ask first.
+    fn default_options(&self) -> ChatOptions {
+        if let Ok(chats) = self.store.chats(1)
+            && let Some((_, record)) = chats.into_iter().next()
+        {
+            return record.options;
+        }
+        let settings = self.settings();
+        let kind = settings.providers.iter().find(|c| c.enabled).map_or(ProviderKind::ALL[0], |c| c.provider);
+        let (model, effort) = match self.providers.models(kind).and_then(|models| models.into_iter().find(|m| m.recommended)) {
+            Some(model) => {
+                let effort = model.efforts.iter().find(|e| e.id.0 == "high").or(model.efforts.first()).map(|e| e.id.clone());
+                (model.id, effort)
+            }
+            None => provider(kind).fallback_model(),
+        };
+        ChatOptions { provider: kind, model, effort, permission: Permission::AskFirst }
+    }
+
+    /// Against the last Ready probe. With none, the options are kept as they are, so a stale or
+    /// missing probe never blocks the user.
+    fn validate_options(&self, options: &ChatOptions) -> Result<(), ChatError> {
+        let Some(models) = self.providers.models(options.provider) else { return Ok(()) };
+        let model = models.iter().find(|m| m.id == options.model).ok_or_else(|| ChatError::UnknownModel { model: options.model.clone() })?;
+        if let Some(effort) = &options.effort
+            && !model.efforts.iter().any(|e| e.id == *effort)
+        {
+            return Err(ChatError::UnsupportedEffort { effort: effort.clone() });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn assistant_open(&self, id: ChatId) -> Result<ChatView, ChatError> {
+        let store_error = |e: StoreError| ChatError::Store { message: e.to_string() };
+        let chat = self.chat(id).map_err(store_error)?;
+        let stored = if chat.inner.lock().unwrap().stored { self.store.chat_entries(id).map_err(store_error)? } else { Vec::new() };
+        let mut entries: Vec<EntrySnapshot> = stored.into_iter().map(|(seq, turn, entry)| EntrySnapshot { chat_id: id, seq, rev: self.next_chat_rev(), turn, entry }).collect();
+        {
+            let mut inner = chat.inner.lock().unwrap();
+            inner.rev = self.next_chat_rev();
+            for (seq, live) in &inner.live {
+                match entries.iter_mut().find(|e| e.seq == *seq) {
+                    Some(slot) => *slot = live.clone(),
+                    None => entries.push(live.clone()),
+                }
+            }
+        }
+        entries.sort_by_key(|e| e.seq);
+        Ok(ChatView { state: chat.state(), entries })
+    }
+
+    pub(crate) fn assistant_configure(&self, id: ChatId, options: ChatOptions) -> Result<ChatState, ChatError> {
+        let chat = self.chat(id).map_err(|e| ChatError::Store { message: e.to_string() })?;
+        self.validate_options(&options)?;
+        chat.inner.lock().unwrap().record.options = options;
+        chat.store_record(self);
+        Ok(chat.publish_state(self))
+    }
+
+    pub(crate) async fn assistant_send(self: &Arc<Self>, id: ChatId, request: SendRequest) -> Result<TurnAccepted, SendError> {
+        let text = request.text.trim().to_owned();
+        if text.is_empty() {
+            return Err(SendError::EmptyMessage);
+        }
+        let chat = self.chat(id).map_err(|e| SendError::Store { message: e.to_string() })?;
+        let options = chat.inner.lock().unwrap().record.options.clone();
+        let enabled = self.settings().providers.iter().any(|c| c.provider == options.provider && c.enabled);
+        if !enabled {
+            return Err(SendError::ProviderOff { provider: options.provider });
+        }
+        if let Some(models) = self.providers.models(options.provider)
+            && !models.iter().any(|m| m.id == options.model)
+        {
+            return Err(SendError::UnknownModel { model: options.model });
+        }
+        let attachment = match request.tab.as_ref().and_then(|t| t.attach.map(|r| (r, t.title.clone()))) {
+            Some((result, title)) => Some(context::attachment(&*self.result_set(result).ok_or(SendError::AttachmentGone)?, &title)),
+            None => None,
+        };
+        let connection_name = request.tab.as_ref().and_then(|t| t.db.as_ref()).and_then(|db| self.config(db.connection_id)).map(|c| c.name);
+        let (seq, control_rx) = {
+            let mut inner = chat.inner.lock().unwrap();
+            if inner.turn.is_some() {
+                return Err(SendError::Busy);
+            }
+            let seq = inner.next_seq;
+            inner.next_seq += 1;
+            let (control, control_rx) = mpsc::channel(4);
+            inner.turn = Some(ActiveTurn { db: request.tab.as_ref().and_then(|t| t.db.clone()), control, task: None });
+            inner.status = ChatStatus::Running { turn: seq, started_at_ms: now_ms(), phase: TurnPhase::Starting };
+            if !inner.stored {
+                inner.stored = true;
+                inner.record.title = text.lines().next().unwrap_or_default().chars().take(TITLE_CHARS).collect();
+                inner.record.created_at_ms = now_ms();
+            }
+            inner.record.updated_at_ms = now_ms();
+            (seq, control_rx)
+        };
+        chat.store_record(self);
+        let context = request.tab.as_ref().map(|t| SentContext { db: t.db.clone(), connection_name: connection_name.clone(), tab_title: t.title.clone() });
+        let entry = Entry::User { at_ms: now_ms(), text: text.clone(), context, attachment };
+        chat.store_entry(self, seq, seq, &entry);
+        chat.publish_entry(self, seq, seq, entry);
+        chat.publish_state(self);
+        let plan = TurnPlan { chat: chat.clone(), turn: seq, options, user_text: text, tab: request.tab };
+        let task = self.spawn(turn::run_turn(self.clone(), plan, control_rx));
+        if let Some(active) = chat.inner.lock().unwrap().turn.as_mut() {
+            active.task = Some(task);
+        }
+        Ok(TurnAccepted { turn: seq })
+    }
+
+    /// Idempotent: a chat without a running turn, or one already stopping, is left alone.
+    pub(crate) fn assistant_stop(&self, id: ChatId) {
+        if let Some(chat) = self.assistant.get(id)
+            && let Some(active) = chat.inner.lock().unwrap().turn.as_ref()
+        {
+            let _ = active.control.try_send(TurnControl::Stop { grace: STOP_GRACE });
+        }
+    }
+
+    pub(crate) fn assistant_approve(&self, id: ChatId, approval: ApprovalId, decision: Decision) -> Result<(), ApproveError> {
+        self.assistant.get(id).ok_or(ApproveError::NotPending)?.answer(approval, decision)
+    }
+
+    /// Stops a turn, deletes the rows, publishes the tombstone. The provider's own transcript
+    /// file is left alone.
+    pub(crate) async fn assistant_delete(&self, id: ChatId) {
+        if let Some(chat) = self.assistant.get(id) {
+            let task = chat.inner.lock().unwrap().turn.as_mut().and_then(|t| {
+                let _ = t.control.try_send(TurnControl::Stop { grace: QUIT_GRACE });
+                t.task.take()
+            });
+            if let Some(task) = task
+                && tokio::time::timeout(DELETE_WAIT, task).await.is_err()
+            {
+                eprintln!("chat {} did not stop within {} s", id.0, DELETE_WAIT.as_secs());
+            }
+            self.assistant.chats.write().unwrap().remove(&id);
+            chat.inner.lock().unwrap().status = ChatStatus::Deleted;
+            chat.publish_state(self);
+        }
+        if let Err(e) = self.store.delete_chat(id) {
+            eprintln!("chat {} delete failed: {e}", id.0);
+        }
+    }
+
+    /// Stops every running turn and waits for the tasks, bounded. A task past the bound is
+    /// aborted, which kills its process group; its rows recover as Lost at the next open.
+    pub(crate) async fn shutdown(&self) {
+        let mut tasks = Vec::new();
+        for chat in self.assistant.all() {
+            if let Some(active) = chat.inner.lock().unwrap().turn.as_mut() {
+                let _ = active.control.try_send(TurnControl::Stop { grace: QUIT_GRACE });
+                tasks.extend(active.task.take());
+            }
+        }
+        if tasks.is_empty() {
+            return;
+        }
+        let aborts: Vec<_> = tasks.iter().map(tokio::task::JoinHandle::abort_handle).collect();
+        if tokio::time::timeout(SHUTDOWN_WAIT, futures_util::future::join_all(tasks)).await.is_err() {
+            for abort in aborts {
+                abort.abort();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/assistant");
+
+    /// Each file's text, with this test module cut away from `mod.rs`.
+    fn sources() -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = std::fs::read_dir(DIR)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.is_file())
+            .map(|p| {
+                let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                let text = std::fs::read_to_string(&p).unwrap();
+                let text = if name == "mod.rs" { text.split("#[cfg(test)]").next().unwrap().to_owned() } else { text };
+                (name, text)
+            })
+            .collect();
+        out.sort();
+        assert!(out.iter().any(|(n, _)| n == "turn.rs"), "read no sources from {DIR}");
+        out
+    }
+
+    #[test]
+    fn no_file_under_assistant_names_a_provider_or_its_wire_format() {
+        for (name, text) in sources() {
+            let lower = text.to_lowercase();
+            for word in ["claude", "mcp__", "stream-json", "--resume"] {
+                assert!(!lower.contains(word), "{name} contains {word:?}; provider-specific text belongs in provider/<name>.rs behind the Codec and Provider traits");
+            }
+        }
+    }
+
+    #[test]
+    fn only_tools_rs_reaches_a_session_client() {
+        for (name, text) in sources() {
+            if name == "tools.rs" {
+                assert!(text.contains(".client."), "tools.rs is where queries run");
+                continue;
+            }
+            assert!(!text.contains(".client."), "{name} reaches a session's client; database access belongs in tools.rs, on its own read-only session");
+        }
+    }
+
+    #[test]
+    fn the_system_prompt_names_the_tools_and_the_followups_fence() {
+        let prompt = std::fs::read_to_string(format!("{DIR}/system_prompt.md")).unwrap();
+        for tool in &tools::TOOLS {
+            assert!(prompt.contains(tool.name), "the prompt does not mention {}", tool.name);
+        }
+        assert!(prompt.contains("```followups"));
+    }
+}

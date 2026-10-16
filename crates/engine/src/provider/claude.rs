@@ -64,6 +64,10 @@ impl Provider for Claude {
         }
     }
 
+    fn fallback_model(&self) -> (ModelId, Option<EffortId>) {
+        (ModelId("opus".into()), Some(EffortId("high".into())))
+    }
+
     fn quick_probe<'a>(&'a self, cfg: &'a ProviderConfig, host: &'a HostEnv) -> BoxFuture<'a, Result<Quick, ProbeOutcome>> {
         Box::pin(quick_probe(cfg, host))
     }
@@ -350,7 +354,6 @@ pub(crate) fn env(cfg: &ProviderConfig, host: &HostEnv, parent: impl Iterator<It
 
 enum HostRequest {
     Initialize,
-    #[cfg_attr(not(test), expect(dead_code, reason = "Stop sends it in the next change"))]
     Interrupt,
 }
 

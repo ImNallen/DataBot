@@ -1,3 +1,4 @@
+mod assistant;
 mod catalog;
 mod connection;
 mod console;
@@ -65,6 +66,10 @@ pub(crate) struct Shared {
     /// thread, where a bare `tokio::spawn` panics.
     runtime: tokio::runtime::Handle,
     providers: provider::Providers,
+    assistant: assistant::Assistant,
+    /// One counter for every chat and entry snapshot, so a chat recreated after a delete never
+    /// reissues a rev the webview holds.
+    next_chat_rev: AtomicU64,
 }
 
 const EVENT_BUFFER: usize = 1024;
@@ -139,6 +144,10 @@ impl Shared {
         self.next_catalog_version.fetch_add(1, Ordering::Relaxed)
     }
 
+    pub(crate) fn next_chat_rev(&self) -> u64 {
+        self.next_chat_rev.fetch_add(1, Ordering::Relaxed)
+    }
+
     fn saved_password(&self, id: ConnectionId) -> Result<Option<String>, ConnectError> {
         let keychain = |message: String| ConnectError::Keychain { message };
         let Some(sealed) = self.store.secret(id).map_err(|e| keychain(e.to_string()))? else { return Ok(None) };
@@ -149,9 +158,10 @@ impl Shared {
         self.consoles.read().unwrap().values().cloned().collect()
     }
 
-    /// Databases of `id` that may have a slot (`keep`): the home database, the shown ones, and
-    /// the database of every console on the connection. The ones that get a slot without being
-    /// asked (`open`) are the same minus the shown databases past the auto-open cap.
+    /// Databases of `id` that may have a slot (`keep`): the home database, the shown ones, the
+    /// database of every console on the connection, and the database of every running assistant
+    /// turn. The ones that get a slot without being asked (`open`) are the same minus the shown
+    /// databases past the auto-open cap.
     fn wanted(&self, instance: &Instance) -> Wanted {
         let mut keep = BTreeSet::from([instance.home.clone()]);
         for console in self.all_consoles() {
@@ -160,6 +170,7 @@ impl Shared {
                 keep.insert(config.database);
             }
         }
+        keep.extend(self.assistant.running_databases(instance.config.id));
         let shown = instance.shown();
         let mut open = keep.clone();
         open.extend(view::auto_open(&shown));
@@ -415,6 +426,13 @@ impl Shared {
         });
     }
 
+    /// The catalog of one database, loaded on first use. Only the home database, the shown ones,
+    /// the databases of this connection's consoles, and those of running assistant turns get one.
+    async fn catalog(self: &Arc<Self>, db: &DatabaseRef) -> Result<Arc<Catalog>, CatalogError> {
+        let (instance, slot) = self.slot(db)?;
+        self.ensure_catalog(&instance, &slot).await
+    }
+
     async fn connect(self: &Arc<Self>, id: ConnectionId) -> Result<ServerInfo, ConnectError> {
         loop {
             let connecting = match self.connections.read().unwrap().get(&id).map(|e| &e.slot) {
@@ -584,6 +602,8 @@ impl Engine {
             timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
             runtime: tokio::runtime::Handle::current(),
             providers: provider::Providers::new(),
+            assistant: assistant::Assistant::new(),
+            next_chat_rev: AtomicU64::new(1),
         });
         tokio::fs::create_dir_all(shared.assistant_dir()).await?;
         shared.probe_all(ProbeDepth::Full);
@@ -615,9 +635,10 @@ impl Engine {
             eprintln!("chats load failed: {e}");
             Vec::new()
         });
+        let live_chats = s.assistant.live_states();
         let chats = chats
             .into_iter()
-            .map(|(id, r)| ChatState { id, rev: 0, title: r.title, updated_at_ms: r.updated_at_ms, options: r.options, status: ChatStatus::Idle, entry_count: r.entry_count })
+            .map(|(id, r)| live_chats.get(&id).cloned().unwrap_or(ChatState { id, rev: 0, title: r.title, updated_at_ms: r.updated_at_ms, options: r.options, status: ChatStatus::Idle, entry_count: r.entry_count }))
             .collect();
         BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings(), providers: s.providers.states(), chats }
     }
@@ -730,11 +751,8 @@ impl Engine {
         Ok(())
     }
 
-    /// The catalog of one database, loaded on first use. Only the home database, the shown ones,
-    /// and the databases of this connection's consoles get a catalog.
     pub async fn catalog(&self, db: DatabaseRef) -> Result<Arc<Catalog>, CatalogError> {
-        let (instance, slot) = self.shared.slot(&db)?;
-        self.shared.ensure_catalog(&instance, &slot).await
+        self.shared.catalog(&db).await
     }
 
     pub async fn refresh_catalog(&self, db: DatabaseRef) -> Result<u64, CatalogError> {
@@ -1221,26 +1239,32 @@ impl Engine {
         self.shared.reprobe_changed(&before.providers, &s.providers);
     }
 
-    pub async fn assistant_open(&self, _chat: ChatId) -> Result<ChatView, ChatError> {
-        todo!("assistant engine")
+    /// The chat with every entry, the running turn's as of now. An unknown id opens a draft with
+    /// default options, held in memory until its first message.
+    pub async fn assistant_open(&self, chat: ChatId) -> Result<ChatView, ChatError> {
+        self.shared.assistant_open(chat)
     }
 
-    pub fn assistant_configure(&self, _chat: ChatId, _options: ChatOptions) -> Result<ChatState, ChatError> {
-        todo!("assistant engine")
+    /// Validates the model and effort against the provider's last probe. Applies at the next turn.
+    pub fn assistant_configure(&self, chat: ChatId, options: ChatOptions) -> Result<ChatState, ChatError> {
+        self.shared.assistant_configure(chat, options)
     }
 
-    pub async fn assistant_send(&self, _chat: ChatId, _request: SendRequest) -> Result<TurnAccepted, SendError> {
-        todo!("assistant engine")
+    /// Stores the user entry and starts the turn. `Busy` while a turn runs.
+    pub async fn assistant_send(&self, chat: ChatId, request: SendRequest) -> Result<TurnAccepted, SendError> {
+        self.shared.assistant_send(chat, request).await
     }
 
-    pub fn assistant_stop(&self, _chat: ChatId) {}
-
-    pub fn assistant_approve(&self, _chat: ChatId, _approval: ApprovalId, _decision: Decision) -> Result<(), ApproveError> {
-        todo!("assistant engine")
+    pub fn assistant_stop(&self, chat: ChatId) {
+        self.shared.assistant_stop(chat)
     }
 
-    pub async fn assistant_delete(&self, _chat: ChatId) {
-        todo!("assistant engine")
+    pub fn assistant_approve(&self, chat: ChatId, approval: ApprovalId, decision: Decision) -> Result<(), ApproveError> {
+        self.shared.assistant_approve(chat, approval, decision)
+    }
+
+    pub async fn assistant_delete(&self, chat: ChatId) {
+        self.shared.assistant_delete(chat).await
     }
 
     /// Full probe of every enabled provider. Fire and forget.
@@ -1248,7 +1272,10 @@ impl Engine {
         self.shared.probe_all(ProbeDepth::Full);
     }
 
-    pub async fn shutdown(&self) {}
+    /// Stops every assistant turn and its process. The shell calls it on quit; bounded at 3 s.
+    pub async fn shutdown(&self) {
+        self.shared.shutdown().await
+    }
 }
 
 #[cfg(test)]

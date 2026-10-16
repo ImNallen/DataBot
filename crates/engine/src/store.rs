@@ -331,7 +331,6 @@ impl Store {
     }
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "the assistant engine calls these in the next change"))]
 impl Store {
     const PUT_ENTRY: &str = "INSERT INTO chat_entries (chat_id, seq, turn, json) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (chat_id, seq) DO UPDATE SET turn = excluded.turn, json = excluded.json";

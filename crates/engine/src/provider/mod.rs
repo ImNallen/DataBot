@@ -26,6 +26,8 @@ const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(crate) trait Provider: Send + Sync {
     fn info(&self) -> ProviderInfo;
+    /// What a chat starts on before any probe has answered.
+    fn fallback_model(&self) -> (ModelId, Option<EffortId>);
     /// Version and sign-in without a model turn.
     fn quick_probe<'a>(&'a self, cfg: &'a ProviderConfig, host: &'a HostEnv) -> BoxFuture<'a, Result<Quick, ProbeOutcome>>;
     /// argv, env, and cwd for one process. Pure.
@@ -42,7 +44,6 @@ pub(crate) fn provider(kind: ProviderKind) -> &'static dyn Provider {
 }
 
 /// Sans-IO: lines in, provider-neutral events and reply lines out. No clock, no tasks, no pipes.
-#[cfg_attr(not(test), expect(dead_code, reason = "the turn loop calls these in the next change"))]
 pub(crate) trait Codec: Send {
     /// Lines to write right after spawn.
     fn open(&mut self) -> Vec<String>;
@@ -241,6 +242,11 @@ impl Providers {
     pub(crate) fn states(&self) -> Vec<ProviderState> {
         let entries = self.entries.lock().unwrap();
         ProviderKind::ALL.iter().map(|&kind| entries.get(&kind).map_or_else(|| ProviderEntry::default().state(kind), |e| e.state(kind))).collect()
+    }
+
+    /// The last Ready probe's models, which `assistant_configure` and `assistant_send` validate against.
+    pub(crate) fn models(&self, kind: ProviderKind) -> Option<Vec<ModelOption>> {
+        self.entries.lock().unwrap().get(&kind)?.models().map(<[ModelOption]>::to_vec)
     }
 
     fn due(&self, kind: ProviderKind, every_secs: u32) -> bool {
