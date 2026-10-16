@@ -71,9 +71,20 @@ impl Closing {
         Self(handle)
     }
 
-    pub(crate) async fn wait(mut self) -> bool {
-        tokio::time::timeout(CLOSING_WAIT, self.0.wait_for(|reaped| *reaped)).await.is_ok()
+    pub(crate) async fn wait(mut self) -> Closed {
+        match tokio::time::timeout(CLOSING_WAIT, self.0.wait_for(|reaped| *reaped)).await {
+            Ok(Ok(_)) => Closed::Reaped,
+            Ok(Err(_)) => Closed::Dropped,
+            Err(_) => Closed::TimedOut,
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Closed {
+    Reaped,
+    Dropped,
+    TimedOut,
 }
 
 #[derive(Clone, PartialEq, Eq)]

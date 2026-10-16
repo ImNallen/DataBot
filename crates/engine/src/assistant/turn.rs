@@ -7,7 +7,7 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::chat::{Chat, Closing, Gated, LastContext, Refusal, TurnControl, wait};
+use super::chat::{Chat, Closed, Closing, Gated, LastContext, Refusal, TurnControl, wait};
 use super::tools::{self, Ask, Executed, ParsedCall};
 use super::{context, reply};
 use crate::Shared;
@@ -132,7 +132,7 @@ impl Turn {
         }
         if let Some(closing) = self.closing.take() {
             tokio::select! {
-                reaped = closing.wait() => if !reaped { eprintln!("chat {} starts its next process while the last one is still closing", self.chat.id.0) },
+                closed = closing.wait() => if closed != Closed::Reaped { eprintln!("chat {} starts its next process while the last one is still closing ({closed:?})", self.chat.id.0) },
                 Some(TurnControl::Stop { .. }) = control.recv() => return TurnOutcome::Stopped,
             }
         }
