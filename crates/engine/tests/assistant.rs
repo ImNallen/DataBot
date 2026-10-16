@@ -176,6 +176,20 @@ impl Harness {
         self.wait_chat(chat, "the idle state", |s| s.status == ChatStatus::Idle).await
     }
 
+    /// Every event for `chat` with a rev above `rev` that arrives within `window`.
+    async fn events_above(&mut self, chat: ChatId, rev: u64, window: Duration) -> Vec<AppEvent> {
+        let deadline = Instant::now() + window;
+        let mut later = Vec::new();
+        while let Ok(Ok(event)) = tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), self.events.recv()).await {
+            match &event {
+                AppEvent::ChatChanged(s) if s.id == chat && s.rev > rev => later.push(event),
+                AppEvent::ChatEntryChanged(s) if s.chat_id == chat && s.rev > rev => later.push(event),
+                _ => {}
+            }
+        }
+        later
+    }
+
     async fn entries(&self, chat: ChatId) -> Vec<Entry> {
         self.engine.assistant_open(chat).await.unwrap().entries.into_iter().map(|s| s.entry).collect()
     }
@@ -756,6 +770,56 @@ async fn launch_arguments_choose_a_new_chats_model_and_effort() {
     assert_eq!(draft_with("--model claude-sonnet-5-5 --effort low").await, ("sonnet".into(), Some("low".into())));
     assert_eq!(draft_with("--model haiku --effort turbo").await, ("haiku".into(), Some("high".into())), "an effort the model does not list falls back to high");
     assert_eq!(draft_with("--model fake --effort low").await, ("fake".into(), None), "a model without effort levels starts with none");
+}
+
+#[tokio::test]
+async fn delete_during_a_wedged_turn_leaves_no_row_and_nothing_after_the_tombstone() {
+    let mut h = Harness::open().await;
+    h.use_fake("wedged");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "go").await;
+    h.wait_entry(chat, "streaming text", |s| matches!(&s.entry, Entry::Text { done: false, blocks } if !blocks.is_empty())).await;
+    let pid = h.turn_pids()[0];
+    h.engine.assistant_delete(chat).await;
+    let tombstone = h.wait_chat(chat, "the tombstone", |s| s.status == ChatStatus::Deleted).await;
+    assert!(!alive(pid));
+    assert_eq!(h.events_above(chat, tombstone.rev, Duration::from_millis(500)).await.len(), 0, "the dying turn published after the tombstone");
+    assert!(h.engine.boot().chats.is_empty(), "a row came back");
+    let reopened = h.engine.assistant_open(chat).await.unwrap();
+    assert_eq!((reopened.state.status, reopened.entries.len()), (ChatStatus::Draft, 0));
+}
+
+#[tokio::test]
+async fn deleting_a_stored_chat_this_session_never_loaded_publishes_a_tombstone() {
+    let mut h = Harness::open().await;
+    h.use_fake("card");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "keep me").await;
+    h.wait_end(chat).await;
+    h.wait_idle(chat).await;
+    h.engine.shutdown().await;
+    let mut h2 = Harness::open_in(h.dir).await;
+    assert_eq!(h2.engine.boot().chats.iter().map(|c| (c.id, c.rev)).collect::<Vec<_>>(), [(chat, 0)], "stored, not loaded");
+    h2.engine.assistant_delete(chat).await;
+    let tombstone = h2.wait_chat(chat, "the tombstone", |s| s.status == ChatStatus::Deleted).await;
+    assert!(tombstone.rev > 0 && tombstone.title == "keep me", "{tombstone:?}");
+    assert!(h2.engine.boot().chats.is_empty());
+}
+
+#[tokio::test]
+async fn opening_a_chat_twice_returns_the_same_rev_and_no_newer_entries() {
+    let mut h = Harness::open().await;
+    h.use_fake("card");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "one").await;
+    h.wait_end(chat).await;
+    let idle = h.wait_idle(chat).await;
+    let first = h.engine.assistant_open(chat).await.unwrap();
+    let second = h.engine.assistant_open(chat).await.unwrap();
+    assert_eq!((first.state.rev, second.state.rev), (idle.rev, idle.rev), "open mints no rev");
+    let revs = |view: &ChatView| view.entries.iter().map(|e| e.rev).collect::<Vec<_>>();
+    assert_eq!(revs(&first), revs(&second));
+    assert!(revs(&first).iter().all(|r| *r <= idle.rev), "{:?} above the idle rev {}", revs(&first), idle.rev);
 }
 
 #[tokio::test]

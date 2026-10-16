@@ -138,23 +138,23 @@ impl Shared {
         Ok(())
     }
 
+    /// Mints no rev: a stored row is served at the chat's own rev, which every event for that
+    /// row preceded, and the running turn's snapshots keep theirs. Two opens of an unchanged
+    /// chat return the same view.
     pub(crate) fn assistant_open(&self, id: ChatId) -> Result<ChatView, ChatError> {
         let store_error = |e: StoreError| ChatError::Store { message: e.to_string() };
         let chat = self.chat(id).map_err(store_error)?;
-        let stored = if chat.inner.lock().unwrap().stored { self.store.chat_entries(id).map_err(store_error)? } else { Vec::new() };
-        let mut entries: Vec<EntrySnapshot> = stored.into_iter().map(|(seq, turn, entry)| EntrySnapshot { chat_id: id, seq, rev: self.next_chat_rev(), turn, entry }).collect();
-        {
-            let mut inner = chat.inner.lock().unwrap();
-            inner.rev = self.next_chat_rev();
-            for (seq, live) in &inner.live {
-                match entries.iter_mut().find(|e| e.seq == *seq) {
-                    Some(slot) => *slot = live.clone(),
-                    None => entries.push(live.clone()),
-                }
+        let inner = chat.inner.lock().unwrap();
+        let stored = if inner.stored { self.store.chat_entries(id).map_err(store_error)? } else { Vec::new() };
+        let mut entries: Vec<EntrySnapshot> = stored.into_iter().map(|(seq, turn, entry)| EntrySnapshot { chat_id: id, seq, rev: inner.rev, turn, entry }).collect();
+        for (seq, live) in &inner.live {
+            match entries.iter_mut().find(|e| e.seq == *seq) {
+                Some(slot) => *slot = live.clone(),
+                None => entries.push(live.clone()),
             }
         }
         entries.sort_by_key(|e| e.seq);
-        Ok(ChatView { state: chat.state(), entries })
+        Ok(ChatView { state: Chat::state_of(id, &inner), entries })
     }
 
     pub(crate) fn assistant_configure(&self, id: ChatId, options: ChatOptions) -> Result<ChatState, ChatError> {
@@ -234,26 +234,39 @@ impl Shared {
         self.assistant.get(id).ok_or(ApproveError::NotPending)?.answer(approval, decision)
     }
 
-    /// Stops a turn, deletes the rows, publishes the tombstone. The provider's own transcript
-    /// file is left alone.
+    /// Marks the chat deleted under its lock, so its turn task stores and publishes nothing
+    /// more, stops the turn and waits for it, aborts it past the bound, deletes the rows, and
+    /// emits one `Deleted` tombstone with a fresh rev, also for a chat this session never
+    /// loaded. The provider's own transcript file is left alone.
     pub(crate) async fn assistant_delete(&self, id: ChatId) {
-        if let Some(chat) = self.assistant.get(id) {
-            let task = chat.inner.lock().unwrap().turn.as_mut().and_then(|t| {
-                let _ = t.control.try_send(TurnControl::Stop { grace: QUIT_GRACE });
-                t.task.take()
-            });
-            if let Some(task) = task
-                && tokio::time::timeout(DELETE_WAIT, task).await.is_err()
-            {
-                eprintln!("chat {} did not stop within {} s", id.0, DELETE_WAIT.as_secs());
+        let loaded = self.assistant.get(id);
+        let (record, running) = match &loaded {
+            Some(chat) => {
+                let mut inner = chat.inner.lock().unwrap();
+                inner.status = ChatStatus::Deleted;
+                let running = inner.turn.as_mut().map(|t| {
+                    let _ = t.control.try_send(TurnControl::Stop { grace: QUIT_GRACE });
+                    (t.task.take(), t.abort.take())
+                });
+                (Some(inner.record.clone()), running)
             }
-            self.assistant.chats.write().unwrap().remove(&id);
-            chat.inner.lock().unwrap().status = ChatStatus::Deleted;
-            chat.publish_state(self);
+            None => (self.store.chat(id).ok().flatten(), None),
+        };
+        if let Some((Some(task), abort)) = running
+            && tokio::time::timeout(DELETE_WAIT, task).await.is_err()
+        {
+            eprintln!("chat {} did not stop within {} s; its turn is aborted", id.0, DELETE_WAIT.as_secs());
+            if let Some(abort) = abort {
+                abort.abort();
+            }
         }
         if let Err(e) = self.store.delete_chat(id) {
             eprintln!("chat {} delete failed: {e}", id.0);
         }
+        self.assistant.chats.write().unwrap().remove(&id);
+        let now = now_ms();
+        let record = record.unwrap_or_else(|| ChatRecord { title: String::new(), created_at_ms: now, updated_at_ms: now, options: self.default_options(), session: None, entry_count: 0 });
+        self.emit(AppEvent::ChatChanged(ChatState { id, rev: self.next_chat_rev(), title: record.title, updated_at_ms: record.updated_at_ms, options: record.options, status: ChatStatus::Deleted, entry_count: record.entry_count }));
     }
 
     /// Stops every running turn and waits for the tasks, bounded. Then every agent process group

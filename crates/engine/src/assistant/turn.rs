@@ -609,6 +609,7 @@ impl Turn {
             inner.ledger = Default::default();
             inner.turn = None;
             inner.status = ChatStatus::Idle;
+            inner.live.clear();
             if let Some(last) = inner.last_context.as_mut()
                 && let Some(session) = &self.session_id
             {
