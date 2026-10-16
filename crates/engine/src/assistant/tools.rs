@@ -529,6 +529,19 @@ mod pg_tests {
     }
 
     #[tokio::test]
+    async fn every_vetted_operator_is_a_pg_catalog_operator_with_no_volatile_implementation() {
+        let (engine, _dir) = engine().await;
+        let session = Session::open_assistant(&params(), &engine.shared.timezone).await.unwrap();
+        let symbols: Vec<&str> = sql::VETTED_OPERATORS.to_vec();
+        let rows = session.client.query("select o.oprname, bool_and(p.provolatile <> 'v') from pg_operator o join pg_proc p on p.oid = o.oprcode where o.oprnamespace = 'pg_catalog'::regnamespace and o.oprname = any($1) group by o.oprname", &[&symbols]).await.unwrap();
+        let found: std::collections::BTreeMap<String, bool> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
+        let missing: Vec<&str> = symbols.iter().copied().filter(|s| !found.contains_key(*s)).collect();
+        assert_eq!(missing, Vec::<&str>::new(), "not in pg_catalog");
+        let volatile: Vec<&str> = symbols.iter().copied().filter(|s| !found[*s]).collect();
+        assert_eq!(volatile, Vec::<&str>::new(), "VETTED_OPERATORS symbols with a volatile implementation");
+    }
+
+    #[tokio::test]
     async fn the_keyword_lists_match_the_server() {
         let (engine, _dir) = engine().await;
         let session = Session::open_assistant(&params(), &engine.shared.timezone).await.unwrap();

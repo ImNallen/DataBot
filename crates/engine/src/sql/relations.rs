@@ -76,6 +76,12 @@ pub(crate) const VETTED: &[&str] = &[
 /// Size helpers, vetted although volatile: they read file sizes and change nothing.
 pub(crate) const VETTED_SIZES: &[&str] = &["pg_database_size", "pg_indexes_size", "pg_relation_size", "pg_table_size", "pg_tablespace_size", "pg_total_relation_size"];
 
+/// The built-in operator symbols an analytics query uses. An operator is a function, so one off
+/// this list asks like an unlisted call.
+pub(crate) const VETTED_OPERATORS: &[&str] = &[
+    "!~", "!~*", "!~~", "!~~*", "#>", "#>>", "%", "&&", "*", "+", "-", "->", "->>", "/", "<", "<=", "<>", "<@", "=", ">", ">=", "?", "?&", "?|", "@>", "@@", "^", "||", "~", "~*", "~~", "~~*",
+];
+
 /// Unreserved words that are syntax before `(` only after these words, nearest first. Anywhere
 /// else they may be a function the user defined, so they are judged like any other name.
 const SYNTAX_AFTER: &[(&str, &[&str])] = &[
@@ -244,7 +250,8 @@ fn take_name(toks: &[Token<'_>], mut i: usize, expect: Expect, found: &mut Vec<(
 }
 
 /// The one gate for running without a user. `Clear` needs a read statement, no `U&` escape (its
-/// `\` sequences can spell any name), no `SELECT … INTO`, and every called function on `VETTED`.
+/// `\` sequences can spell any name), no `SELECT … INTO`, every called function on `VETTED`, and
+/// every operator on `VETTED_OPERATORS`.
 pub fn vet(sql: &str) -> Vet {
     if !is_read_statement(sql) {
         return Vet::NotARead;
@@ -271,6 +278,14 @@ pub fn vet(sql: &str) -> Vet {
             }
             Token::UnicodeEscape => {
                 note("U& escape".into());
+                continue;
+            }
+            Token::Operator(op) => {
+                if let Some(call) = operator_at(&toks, i, op)
+                    && !call.vetted
+                {
+                    note(format!("operator {}", call.name));
+                }
                 continue;
             }
             Token::Word(w) => Some(w.to_ascii_lowercase()),
@@ -317,11 +332,36 @@ fn call_at(toks: &[Token<'_>], i: usize, clause: Clause) -> Option<Call> {
     }
     let unquoted = matches!(toks[i], Token::Word(_));
     let grouping = clause.group_by && matches!(name.as_str(), "rollup" | "cube");
-    if parts.len() == 1 && (clause.cte_list || (unquoted && (grouping || NEVER_A_FUNCTION.binary_search(&name.as_str()).is_ok())) || syntax_before(toks, i, &name)) {
+    let operator_syntax = name == "operator" && operator_in(toks, i + 1);
+    if parts.len() == 1 && (clause.cte_list || (unquoted && (grouping || operator_syntax || NEVER_A_FUNCTION.binary_search(&name.as_str()).is_ok())) || syntax_before(toks, i, &name)) {
         return None;
     }
     let vetted = VETTED.binary_search(&name.as_str()).is_ok() || VETTED_SIZES.contains(&name.as_str());
     Some(Call { name: written, vetted })
+}
+
+/// Whether the `(` at `open` starts `OPERATOR(op)` or `OPERATOR(schema.op)`.
+fn operator_in(toks: &[Token<'_>], open: usize) -> bool {
+    match toks.get(open + 1) {
+        Some(Token::Operator(_)) => true,
+        Some(Token::Word(_) | Token::Quoted(_)) => toks.get(open + 2) == Some(&Token::Dot) && matches!(toks.get(open + 3), Some(Token::Operator(_))),
+        _ => false,
+    }
+}
+
+/// The operator at `i`, judged like a call: a bare symbol by `VETTED_OPERATORS`, and
+/// `OPERATOR(schema.op)` only for `pg_catalog`. The `*` after a dot is a column list, not an operator.
+fn operator_at(toks: &[Token<'_>], i: usize, op: &str) -> Option<Call> {
+    let listed = VETTED_OPERATORS.binary_search(&op).is_ok();
+    if i == 0 || toks[i - 1] != Token::Dot {
+        return Some(Call { name: op.to_owned(), vetted: listed });
+    }
+    let qualified = i >= 4 && toks[i - 3] == Token::Open && is_word(toks.get(i - 4), "operator");
+    if !qualified && op == "*" {
+        return None;
+    }
+    let schema = i.checked_sub(2).and_then(|s| part(toks.get(s))).unwrap_or_default();
+    Some(Call { name: format!("{schema}.{op}"), vetted: listed && schema == "pg_catalog" })
 }
 
 fn syntax_before(toks: &[Token<'_>], i: usize, name: &str) -> bool {
@@ -461,6 +501,26 @@ mod tests {
     }
 
     #[test]
+    fn operators_are_judged_like_calls() {
+        assert_eq!(vet("select 1 ## 2"), unvetted(&["operator ##"]), "an operator is a function the user may have defined");
+        assert_eq!(vet("select a operator(public.##) b from t"), unvetted(&["operator public.##"]));
+        assert_eq!(vet("select a operator(pg_catalog.##) b, c operator(pg_catalog.+) d, e operator(+) f from t"), unvetted(&["operator pg_catalog.##"]), "OPERATOR() is judged by its symbol like a pg_catalog call");
+        assert_eq!(vet("select x |> y, 1 +-- a comment ends the operator\n 2 from t"), unvetted(&["operator |>"]));
+        assert_eq!(vet("select a <-> b, a <-> c from t"), unvetted(&["operator <->"]), "each symbol once");
+        for sql in [
+            "select c.region, count(*) as orders, sum(o.total) as revenue\nfrom orders o join customers c on c.id = o.customer_id\nwhere o.status = 'paid' and o.created_at > now() - interval '90 days'\ngroup by c.region order by revenue desc",
+            "select 1 + 2 * 3 - 4 / 5 % 6 ^ 7, -1, +1, 2+-1, 2*-1, a>-1 from t",
+            "select * from t where a >= b and a <> c and a != d and a <= e and a = f and a < g and a > h",
+            "select x || y, s ~~ 'a%', s ~~* 'A%', s !~~ 'b', s !~~* 'B', s ~ '^x', s ~* '^X', s !~ 'y', s !~* 'Y' from t",
+            "select j->>'k', j -> 'k', j #> '{a}', j #>> '{a}', j @> '{}', j <@ '{}', j ? 'k', j ?| array['a'], j ?& array['a'], v @@ to_tsquery('x') from t",
+            "select arr @> array[1], array[1] <@ arr, arr && array[2], r @> 1, 1 <@ r from t",
+            "select t.*, count(t.*), make_interval(days => 1), total::numeric(12, 2) from t",
+        ] {
+            assert_eq!(vet(sql), Vet::Clear, "{sql}");
+        }
+    }
+
+    #[test]
     fn writes_are_not_reads_before_any_vetting() {
         assert_eq!(vet("delete from orders"), Vet::NotARead);
         assert_eq!(vet("create table backup as select * from orders"), Vet::NotARead);
@@ -472,7 +532,7 @@ mod tests {
 
     #[test]
     fn the_lists_are_sorted_for_the_binary_search() {
-        for (name, list) in [("VETTED", VETTED), ("VETTED_SIZES", VETTED_SIZES), ("NEVER_A_FUNCTION", NEVER_A_FUNCTION), ("OTHER_KEYWORDS", OTHER_KEYWORDS)] {
+        for (name, list) in [("VETTED", VETTED), ("VETTED_SIZES", VETTED_SIZES), ("VETTED_OPERATORS", VETTED_OPERATORS), ("NEVER_A_FUNCTION", NEVER_A_FUNCTION), ("OTHER_KEYWORDS", OTHER_KEYWORDS)] {
             assert!(list.windows(2).all(|w| w[0] < w[1]), "{name} is not sorted and unique");
         }
         assert!(SYNTAX_AFTER.iter().all(|(name, _)| !NEVER_A_FUNCTION.contains(name)), "SYNTAX_AFTER is for words that may also be function names");

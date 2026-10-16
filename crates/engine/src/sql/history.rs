@@ -10,7 +10,13 @@ pub(super) enum Token<'a> {
     Close,
     Comma,
     Number(&'a str),
+    /// A run of operator characters, lexed as Postgres lexes it, with `!=` read as `<>`.
+    Operator(&'a str),
     Other,
+}
+
+fn is_operator_char(c: u8) -> bool {
+    b"+-*/<>=~!@#%^&|`?".contains(&c)
 }
 
 pub(super) fn tokens(sql: &str) -> Vec<Token<'_>> {
@@ -62,6 +68,24 @@ pub(super) fn tokens(sql: &str) -> Vec<Token<'_>> {
                     i += 1;
                 }
                 out.push(Token::Number(&sql[start..i]));
+            }
+            c if is_operator_char(c) => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && is_operator_char(bytes[i]) && !sql[i..].starts_with("--") && !sql[i..].starts_with("/*") {
+                    i += 1;
+                }
+                // A multi-character operator ends in + or - only when it also has one of ~ ! @ # % ^ & | ` ?
+                if !bytes[start..i].iter().any(|b| b"~!@#%^&|`?".contains(b)) {
+                    while i - start > 1 && matches!(bytes[i - 1], b'+' | b'-') {
+                        i -= 1;
+                    }
+                }
+                out.push(match &sql[start..i] {
+                    "=>" => Token::Other,
+                    "!=" => Token::Operator("<>"),
+                    op => Token::Operator(op),
+                });
             }
             c if c.is_ascii_whitespace() => i += 1,
             c => {

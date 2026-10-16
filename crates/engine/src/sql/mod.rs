@@ -12,4 +12,4 @@ pub(crate) use history::{history_is_write, history_text};
 #[cfg(all(test, feature = "pg-tests"))]
 pub(crate) use keywords::{NEVER_A_FUNCTION, OTHER_KEYWORDS};
 #[cfg(all(test, feature = "pg-tests"))]
-pub(crate) use relations::{VETTED, VETTED_SIZES};
+pub(crate) use relations::{VETTED, VETTED_OPERATORS, VETTED_SIZES};
