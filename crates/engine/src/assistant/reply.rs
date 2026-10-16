@@ -69,7 +69,7 @@ pub(crate) fn parse_text(text: &str, done: bool) -> Parsed {
 }
 
 fn cut_followup(line: &str) -> String {
-    cut(line.trim_start_matches(['-', '*', ' ']).trim_matches('"').trim(), MAX_FOLLOWUP_CHARS - 1)
+    cut(line.trim_start_matches(['-', '*', ' ']).trim_matches('"').trim(), MAX_FOLLOWUP_CHARS)
 }
 
 fn fence_open(line: &str) -> Option<(usize, &str)> {

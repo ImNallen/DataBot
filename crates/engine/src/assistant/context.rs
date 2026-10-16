@@ -94,7 +94,7 @@ pub(crate) fn build(input: &ContextInput<'_>) -> String {
     }
     let close = "</l1_context>";
     if out.chars().count() + close.len() > CONTEXT_MAX {
-        out = cut(&out, CONTEXT_MAX - close.len() - "…\n".chars().count());
+        out = cut(&out, CONTEXT_MAX - close.len() - '\n'.len_utf8());
         out.push('\n');
     }
     out.push_str(close);
@@ -216,10 +216,12 @@ fn fit(lines: Vec<String>, budget: usize) -> String {
 }
 
 pub(crate) fn cut(text: &str, max: usize) -> String {
-    match text.char_indices().nth(max) {
-        Some((i, _)) => format!("{}…", &text[..i]),
-        None => text.to_owned(),
+    if text.chars().nth(max).is_none() {
+        return text.to_owned();
     }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -303,7 +305,7 @@ mod tests {
         let tab = TabFacts { title: "t.sql", text: &text, picked: Some(StmtSpan { start: 0, end: text.len() }), selected: false, last_error: None };
         let built = build(&input(&c, &db, Some(tab), None));
         let statement = built.split("Statement at the cursor:\n").nth(1).unwrap().lines().next().unwrap();
-        assert_eq!(statement.chars().count(), STATEMENT_MAX + 1);
+        assert_eq!(statement.chars().count(), STATEMENT_MAX);
         assert!(statement.ends_with('…'));
         assert!(built.contains(&format!("Tab SQL:\n{text}\n")), "the tab SQL keeps its own budget");
     }
@@ -335,6 +337,14 @@ mod tests {
         let db = c.db.clone();
         let built = build(&input(&c, &db, None, None));
         assert!(built.chars().count() <= CONTEXT_MAX && built.ends_with("</l1_context>"));
+    }
+
+    #[test]
+    fn cut_keeps_at_most_max_chars_with_the_ellipsis_counted() {
+        assert_eq!(cut("abcdef", 4), "abc…");
+        assert_eq!(cut("abcd", 4), "abcd");
+        assert_eq!(cut("abcdef", 4).chars().count(), 4);
+        assert_eq!(cut("", 4), "");
     }
 
     #[test]

@@ -502,7 +502,7 @@ mod pg_tests {
         assert_eq!((out.rows.len(), out.more, out.columns.clone()), (TOOL_ROWS, true, vec!["g".into()]));
         assert_eq!(out.rows[49][0].as_deref(), Some("50"));
         let wide = query(s, "select repeat('x', 500) as wide, null::text as missing").await.unwrap();
-        assert_eq!(wide.rows[0][0].as_ref().unwrap().chars().count(), TOOL_CELL_CHARS + 1);
+        assert_eq!(wide.rows[0][0].as_ref().unwrap().chars().count(), TOOL_CELL_CHARS);
         assert!(wide.rows[0][0].as_ref().unwrap().ends_with('…'));
         assert_eq!(wide.rows[0][1], None);
         let heavy = query(s, "select repeat('y', 500) as wide from generate_series(1, 1000) g").await.unwrap();
