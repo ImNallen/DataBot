@@ -1,37 +1,42 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
-import type { CustomTheme, Settings } from "../../ipc/bindings";
+import type { CustomTheme, ProviderState, Settings } from "../../ipc/bindings";
 import { AppLayout } from "../../shell/AppLayout";
 import { clampWidth } from "../../shell/PixelColumn";
 import { startAppearance } from "../../shell/appearance";
 import { startTheme } from "../../shell/theme";
+import { useLive, type LiveData } from "../../state/live";
 import { useWorkspace, type WorkspaceData } from "../../state/workspace";
 import { fakeRoot } from "../../testing/fakeRoot";
 import { BUILT_IN_FAMILIES, customFamily, familyPicks } from "../../themes/catalog";
 import { chooseDensity, chooseFont, previewPanelMotion, savePanelMotion } from "./appearanceActions";
 import { addCustomThemes, chooseColorScheme, chooseThemes, deleteCustomTheme } from "./themeActions";
 import { parseQuery } from "../../ui/textMatch";
-import { filterSettings } from "./settingsIndex";
+import { filterSettings, type SettingsSectionId } from "./settingsIndex";
 
 const initial = { ...useWorkspace.getInitialState() };
+const initialLive = { ...useLive.getInitialState() };
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
   Object.assign(useWorkspace.getInitialState(), initial);
   useWorkspace.setState(useWorkspace.getInitialState(), true);
+  Object.assign(useLive.getInitialState(), initialLive);
 });
 
 // Static rendering reads zustand's server snapshot, which is the store's initial state, so setState can't reach it.
-function render(patch: Partial<WorkspaceData>) {
+function render(patch: Partial<WorkspaceData>, live: Partial<LiveData> = {}) {
   Object.assign(useWorkspace.getInitialState(), patch);
+  Object.assign(useLive.getInitialState(), live);
   return renderToStaticMarkup(<AppLayout />);
 }
 
 const breadcrumb = (html: string) =>
   /data-testid="settings-breadcrumb"[^>]*>(.*?)<\/h1>/.exec(html)?.[1]?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
-const settingsOpen = (section: "appearance" | "queries" = "appearance", query = "") => ({ screen: { kind: "settings", section, query } }) as const;
+const settingsOpen = (section: SettingsSectionId = "appearance", query = "") => ({ screen: { kind: "settings", section, query } }) as const;
 
 it("puts the settings nav in the sidebar and the section in the main panel, with no workspace chrome", () => {
   const html = render({ ...settingsOpen(), layout: { ...initial.layout, rightPanel: "Assistant" } });
@@ -110,13 +115,30 @@ it.each([
   ["tint", ["tintConnections"]],
   ["SF Pro", ["interfaceFont"]],
   ["jetbrains", ["codeFont"]],
+  ["binary", ["providerList"]],
+  ["claude config", ["providerList"]],
+  ["health", ["providerHealthCheck"]],
+  ["advanced", ["providerHealthCheck"]],
   ["zzqx", []],
 ])("filters %j to %j by label, section, group, and keywords", (query, ids) => {
   expect(matching(query)).toEqual(ids);
 });
 
 it("lists every setting in registry order for an empty query", () => {
-  expect(matching(" ")).toEqual(["colorScheme", "themes", "density", "panelMotion", "tintConnections", "interfaceFont", "codeFont", "maxRows", "tablePageSize", "stopOnError"]);
+  expect(matching(" ")).toEqual([
+    "colorScheme",
+    "themes",
+    "density",
+    "panelMotion",
+    "tintConnections",
+    "interfaceFont",
+    "codeFont",
+    "maxRows",
+    "tablePageSize",
+    "stopOnError",
+    "providerList",
+    "providerHealthCheck",
+  ]);
 });
 
 const text = (html: string | undefined) => html?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -163,6 +185,7 @@ it("says when no setting matches, and shows the section with every nav entry onc
   expect(navEntries(blank)).toEqual([
     ["appearance", "Appearance", false],
     ["queries", "Queries", true],
+    ["providers", "Providers", false],
   ]);
   expect(blank).not.toContain('data-testid="settings-search-hint"');
 });
@@ -411,4 +434,58 @@ it("repaints the panel speed while the slider moves and saves it once on release
   appearance();
   stop();
   expect(saved).toEqual([{ ...initial.settings, panelMotionMs: 300 }]);
+});
+
+const CLAUDE: ProviderState = {
+  provider: "Claude",
+  rev: 4,
+  info: {
+    defaultName: "Claude",
+    defaultBinary: "claude",
+    configEnv: "CLAUDE_CONFIG_DIR",
+    configDirDefault: "~/.claude",
+    signInCommand: "claude auth login",
+    ownedFlags: ["--model", "--resume"],
+  },
+  checking: false,
+  checkedAtMs: Date.UTC(2026, 9, 16, 11, 57, 30),
+  outcome: { kind: "Ready", version: "2.1.301", plan: "Claude Max", models: [] },
+};
+
+const byTestId = (html: string, id: string) => text(new RegExp(`data-testid="${id}"[^>]*>(.*?)</(?:span|p|button)>`).exec(html)?.[1]);
+const inputTag = (html: string, id: string) => new RegExp(`<input[^>]*data-testid="${id}"[^>]*>`).exec(html)?.[0] ?? "";
+const resetTag = (html: string) => /<button[^>]*data-testid="provider-reset"[^>]*>/.exec(html)?.[0] ?? "";
+const attr = (tag: string, name: string) => new RegExp(`${name}="([^"]*)"`).exec(tag)?.[1];
+
+it("shows each provider's version, sign-in, and switch, and the picked provider's runtime fields with hints from the engine", () => {
+  vi.useFakeTimers({ now: Date.UTC(2026, 9, 16, 12, 0, 0) });
+  const providers = [{ provider: "Claude", enabled: true, displayName: "Claude", binaryPath: "", configDir: "/opt/claude-work", launchArgs: "--model opus --verbose" }] as const;
+  const html = render({ ...settingsOpen("providers"), settings: { ...initial.settings, providers: [...providers], providerHealthCheckSecs: 300 } }, { providers: { Claude: CLAUDE } });
+  expect(breadcrumb(html)).toBe("Settings / Providers");
+  expect([byTestId(html, "provider-version-Claude"), byTestId(html, "provider-status-Claude"), byTestId(html, "providers-checked")]).toEqual([
+    "v2.1.301",
+    "Signed in · Claude Max",
+    "Checked 2m ago",
+  ]);
+  expect(html).toMatch(/role="switch" aria-checked="true" aria-label="Use Claude" data-testid="provider-toggle-Claude"/);
+  expect(text(html)).toContain("Signed in with a Claude Max subscription.");
+  expect(text(html)).toContain("Path to the claude binary L1 Data starts.");
+  expect(text(html)).toContain("Where Claude keeps its login and settings. Sets CLAUDE_CONFIG_DIR.");
+  expect(text(html)).toContain("Extra command-line arguments passed to claude when a chat starts.");
+  expect(byTestId(html, "provider-launch-args-ignored")).toBe("Ignored: --model");
+  expect(["provider-display-name", "provider-binary-path", "provider-config-dir", "provider-launch-args"].map((id) => [attr(inputTag(html, id), "value"), attr(inputTag(html, id), "placeholder")])).toEqual([
+    ["Claude", "Claude"],
+    ["", "claude"],
+    ["/opt/claude-work", "~/.claude"],
+    ["--model opus --verbose", "--model claude-opus-5-5"],
+  ]);
+  expect(attr(inputTag(html, "setting-providerHealthCheck"), "value")).toBe("300");
+  expect(resetTag(html)).not.toContain('disabled=""');
+});
+
+it("says Checking while a probe runs and keeps the last outcome on the provider's row", () => {
+  const html = render(settingsOpen("providers"), { providers: { Claude: { ...CLAUDE, checking: true, outcome: { kind: "NotFound", binary: "claude on PATH" } } } });
+  expect([byTestId(html, "providers-checked"), byTestId(html, "provider-status-Claude")]).toEqual(["Checking…", "Not found"]);
+  expect(html).not.toContain('data-testid="provider-version-Claude"');
+  expect(resetTag(html)).toContain('disabled=""');
 });

@@ -51,6 +51,7 @@
   --color-handle: #2a2a2a;
   --color-handle-hover: #4a4a4a;
   --color-backdrop: #1f1f1f;
+  --color-claude: #d97757;
 }
 
 :root {
@@ -108,6 +109,7 @@
   --color-handle: #d4d4d8;
   --color-handle-hover: #a0a0a6;
   --color-backdrop: #a0a0a6;
+  --color-claude: #c6613f;
 
   --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.12);
   --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.12);

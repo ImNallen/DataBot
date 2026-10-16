@@ -95,6 +95,44 @@ export function IconButton({ className, ...rest }: ButtonHTMLAttributes<HTMLButt
   );
 }
 
+/** A pill toggle. A native button, so Space and Enter flip it like a click. */
+export function Switch({
+  checked,
+  onCheckedChange,
+  label,
+  testId,
+  disabled,
+}: {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  label: string;
+  testId?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      data-testid={testId}
+      disabled={disabled}
+      onClick={() => onCheckedChange(!checked)}
+      className={cx(
+        "inline-flex h-[18px] w-[30px] shrink-0 items-center rounded-full px-[2px] transition-colors disabled:pointer-events-none disabled:opacity-40",
+        checked ? "bg-run hover:bg-run-hover" : "bg-control hover:bg-handle-hover",
+      )}
+    >
+      <span
+        className={cx(
+          "size-[14px] rounded-full bg-run-fg shadow-[0_1px_2px_rgba(0,0,0,0.3)] transition-transform",
+          checked && "translate-x-[12px]",
+        )}
+      />
+    </button>
+  );
+}
+
 export function DialogBackdrop() {
   return <Dialog.Overlay className="motion-fade fixed inset-0 z-40 bg-backdrop/50 backdrop-blur-[6px]" />;
 }

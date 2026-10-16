@@ -15,7 +15,7 @@ import {
   IconTerminal2,
   IconUpload,
 } from "@tabler/icons-react";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from "react";
 import { commands, type OutputEntry, type QueryError, type ResultMeta, type RunState, type TabId } from "../../ipc/bindings";
 import { exportErrorText } from "../../ipc/errors";
 import { useLive } from "../../state/live";
@@ -33,6 +33,7 @@ import { useCatalog, viewFor } from "../../state/catalog";
 import { NO_EDITS, pendingCount, useTableEdits } from "../../state/tableEdits";
 import { isFiltered, isTableTab, useWorkspace, type TableTab } from "../../state/workspace";
 import { cx, IconButton, MenuContent, MenuItem, Spinner } from "../../ui/primitives";
+import { useNow } from "../../ui/useNow";
 import {
   isBrowsing,
   lastTablePage,
@@ -107,16 +108,6 @@ function TablePager({ tab, rows }: { tab: TableTab; rows: number }) {
       </IconButton>
     </div>
   );
-}
-
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const t = setInterval(() => setNow(Date.now()), 100);
-    return () => clearInterval(t);
-  }, [active]);
-  return now;
 }
 
 function SummaryText({ summary }: { summary: Summary }) {
@@ -292,7 +283,7 @@ export function ResultsPane({ tabId }: { tabId: TabId | null }) {
   const picked = useWorkspace((s) => (tabId ? s.activeResult[tabId] : undefined));
   const setActiveResult = useWorkspace((s) => s.setActiveResult);
   const run = useLive((s) => (tabId ? s.consoles[tabId]?.run : undefined)) ?? { kind: "Idle" as const };
-  const now = useNow(run.kind === "Running");
+  const now = useNow(run.kind === "Running", 100);
   const results = rowResults(run);
   const shown = shownResult(run, picked);
   const summary = runSummary(run, picked, now);
