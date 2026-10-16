@@ -5,6 +5,8 @@ pub(super) enum Token<'a> {
     Word(&'a str),
     /// A double-quoted identifier, without its quotes.
     Quoted(&'a str),
+    /// The `U&` before a quoted identifier or string whose `\` escapes spell the real text.
+    UnicodeEscape,
     Dot,
     Open,
     Close,
@@ -48,7 +50,13 @@ pub(super) fn tokens(sql: &str) -> Vec<Token<'_>> {
                 {
                     i += 1;
                 }
-                out.push(Token::Word(&sql[start..i]));
+                let word = &sql[start..i];
+                if word.eq_ignore_ascii_case("u") && bytes.get(i) == Some(&b'&') && matches!(bytes.get(i + 1), Some(b'"' | b'\'')) {
+                    out.push(Token::UnicodeEscape);
+                    i += 1;
+                } else {
+                    out.push(Token::Word(word));
+                }
             }
             c if c.is_ascii_digit() => {
                 let start = i;

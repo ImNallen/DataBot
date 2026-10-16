@@ -84,23 +84,21 @@ pub(crate) enum Ask {
     User(ApprovalReason),
 }
 
-/// Catalog tools run. A `run_query` that does not read is refused. AskFirst asks. Auto asks only
-/// when a function acts outside the transaction.
+/// Catalog tools run. A `run_query` that does not read is refused. A read that uses anything
+/// `sql::vet` cannot vouch for asks in both modes and names it. The rest asks in AskFirst and
+/// runs in Auto.
 pub(crate) fn policy(call: &ParsedCall, permission: Permission) -> Ask {
     match call {
         ParsedCall::DescribeTables { .. } | ParsedCall::SearchCatalog { .. } => Ask::Allow,
         ParsedCall::Invalid { message, .. } => Ask::Refuse(message.clone()),
-        ParsedCall::RunQuery { sql, .. } => {
-            if !sql::is_read_statement(sql) {
-                return Ask::Refuse(REFUSED_WRITE.into());
-            }
-            let functions = sql::side_effect_calls(sql);
-            match permission {
+        ParsedCall::RunQuery { sql, .. } => match sql::vet(sql) {
+            sql::Vet::NotARead => Ask::Refuse(REFUSED_WRITE.into()),
+            sql::Vet::Unvetted(functions) => Ask::User(ApprovalReason::Unvetted { functions }),
+            sql::Vet::Clear => match permission {
                 Permission::AskFirst => Ask::User(ApprovalReason::AskFirst),
-                Permission::Auto if functions.is_empty() => Ask::Allow,
-                Permission::Auto => Ask::User(ApprovalReason::SideEffects { functions }),
-            }
-        }
+                Permission::Auto => Ask::Allow,
+            },
+        },
     }
 }
 
@@ -417,8 +415,12 @@ mod tests {
         let read = parse_call("run_query", &json!({ "sql": "select count(*) from orders", "purpose": "count" }));
         assert_eq!(policy(&read, Permission::AskFirst), Ask::User(ApprovalReason::AskFirst));
         assert_eq!(policy(&read, Permission::Auto), Ask::Allow);
-        let effects = parse_call("run_query", &json!({ "sql": "select pg_terminate_backend(1)", "purpose": "" }));
-        assert_eq!(policy(&effects, Permission::Auto), Ask::User(ApprovalReason::SideEffects { functions: vec!["pg_terminate_backend".into()] }));
+        let unvetted = parse_call("run_query", &json!({ "sql": r#"select U&"pg\005fcancel_backend"(0), pg_terminate_backend(1)"#, "purpose": "" }));
+        let reason = ApprovalReason::Unvetted { functions: vec!["U& escape".into(), r"pg\005fcancel_backend".into(), "pg_terminate_backend".into()] };
+        assert_eq!(policy(&unvetted, Permission::Auto), Ask::User(reason.clone()));
+        assert_eq!(policy(&unvetted, Permission::AskFirst), Ask::User(reason), "Ask first names what Auto would have asked about");
+        let into = parse_call("run_query", &json!({ "sql": "select * into backup from orders", "purpose": "" }));
+        assert_eq!(policy(&into, Permission::Auto), Ask::User(ApprovalReason::Unvetted { functions: vec!["SELECT INTO".into()] }));
         assert_eq!(policy(&parse_call("describe_tables", &json!({ "tables": ["a"] })), Permission::AskFirst), Ask::Allow);
         assert_eq!(policy(&parse_call("nope", &json!({})), Permission::Auto), Ask::Refuse("There is no tool named nope.".into()));
     }
@@ -527,5 +529,30 @@ mod pg_tests {
         assert_eq!((few.rows.len(), few.more), (3, false));
         let explain = query(s, "explain select 1").await.unwrap();
         assert_eq!(explain.columns, vec!["QUERY PLAN".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn every_vetted_name_is_a_pg_catalog_function_with_no_volatile_overload_and_the_sizes_are_volatile() {
+        let (engine, _dir) = engine().await;
+        let session = Session::open_assistant(&params(), &engine.shared.timezone).await.unwrap();
+        let names: Vec<&str> = sql::VETTED.iter().chain(sql::VETTED_SIZES).copied().collect();
+        let rows = session.client.query("select proname, bool_and(provolatile <> 'v') from pg_proc where pronamespace = 'pg_catalog'::regnamespace and proname = any($1) group by proname", &[&names]).await.unwrap();
+        let found: std::collections::BTreeMap<String, bool> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
+        let missing: Vec<&str> = names.iter().copied().filter(|n| !found.contains_key(*n)).collect();
+        assert_eq!(missing, Vec::<&str>::new(), "not in pg_catalog");
+        let volatile: Vec<&str> = sql::VETTED.iter().copied().filter(|n| !found[*n]).collect();
+        assert_eq!(volatile, Vec::<&str>::new(), "VETTED names with a volatile overload");
+        let stable_sizes: Vec<&str> = sql::VETTED_SIZES.iter().copied().filter(|n| found[*n]).collect();
+        assert_eq!(stable_sizes, Vec::<&str>::new(), "VETTED_SIZES is for the volatile size helpers only");
+    }
+
+    #[tokio::test]
+    async fn the_keyword_lists_match_the_server() {
+        let (engine, _dir) = engine().await;
+        let session = Session::open_assistant(&params(), &engine.shared.timezone).await.unwrap();
+        let rows = session.client.query("select word, catcode::text from pg_get_keywords() order by word", &[]).await.unwrap();
+        let of = |codes: &[&str]| rows.iter().filter(|r| codes.contains(&r.get::<_, String>(1).as_str())).map(|r| r.get::<_, String>(0)).collect::<Vec<_>>();
+        assert_eq!(of(&["R", "C"]), sql::NEVER_A_FUNCTION, "rerun dev/pg-keywords.sh");
+        assert_eq!(of(&["T", "U"]), sql::OTHER_KEYWORDS, "rerun dev/pg-keywords.sh");
     }
 }

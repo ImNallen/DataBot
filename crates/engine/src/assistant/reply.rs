@@ -129,9 +129,10 @@ fn display(schema: Option<&str>, name: &str, default: Option<&str>) -> String {
     }
 }
 
-/// Whether any statement in the text modifies data or schema.
+/// Whether any statement in the text may not run unattended: a write, or a read `sql::vet` cannot
+/// vouch for. The card then offers Open in new tab instead of one-click Run.
 pub(crate) fn writes(sql: &str) -> bool {
-    sql::split_statements(sql).iter().any(|span| !sql::is_read_statement(span.text(sql)))
+    sql::split_statements(sql).iter().any(|span| sql::vet(span.text(sql)) != sql::Vet::Clear)
 }
 
 /// Closes what a crash or quit left open: open Text becomes done, a Running or waiting Tool
@@ -307,10 +308,13 @@ mod tests {
     }
 
     #[test]
-    fn writes_marks_any_modifying_statement_in_the_text() {
+    fn writes_marks_any_statement_that_may_not_run_unattended() {
         assert!(!writes("select 1;\nselect 2"));
         assert!(writes("select 1; delete from orders"));
         assert!(writes("with x as (delete from t returning *) select * from x"));
+        assert!(writes("select pg_terminate_backend(1)"), "a read calling an unvetted function gets no one-click Run");
+        assert!(writes("select * into backup from orders"));
+        assert!(writes(r#"select U&"pg\005fcancel_backend"(0)"#));
         assert!(!writes(""));
     }
 

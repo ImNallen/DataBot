@@ -71,7 +71,7 @@ function ApprovalCard({ chatId, testId, tool, approval, reason }: { chatId: Chat
           {tool.relations.length > 0 && <p className="text-ui-12 text-dim">Uses {tool.relations.join(", ")}</p>}
         </>
       )}
-      {reason.kind === "SideEffects" && <p className="text-ui-12 text-amber">Calls {reason.functions.join(", ")}, which can act outside the transaction.</p>}
+      {reason.kind === "Unvetted" && <p className="text-ui-12 text-amber">Calls functions L1 Data cannot verify as read-only: {reason.functions.join(", ")}</p>}
       <div className="flex gap-1.5 pt-0.5">
         <Button data-testid="approval-run" variant="primary" className="h-7 px-3 text-ui-12.5" disabled={answered} onClick={() => answer("Run")}>
           Run

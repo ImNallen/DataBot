@@ -139,11 +139,11 @@ it("shows Starting while the CLI starts, then a waiting approval card, with Stop
       kind: "Tool",
       call: "toolu_2",
       tool: { kind: "RunQuery", sql: "select dblink_exec('x')", purpose: "Check the link", relations: [] },
-      status: { kind: "AwaitingApproval", approval: 7, reason: { kind: "SideEffects", functions: ["dblink_exec"] } },
+      status: { kind: "AwaitingApproval", approval: 7, reason: { kind: "Unvetted", functions: ["dblink_exec"] } },
     }),
   ]);
   const card = section(waiting, "chat-tool-1") ?? "";
-  expect(text(card)).toContain("Run this query? Check the link select dblink_exec('x') Calls dblink_exec, which can act outside the transaction. Run Deny");
+  expect(text(card)).toContain("Run this query? Check the link select dblink_exec('x') Calls functions L1 Data cannot verify as read-only: dblink_exec Run Deny");
   expect([card.includes('data-testid="approval-run"'), card.includes('data-testid="approval-deny"'), waiting.includes("Thinking")]).toEqual([true, true, false]);
 });
 

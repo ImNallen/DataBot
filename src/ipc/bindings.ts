@@ -90,8 +90,11 @@ export type ApplySummary = {
 export type ApprovalId = number;
 
 export type ApprovalReason = { kind: "AskFirst" } | 
-/**  Auto mode, but the query calls functions that act outside the transaction. */
-{ kind: "SideEffects"; functions: string[] };
+/**
+ *  The query uses what the engine cannot vouch for as read-only: the called functions off
+ *  its allowlist, as written, plus `U& escape` or `SELECT INTO`. Auto asks for these too.
+ */
+{ kind: "Unvetted"; functions: string[] };
 
 export type ApproveError = 
 /**  Answered already, denied by Stop, expired, or another chat's. */
@@ -655,8 +658,8 @@ export type Permission =
 /**  Every `run_query` waits for Run or Deny. */
 "AskFirst" | 
 /**
- *  Read-only queries run without asking. A query that calls a function acting outside the
- *  transaction still asks.
+ *  A read that calls only vetted built-in functions runs without asking. Anything else asks,
+ *  with `ApprovalReason::Unvetted` naming what.
  */
 "Auto";
 

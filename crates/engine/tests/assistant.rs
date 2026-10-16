@@ -34,9 +34,14 @@ impl Harness {
 
     /// Points the provider at the fake with `scenario`, which re-probes it.
     fn use_fake(&self, scenario: &str) {
+        self.use_fake_with(scenario, "");
+    }
+
+    /// As `use_fake`, with more launch arguments for the fake, such as `--fake-sql '…'`.
+    fn use_fake_with(&self, scenario: &str, extra: &str) {
         self.configure_provider(|p| {
             p.binary_path = FAKE.into();
-            p.launch_args = format!("--fake-scenario {scenario} --fake-log {}", self.log_path().display());
+            p.launch_args = format!("--fake-scenario {scenario} --fake-log {} {extra}", self.log_path().display());
         });
     }
 
@@ -713,6 +718,22 @@ mod pg {
         assert_eq!(tab_state.txn, TxnState::Active, "the tab's transaction is untouched");
         h.engine.console_rollback(manual).await.unwrap();
         assert_eq!(scalar(&h, &config, "select count(*) from public.orders").await, before);
+    }
+
+    #[tokio::test]
+    async fn auto_asks_before_an_escaped_call_and_a_deny_runs_nothing() {
+        let mut h = Harness::open().await;
+        h.use_fake_with("query", r#"--fake-sql 'select U&"pg\005fcancel_backend"(0)'"#);
+        let config = connected(&h).await;
+        let chat = h.chat(Permission::Auto);
+        send_on(&h, chat, "Cancel it", tab(&config, "")).await;
+        let (approval, reason) = h.wait_approval(chat).await;
+        assert_eq!(reason, ApprovalReason::Unvetted { functions: vec!["U& escape".into(), r"pg\005fcancel_backend".into()] });
+        h.engine.assistant_approve(chat, approval, Decision::Deny).unwrap();
+        assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+        let entries = h.entries(chat).await;
+        assert!(matches!(&entries[1], Entry::Tool { tool: ToolUse::RunQuery { sql, .. }, status: ToolStatus::Denied { stopped: false }, .. } if sql == r#"select U&"pg\005fcancel_backend"(0)"#), "{:?}", entries[1]);
+        assert!(!h.stdin_lines().iter().any(|l| l.contains("tools/call")), "the call never ran");
     }
 
     #[tokio::test]

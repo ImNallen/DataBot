@@ -1528,8 +1528,8 @@ pub struct EffortOption {
 pub enum Permission {
     /// Every `run_query` waits for Run or Deny.
     AskFirst,
-    /// Read-only queries run without asking. A query that calls a function acting outside the
-    /// transaction still asks.
+    /// A read that calls only vetted built-in functions runs without asking. Anything else asks,
+    /// with `ApprovalReason::Unvetted` naming what.
     Auto,
 }
 
@@ -1664,8 +1664,9 @@ pub enum ToolStatus {
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum ApprovalReason {
     AskFirst,
-    /// Auto mode, but the query calls functions that act outside the transaction.
-    SideEffects { functions: Vec<String> },
+    /// The query uses what the engine cannot vouch for as read-only: the called functions off
+    /// its allowlist, as written, plus `U& escape` or `SELECT INTO`. Auto asks for these too.
+    Unvetted { functions: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -2051,7 +2052,7 @@ mod tests {
         let value = json!({
             "kind": "Tool", "call": "toolu_01",
             "tool": { "kind": "RunQuery", "sql": "select pg_sleep(1)", "purpose": "wait", "relations": [] },
-            "status": { "kind": "AwaitingApproval", "approval": 7, "reason": { "kind": "SideEffects", "functions": ["pg_sleep"] } }
+            "status": { "kind": "AwaitingApproval", "approval": 7, "reason": { "kind": "Unvetted", "functions": ["pg_sleep"] } }
         });
         let entry: Entry = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(
@@ -2059,7 +2060,7 @@ mod tests {
             Entry::Tool {
                 call: ToolCallId("toolu_01".into()),
                 tool: ToolUse::RunQuery { sql: "select pg_sleep(1)".into(), purpose: "wait".into(), relations: vec![] },
-                status: ToolStatus::AwaitingApproval { approval: ApprovalId(7), reason: ApprovalReason::SideEffects { functions: vec!["pg_sleep".into()] } },
+                status: ToolStatus::AwaitingApproval { approval: ApprovalId(7), reason: ApprovalReason::Unvetted { functions: vec!["pg_sleep".into()] } },
             }
         );
         assert_eq!(serde_json::to_value(&entry).unwrap(), value);

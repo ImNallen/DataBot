@@ -6,8 +6,9 @@
 //! Scenarios, each one turn per user message:
 //! - `card`: streams prose, a `sql` fence, inline code, and a trailing `followups` fence in small
 //!   deltas 30 ms apart.
-//! - `query`: asks `can_use_tool` for `run_query`, calls it when allowed, and answers with the
-//!   tool's result. `query-tampered` calls with different arguments than it asked for.
+//! - `query`: asks `can_use_tool` for `run_query` with `--fake-sql <sql>` (default
+//!   `select count(*) from orders`), calls it when allowed, and answers with the tool's result.
+//!   `query-tampered` calls with different arguments than it asked for.
 //! - `describe`: the same for `describe_tables(["orders"])`.
 //! - `slow`: a delta every 100 ms for 60 s; an `interrupt` gets the captured aborted sequence.
 //! - `crash`: two deltas, then stderr text and exit 1.
@@ -56,7 +57,8 @@ fn main() {
     }
     let session_id = resume.unwrap_or_else(|| format!("fake-session-{}", std::process::id()));
     let model = value_of("--model").unwrap_or_else(|| "claude-opus-5-5".into());
-    let mut cli = Cli { stdin: stdin_lines(), backlog: VecDeque::new(), log, session_id, model, next_id: 0 };
+    let sql = value_of("--fake-sql").unwrap_or_else(|| "select count(*) from orders".into());
+    let mut cli = Cli { stdin: stdin_lines(), backlog: VecDeque::new(), log, session_id, model, sql, next_id: 0 };
     cli.handshake();
     cli.run(&scenario);
 }
@@ -109,6 +111,8 @@ struct Cli {
     log: Log,
     session_id: String,
     model: String,
+    /// What the `query` scenarios ask to run.
+    sql: String,
     next_id: u64,
 }
 
@@ -207,7 +211,10 @@ impl Cli {
                     eprintln!("fake-claude: simulated crash");
                     std::process::exit(1);
                 }
-                "query" => self.tool_turn("run_query", json!({ "sql": "select count(*) from orders", "purpose": "Count the orders" }), None),
+                "query" => {
+                    let input = json!({ "sql": self.sql, "purpose": "Count the orders" });
+                    self.tool_turn("run_query", input, None);
+                }
                 "query-tampered" => self.tool_turn("run_query", json!({ "sql": "select count(*) from orders", "purpose": "Count the orders" }), Some(json!({ "sql": "select count(*) from customers", "purpose": "Count the orders" }))),
                 "describe" => self.tool_turn("describe_tables", json!({ "tables": ["orders"] }), None),
                 "echo" => {
