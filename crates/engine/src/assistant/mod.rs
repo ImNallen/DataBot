@@ -22,6 +22,7 @@ use turn::TurnPlan;
 use crate::Shared;
 use crate::console::now_ms;
 use crate::model::*;
+use crate::provider::agent::CLOSE_GRACE;
 use crate::provider::provider;
 use crate::store::{ChatRecord, StoreError};
 
@@ -29,8 +30,9 @@ pub(crate) const RECAP_MAX_CHARS: usize = 16_000;
 const TITLE_CHARS: usize = 60;
 const STOP_GRACE: Duration = Duration::from_secs(5);
 const QUIT_GRACE: Duration = Duration::from_secs(1);
-const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
+const SHUTDOWN_WAIT: Duration = QUIT_GRACE.saturating_add(CLOSE_GRACE);
 const ABORT_WAIT: Duration = Duration::from_secs(1);
+pub const SHUTDOWN_BOUND: Duration = SHUTDOWN_WAIT.saturating_add(ABORT_WAIT);
 const DELETE_WAIT: Duration = Duration::from_secs(5);
 
 pub(crate) struct Assistant {

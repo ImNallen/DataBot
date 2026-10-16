@@ -308,24 +308,27 @@ impl Shared {
             }
             entry.running = true;
         }
+        self.publish_provider(kind, |e| e.checking = true);
         let shared = self.clone();
         self.spawn(async move {
             let mut depth = depth;
             loop {
-                shared.publish_provider(kind, |e| e.checking = true);
                 let outcome = shared.run_probe(kind, depth).await;
                 shared.publish_provider(kind, |e| {
                     e.checking = false;
                     e.checked_at_ms = Some(now_ms());
                     e.outcome = Some(outcome);
                 });
-                let mut entries = shared.providers.entries.lock().unwrap();
-                let entry = entries.entry(kind).or_default();
-                let Some(next) = entry.owed.take() else {
-                    entry.running = false;
-                    return;
+                let owed = {
+                    let mut entries = shared.providers.entries.lock().unwrap();
+                    let entry = entries.entry(kind).or_default();
+                    let owed = entry.owed.take();
+                    entry.running = owed.is_some();
+                    owed
                 };
+                let Some(next) = owed else { return };
                 depth = next;
+                shared.publish_provider(kind, |e| e.checking = true);
             }
         });
     }
@@ -386,9 +389,10 @@ impl Shared {
             if !changed {
                 continue;
             }
-            self.publish_provider(cfg.provider, |e| e.checking |= cfg.enabled);
             if cfg.enabled {
                 self.probe(cfg.provider, ProbeDepth::Full);
+            } else {
+                self.publish_provider(cfg.provider, |_| {});
             }
         }
     }

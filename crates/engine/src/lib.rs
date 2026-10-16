@@ -33,6 +33,7 @@ use session::Session;
 use store::{HistoryInsert, Store};
 use view::{ConnectionView, Known, Selection};
 
+pub use assistant::SHUTDOWN_BOUND;
 pub use connection::draft_from_url;
 pub use provider::AgentPath;
 pub use secrets::{KeyStore, KeyringKeyStore, MemoryKeyStore, SecretError};
@@ -1281,7 +1282,7 @@ impl Engine {
     }
 
     /// Stops every assistant turn, then kills any agent process still alive. The shell calls it
-    /// on quit. It returns within about 4 s, so the shell's own bound must be larger.
+    /// on quit. It returns within `SHUTDOWN_BOUND`, so the shell's own bound must be larger.
     pub async fn shutdown(&self) {
         self.shared.shutdown().await
     }

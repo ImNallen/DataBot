@@ -315,7 +315,8 @@ fn main() {
         });
 }
 
-const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+const SHUTDOWN_MARGIN: std::time::Duration = std::time::Duration::from_secs(2);
+const SHUTDOWN_TIMEOUT: std::time::Duration = engine::SHUTDOWN_BOUND.saturating_add(SHUTDOWN_MARGIN);
 
 /// Quit must leave no `claude` behind and must not hang on one that ignores Stop. The exit event
 /// arrives on the main thread, outside the runtime, so the engine's own handle blocks on it; the

@@ -647,7 +647,7 @@ impl Engine {
     pub fn assistant_approve(&self, chat: ChatId, approval: ApprovalId, decision: Decision) -> Result<(), ApproveError>;
     pub async fn assistant_delete(&self, chat: ChatId);
     pub fn provider_refresh(&self);
-    pub async fn shutdown(&self);                                            // quit: stops every turn, then kills any agent process still alive; about 4 s, under the shell's 6 s
+    pub async fn shutdown(&self);                                            // quit: stops every turn, then kills any agent process still alive, within engine::SHUTDOWN_BOUND (4 s); the shell's timeout is that plus a margin
 }
 ```
 
