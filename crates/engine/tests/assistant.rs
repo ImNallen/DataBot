@@ -272,11 +272,11 @@ async fn a_turn_streams_the_reply_into_blocks_and_ends_with_suggestions() {
     assert!(matches!(&entries[0], Entry::User { text, context: None, attachment: None, .. } if text.starts_with("Which regions")));
     let Entry::Text { blocks, done: true } = &entries[1] else { panic!("{:?}", entries[1]) };
     assert_eq!(blocks.len(), 3, "{blocks:?}");
-    assert_eq!(blocks[0], ReplyBlock::Markdown { text: "This compares paid revenue by region over the last 90 days:".into() });
+    assert_eq!(blocks[0], ReplyBlock::Markdown { text: "This compares paid revenue in the last 90 days with the 90 days before that, per region:".into() });
     let ReplyBlock::Sql { sql, relations, writes, complete } = &blocks[1] else { panic!("{:?}", blocks[1]) };
-    assert!(sql.starts_with("select c.region") && sql.ends_with("order by revenue desc"));
+    assert!(sql.starts_with("SELECT c.region") && sql.ends_with("ORDER BY growth DESC;"), "{sql}");
     assert_eq!((relations.clone(), *writes, *complete), (vec!["orders".to_owned(), "customers".to_owned()], false, true));
-    assert_eq!(blocks[2], ReplyBlock::Markdown { text: "`revenue` sums `o.total` for paid orders only.".into() });
+    assert_eq!(blocks[2], ReplyBlock::Markdown { text: "`FILTER` keeps both periods in one scan of `orders`, which already has an index on `created_at`.".into() });
     let idle = h.wait_chat(chat, "the idle state", |s| s.status == ChatStatus::Idle).await;
     assert_eq!(idle.entry_count, 3);
     let listed = h.engine.boot().chats;

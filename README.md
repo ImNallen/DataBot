@@ -7,7 +7,7 @@
 
 L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. The design is in [docs/architecture.md](docs/architecture.md). Agents working in this repo start with [AGENTS.md](AGENTS.md).
 
-![L1 Data running the revenue-by-region query against the seeded shop database](docs/images/l1-data.png)
+![L1 Data running the revenue-by-region query against the seeded shop database, with the assistant answering a question about it](docs/images/l1-data.png)
 
 ## What it does
 
@@ -109,7 +109,7 @@ A debug binary rewrites `src/ipc/bindings.ts` each time it starts, so `pnpm taur
 
 The `claude-smoke` test needs the `claude` CLI installed and signed in, and the Docker database. It spends three Haiku turns on your Claude subscription, and one of them waits 75 seconds for an approval.
 
-`pnpm screenshot` starts its own Postgres container on port 5434. It needs `swift`, `osascript`, and `python3`, free ports 7077, 5173, and 5434, and Accessibility and Screen Recording permission for the terminal.
+`pnpm screenshot` starts its own Postgres container on port 5434. It needs `swift`, `osascript`, `cliclick`, and `python3`, free ports 7077, 5173, and 5434, and Accessibility and Screen Recording permission for the terminal.
 
 ## Environment variables
 

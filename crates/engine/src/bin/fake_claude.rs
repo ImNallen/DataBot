@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 const VERSION: &str = "2.1.301 (Claude Code)";
-const CARD_REPLY: &str = "This compares paid revenue by region over the last 90 days:\n\n```sql\nselect c.region, count(*) as orders, sum(o.total) as revenue\nfrom orders o join customers c on c.id = o.customer_id\nwhere o.status = 'paid' and o.created_at > now() - interval '90 days'\ngroup by c.region order by revenue desc\n```\n\n`revenue` sums `o.total` for paid orders only.\n\n```followups\nShow growth as a percentage\nOnly EU regions\n```\n";
+const CARD_REPLY: &str = "This compares paid revenue in the last 90 days with the 90 days before that, per region:\n\n```sql\nSELECT c.region,\n  sum(o.total) FILTER (\n    WHERE o.created_at >= now() - interval '90 days'\n  ) - sum(o.total) FILTER (\n    WHERE o.created_at <  now() - interval '90 days'\n  ) AS growth\nFROM orders o\nJOIN customers c ON c.id = o.customer_id\nWHERE o.status = 'paid'\n  AND o.created_at >= now() - interval '180 days'\nGROUP BY c.region\nORDER BY growth DESC;\n```\n\n`FILTER` keeps both periods in one scan of `orders`, which already has an index on `created_at`.\n\n```followups\nShow growth as a percentage\nOnly EU regions\n```\n";
 const DELTA_CHARS: usize = 12;
 
 fn main() {
