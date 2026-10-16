@@ -361,6 +361,54 @@ async fn a_tools_call_whose_arguments_differ_from_the_approved_input_is_refused(
 }
 
 #[tokio::test]
+async fn the_card_and_the_allow_reply_carry_the_input_the_provider_asked_about() {
+    let mut h = Harness::open().await;
+    h.use_fake("ask-differs");
+    let chat = h.chat(Permission::AskFirst);
+    h.send(chat, "How many customers?").await;
+    let (approval, _) = h.wait_approval(chat).await;
+    let waiting = h.entries(chat).await;
+    assert!(matches!(&waiting[1], Entry::Tool { tool: ToolUse::RunQuery { sql, .. }, status: ToolStatus::AwaitingApproval { .. }, .. } if sql == "select count(*) from customers"), "the card shows the ask, not the tool_use block: {:?}", waiting[1]);
+    h.engine.assistant_approve(chat, approval, Decision::Run).unwrap();
+    assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+    let entries = h.entries(chat).await;
+    assert!(matches!(&entries[1], Entry::Tool { tool: ToolUse::RunQuery { sql, .. }, status: ToolStatus::Failed { message }, .. } if sql == "select count(*) from customers" && message.starts_with("No database is selected")), "the approved call ran: {:?}", entries[1]);
+    let allow = h.stdin_lines().into_iter().find(|l| l.contains("\"behavior\":\"allow\"")).unwrap();
+    assert!(allow.contains("\"updatedInput\":{\"purpose\":\"Count the orders\",\"sql\":\"select count(*) from customers\"}"), "{allow}");
+}
+
+#[tokio::test]
+async fn stop_denies_a_pending_approval() {
+    let mut h = Harness::open().await;
+    h.use_fake("query");
+    let chat = h.chat(Permission::AskFirst);
+    h.send(chat, "How many orders?").await;
+    let (approval, _) = h.wait_approval(chat).await;
+    h.engine.assistant_stop(chat);
+    assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Stopped);
+    assert_eq!(h.engine.assistant_approve(chat, approval, Decision::Run), Err(ApproveError::NotPending));
+    let entries = h.entries(chat).await;
+    assert!(matches!(&entries[1], Entry::Tool { status: ToolStatus::Denied { stopped: true }, .. }), "{:?}", entries[1]);
+    assert!(h.stdin_lines().iter().any(|l| l.contains("\"behavior\":\"deny\"") && l.contains("Stopped by the user.")));
+}
+
+#[tokio::test]
+async fn after_stop_an_auto_query_is_denied_at_the_ask_and_at_the_call() {
+    let mut h = Harness::open().await;
+    h.use_fake("stop-then-query");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "go").await;
+    h.wait_entry(chat, "streaming text", |s| matches!(&s.entry, Entry::Text { done: false, blocks } if !blocks.is_empty())).await;
+    h.engine.assistant_stop(chat);
+    assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Stopped);
+    let lines = h.stdin_lines();
+    assert!(lines.iter().any(|l| l.contains("\"behavior\":\"deny\"") && l.contains("Stopped by the user.")), "the ask was denied at once");
+    assert!(lines.iter().any(|l| l.contains("\"isError\":true") && l.contains("Stopped by the user.")), "the call was refused at once");
+    let entries = h.entries(chat).await;
+    assert!(entries.iter().any(|e| matches!(e, Entry::Tool { status: ToolStatus::Denied { stopped: true }, .. })), "{entries:?}");
+}
+
+#[tokio::test]
 async fn auto_runs_a_read_query_without_asking() {
     let mut h = Harness::open().await;
     h.use_fake("query");

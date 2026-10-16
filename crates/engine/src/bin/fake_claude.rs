@@ -8,9 +8,12 @@
 //!   deltas 30 ms apart.
 //! - `query`: asks `can_use_tool` for `run_query` with `--fake-sql <sql>` (default
 //!   `select count(*) from orders`), calls it when allowed, and answers with the tool's result.
-//!   `query-tampered` calls with different arguments than it asked for.
+//!   `query-tampered` calls with different arguments than it asked for. `ask-differs` asks about
+//!   different arguments than its `tool_use` block named.
 //! - `describe`: the same for `describe_tables(["orders"])`.
 //! - `slow`: a delta every 100 ms for 60 s; an `interrupt` gets the captured aborted sequence.
+//!   `stop-then-query` answers the interrupt with a `run_query` ask and then calls the tool
+//!   whatever the answer, before the aborted sequence.
 //! - `crash`: two deltas, then stderr text and exit 1.
 //! - `resume-lost`: exits with an error before the handshake when argv has `--resume`.
 //! - `echo`: answers with the whole prompt it received.
@@ -203,7 +206,8 @@ impl Cli {
                     self.stream(CARD_REPLY, Duration::from_millis(30));
                     self.result_success();
                 }
-                "slow" => self.slow(),
+                "slow" => self.slow(false),
+                "stop-then-query" => self.slow(true),
                 "crash" => {
                     self.message_start();
                     self.delta("Working");
@@ -213,10 +217,11 @@ impl Cli {
                 }
                 "query" => {
                     let input = json!({ "sql": self.sql, "purpose": "Count the orders" });
-                    self.tool_turn("run_query", input, None);
+                    self.tool_turn("run_query", input, None, None);
                 }
-                "query-tampered" => self.tool_turn("run_query", json!({ "sql": "select count(*) from orders", "purpose": "Count the orders" }), Some(json!({ "sql": "select count(*) from customers", "purpose": "Count the orders" }))),
-                "describe" => self.tool_turn("describe_tables", json!({ "tables": ["orders"] }), None),
+                "query-tampered" => self.tool_turn("run_query", json!({ "sql": "select count(*) from orders", "purpose": "Count the orders" }), None, Some(json!({ "sql": "select count(*) from customers", "purpose": "Count the orders" }))),
+                "ask-differs" => self.tool_turn("run_query", json!({ "sql": "select count(*) from orders", "purpose": "Count the orders" }), Some(json!({ "sql": "select count(*) from customers", "purpose": "Count the orders" })), None),
+                "describe" => self.tool_turn("describe_tables", json!({ "tables": ["orders"] }), None, None),
                 "echo" => {
                     self.stream(&prompt, Duration::ZERO);
                     self.result_success();
@@ -271,7 +276,7 @@ impl Cli {
         self.send(json!({ "type": "system", "subtype": "session_state_changed", "state": "idle", "session_id": self.session_id }));
     }
 
-    fn slow(&mut self) {
+    fn slow(&mut self, query_on_interrupt: bool) {
         self.message_start();
         let started = Instant::now();
         let mut text = String::new();
@@ -285,6 +290,12 @@ impl Cli {
                 && v["request"]["subtype"] == "interrupt"
             {
                 self.send(json!({ "type": "control_response", "response": { "subtype": "success", "request_id": v["request_id"], "response": { "still_queued": [] } } }));
+                if query_on_interrupt {
+                    let input = json!({ "sql": "select count(*) from orders", "purpose": "Count the orders" });
+                    let tool_use_id = self.tool_use("run_query", &input);
+                    self.ask("run_query", &tool_use_id, &input);
+                    self.call("run_query", &tool_use_id, input);
+                }
                 self.send(json!({ "type": "assistant", "message": { "model": self.model, "role": "assistant", "content": [{ "type": "text", "text": text }], "stop_reason": null }, "parent_tool_use_id": null, "session_id": self.session_id, "aborted": true }));
                 self.send(json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": "[Request interrupted by user]" }] }, "parent_tool_use_id": null, "session_id": self.session_id }));
                 self.send(json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 1, "session_id": self.session_id, "permission_denials": [], "terminal_reason": "aborted_streaming", "errors": ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"] }));
@@ -296,9 +307,27 @@ impl Cli {
         self.result_success();
     }
 
-    /// One tool call: the `assistant` frame, `can_use_tool`, then `tools/call` when allowed, then
-    /// a text message built from the answer.
-    fn tool_turn(&mut self, tool: &str, input: Value, call_with: Option<Value>) {
+    /// One tool call: the `assistant` frame, `can_use_tool` about `ask_with` or the same input,
+    /// then `tools/call` when allowed with `call_with` or the allowed input, then a text message
+    /// built from the answer.
+    fn tool_turn(&mut self, tool: &str, input: Value, ask_with: Option<Value>, call_with: Option<Value>) {
+        let tool_use_id = self.tool_use(tool, &input);
+        let decision = self.ask(tool, &tool_use_id, &ask_with.unwrap_or_else(|| input.clone()));
+        let reply = if decision["behavior"] == "allow" {
+            let arguments = call_with.unwrap_or_else(|| decision.get("updatedInput").cloned().unwrap_or(input));
+            let (text, failed) = self.call(tool, &tool_use_id, arguments);
+            if failed { format!("The tool failed: {text}") } else { format!("The tool returned:\n{text}") }
+        } else {
+            let message = decision["message"].as_str().unwrap_or_default();
+            self.send(json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "tool_result", "content": message, "is_error": true, "tool_use_id": tool_use_id }] }, "parent_tool_use_id": null, "session_id": self.session_id }));
+            format!("The call was declined: {message}")
+        };
+        self.stream(&reply, Duration::ZERO);
+        self.result_success();
+    }
+
+    /// The `assistant` message with one `tool_use` block; returns its tool-use id.
+    fn tool_use(&mut self, tool: &str, input: &Value) -> String {
         let tool_use_id = format!("toolu_fake_{}", self.next_id());
         let full_name = format!("mcp__l1__{tool}");
         let msg_id = format!("msg_fake_{}", self.next_id());
@@ -308,25 +337,26 @@ impl Cli {
         self.send(json!({ "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 }, "session_id": self.session_id, "parent_tool_use_id": null }));
         self.send(json!({ "type": "stream_event", "event": { "type": "message_delta", "delta": { "stop_reason": "tool_use" } }, "session_id": self.session_id, "parent_tool_use_id": null }));
         self.send(json!({ "type": "stream_event", "event": { "type": "message_stop" }, "session_id": self.session_id, "parent_tool_use_id": null }));
+        tool_use_id
+    }
+
+    /// `can_use_tool`; returns the host's decision object.
+    fn ask(&mut self, tool: &str, tool_use_id: &str, input: &Value) -> Value {
         let ask_id = format!("fake-ask-{}", self.next_id());
-        self.send(json!({ "type": "control_request", "request_id": ask_id, "request": { "subtype": "can_use_tool", "tool_name": full_name, "mcp_server": { "name": "l1", "source": "sdk" }, "display_name": tool, "input": input, "permission_suggestions": [], "tool_use_id": tool_use_id } }));
+        self.send(json!({ "type": "control_request", "request_id": ask_id, "request": { "subtype": "can_use_tool", "tool_name": format!("mcp__l1__{tool}"), "mcp_server": { "name": "l1", "source": "sdk" }, "display_name": tool, "input": input, "permission_suggestions": [], "tool_use_id": tool_use_id } }));
         let answer = self.expect("the permission answer", |v| v["response"]["request_id"] == ask_id);
-        let decision = answer["response"]["response"].clone();
-        let reply = if decision["behavior"] == "allow" {
-            let arguments = call_with.unwrap_or_else(|| decision.get("updatedInput").cloned().unwrap_or(input));
-            let call = self.mcp(json!({ "method": "tools/call", "params": { "name": tool, "arguments": arguments, "_meta": { "claudecode/toolUseId": tool_use_id, "progressToken": 2 } }, "jsonrpc": "2.0", "id": 2 }));
-            let result = &call["response"]["response"]["mcp_response"]["result"];
-            let text = result["content"][0]["text"].as_str().unwrap_or_default();
-            let failed = result["isError"] == true;
-            self.send(json!({ "type": "user", "message": { "role": "user", "content": [{ "tool_use_id": tool_use_id, "type": "tool_result", "content": text, "is_error": failed }] }, "parent_tool_use_id": null, "session_id": self.session_id }));
-            if failed { format!("The tool failed: {text}") } else { format!("The tool returned:\n{text}") }
-        } else {
-            let message = decision["message"].as_str().unwrap_or_default();
-            self.send(json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "tool_result", "content": message, "is_error": true, "tool_use_id": tool_use_id }] }, "parent_tool_use_id": null, "session_id": self.session_id }));
-            format!("The call was declined: {message}")
-        };
-        self.stream(&reply, Duration::ZERO);
-        self.result_success();
+        answer["response"]["response"].clone()
+    }
+
+    /// The MCP `tools/call` and the `user` frame that carries its result back; returns the result
+    /// text and whether it was an error.
+    fn call(&mut self, tool: &str, tool_use_id: &str, arguments: Value) -> (String, bool) {
+        let call = self.mcp(json!({ "method": "tools/call", "params": { "name": tool, "arguments": arguments, "_meta": { "claudecode/toolUseId": tool_use_id, "progressToken": 2 } }, "jsonrpc": "2.0", "id": 2 }));
+        let result = &call["response"]["response"]["mcp_response"]["result"];
+        let text = result["content"][0]["text"].as_str().unwrap_or_default().to_owned();
+        let failed = result["isError"] == true;
+        self.send(json!({ "type": "user", "message": { "role": "user", "content": [{ "tool_use_id": tool_use_id, "type": "tool_result", "content": text, "is_error": failed }] }, "parent_tool_use_id": null, "session_id": self.session_id }));
+        (text, failed)
     }
 }
 

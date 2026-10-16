@@ -11,7 +11,7 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::chat::{Chat, Gated, LastContext, TurnControl, wait};
+use super::chat::{Chat, Gated, LastContext, Refusal, TurnControl, wait};
 use super::tools::{self, Ask, Executed, ParsedCall};
 use super::{context, reply};
 use crate::Shared;
@@ -30,6 +30,8 @@ const FAR_FUTURE: Duration = Duration::from_secs(3600);
 const STOPPED_TOOL: &str = "Stopped by the user.";
 const NOT_APPROVED: &str = "This call was not approved.";
 const DECLINED: &str = "The user declined this tool call.";
+const CANCELLED_TOOL: &str = "The call was cancelled.";
+const EXPIRED_TOOL: &str = "The turn ended before an answer.";
 
 pub(crate) struct TurnPlan {
     pub chat: Arc<Chat>,
@@ -99,9 +101,16 @@ struct ToolState {
     running: Option<(ReplyTo, AbortHandle)>,
 }
 
+/// Which of the provider's two consults of the gate a verdict answers.
+enum Site {
+    /// `can_use_tool`, before the call.
+    Permission(ReplyTo),
+    /// The MCP `tools/call`, where the tool runs.
+    Call(ReplyTo),
+}
+
 enum Work {
-    Permission { reply: ReplyTo, call: ToolCallId, decision: Decision },
-    Gated { reply: ReplyTo, call: ToolCallId, parsed: ParsedCall, decision: Decision },
+    Gated { site: Site, call: ToolCallId, parsed: ParsedCall, verdict: Result<(), Refusal> },
     Tool { reply: ReplyTo, call: ToolCallId, executed: Executed },
 }
 
@@ -315,15 +324,16 @@ impl Turn {
             AgentEvent::ToolUse { call, name, input } => {
                 self.ensure_tool(&call, &name, &input);
             }
-            AgentEvent::Permission { reply, call, name, input } => self.on_permission(agent, reply, call, &name, input, waits).await,
-            AgentEvent::ToolCall { reply, call, name, input } => self.on_tool_call(agent, reply, call, &name, input, waits, execs).await,
+            AgentEvent::Permission { reply, call, name, input } => self.on_gate(agent, Site::Permission(reply), call, &name, input, waits, execs).await,
+            AgentEvent::ToolCall { reply, call, name, input } => self.on_gate(agent, Site::Call(reply), call, &name, input, waits, execs).await,
             AgentEvent::ToolCancelled { call } => {
                 if let Some(state) = self.tool_mut(&call)
                     && let Some((_, abort)) = state.running.take()
                 {
                     abort.abort();
-                    self.set_tool_status(&call, ToolStatus::Failed { message: "The call was cancelled.".into() });
+                    self.set_tool_status(&call, ToolStatus::Failed { message: CANCELLED_TOOL.into() });
                 }
+                self.chat.cancel(&call);
             }
             AgentEvent::TurnEnded(outcome) => return Some(outcome),
         }
@@ -399,9 +409,20 @@ impl Turn {
         }
     }
 
+    /// Creates the card, or refreshes it when the provider's ask carries other arguments than its
+    /// `tool_use` block did, so the card, the ledger, and `updatedInput` hold what the user sees.
     fn ensure_tool(&mut self, call: &ToolCallId, name: &str, input: &Value) {
-        if self.tools.iter().any(|t| t.call == *call) {
-            return;
+        let refreshed = match self.tools.iter_mut().find(|t| t.call == *call) {
+            Some(state) if state.input != *input => {
+                state.input = input.clone();
+                state.tool = tools::describe(name, input, self.catalog.as_deref());
+                Some(state.status.clone())
+            }
+            Some(_) => return,
+            None => None,
+        };
+        if let Some(status) = refreshed {
+            return self.set_tool_status(call, status);
         }
         let seq = self.next_seq();
         let tool = tools::describe(name, input, self.catalog.as_deref());
@@ -438,62 +459,60 @@ impl Turn {
         self.set_phase(if self.chat.has_pending() { TurnPhase::AwaitingApproval } else { TurnPhase::Working });
     }
 
-    /// The provider asks before a call: the policy answers at once, or the user does.
-    async fn on_permission(&mut self, agent: &mut Agent, reply: ReplyTo, call: ToolCallId, name: &str, input: Value, waits: &mut Waits) {
+    /// Both places the provider consults the gate: `can_use_tool` before a call, where the user's
+    /// wait happens, and the MCP `tools/call`, where the tool runs only on a recorded `Run` with
+    /// the same input. A provider that skipped the ask creates the approval at the call. After
+    /// Stop, both deny at once.
+    async fn on_gate(&mut self, agent: &mut Agent, site: Site, call: ToolCallId, name: &str, input: Value, waits: &mut Waits, execs: &mut Execs) {
         self.ensure_tool(&call, name, &input);
         let parsed = tools::parse_call(name, &input);
+        if self.stopping.is_some() {
+            return self.settle(agent, site, call, parsed, Err(Refusal::Stopped), execs).await;
+        }
         let ask = tools::policy(&parsed, self.chat.permission());
         match self.chat.gate(&self.shared.assistant, &call, &input, &ask) {
-            Gated::Decided(Decision::Run) => {
+            Gated::Run => self.settle(agent, site, call, parsed, Ok(()), execs).await,
+            Gated::Deny(why) => self.settle(agent, site, call, parsed, Err(why), execs).await,
+            Gated::Wait { approval, answer, fresh } => {
+                if fresh && let Ask::User(reason) = ask {
+                    self.set_tool_status(&call, ToolStatus::AwaitingApproval { approval, reason });
+                    self.refresh_phase();
+                }
+                waits.push(Box::pin(async move { Work::Gated { site, call, parsed, verdict: wait(answer).await } }));
+            }
+        }
+    }
+
+    /// Answers the provider at `site` with the verdict and shows it on the card. The allow reply
+    /// echoes the card's input, so the tool runs on what the user saw.
+    async fn settle(&mut self, agent: &mut Agent, site: Site, call: ToolCallId, parsed: ParsedCall, verdict: Result<(), Refusal>, execs: &mut Execs) {
+        match (site, verdict) {
+            (Site::Permission(reply), Ok(())) => {
+                let input = self.tool_mut(&call).map(|t| t.input.clone()).unwrap_or(Value::Null);
                 let lines = agent.codec.permission(&reply, Decision::Run, &input, "");
                 agent.write(lines).await.ok();
+                if matches!(self.tool_mut(&call).map(|t| &t.status), Some(ToolStatus::AwaitingApproval { .. })) {
+                    self.set_tool_status(&call, ToolStatus::Running);
+                }
             }
-            Gated::Decided(Decision::Deny) => {
-                let (message, status) = match &ask {
-                    Ask::Refuse(message) => (message.clone(), ToolStatus::Failed { message: message.clone() }),
-                    _ => (DECLINED.to_owned(), ToolStatus::Denied { stopped: self.stopping.is_some() }),
-                };
-                let lines = agent.codec.permission(&reply, Decision::Deny, &input, &message);
+            (Site::Permission(reply), Err(why)) => {
+                let lines = agent.codec.permission(&reply, Decision::Deny, &Value::Null, &refusal_text(&why));
                 agent.write(lines).await.ok();
-                self.set_tool_status(&call, status);
+                self.set_tool_status(&call, refusal_status(why));
             }
-            Gated::Wait { approval, answer, fresh } => {
-                if fresh && let Ask::User(reason) = ask {
-                    self.set_tool_status(&call, ToolStatus::AwaitingApproval { approval, reason });
-                    self.refresh_phase();
+            (Site::Call(reply), Ok(())) => self.start_tool(reply, call, parsed, execs),
+            (Site::Call(reply), Err(why)) => {
+                let lines = agent.codec.tool_result(&reply, &ModelResult { text: refusal_text(&why), is_error: true });
+                agent.write(lines).await.ok();
+                if matches!(self.tool_mut(&call).map(|t| &t.status), Some(ToolStatus::Running | ToolStatus::AwaitingApproval { .. })) {
+                    self.set_tool_status(&call, refusal_status(why));
                 }
-                waits.push(Box::pin(async move { Work::Permission { reply, call, decision: wait(answer).await } }));
             }
         }
+        self.refresh_phase();
     }
 
-    /// The execution site. The gate is consulted again: a call runs only on a `Run` recorded for
-    /// its id with the same input, and a provider that skipped the ask creates the approval here.
-    async fn on_tool_call(&mut self, agent: &mut Agent, reply: ReplyTo, call: ToolCallId, name: &str, input: Value, waits: &mut Waits, execs: &mut Execs) {
-        self.ensure_tool(&call, name, &input);
-        let parsed = tools::parse_call(name, &input);
-        let ask = tools::policy(&parsed, self.chat.permission());
-        match self.chat.gate(&self.shared.assistant, &call, &input, &ask) {
-            Gated::Decided(decision) => self.start_tool(agent, reply, call, parsed, decision, execs).await,
-            Gated::Wait { approval, answer, fresh } => {
-                if fresh && let Ask::User(reason) = ask {
-                    self.set_tool_status(&call, ToolStatus::AwaitingApproval { approval, reason });
-                    self.refresh_phase();
-                }
-                waits.push(Box::pin(async move { Work::Gated { reply, call, parsed, decision: wait(answer).await } }));
-            }
-        }
-    }
-
-    async fn start_tool(&mut self, agent: &mut Agent, reply: ReplyTo, call: ToolCallId, parsed: ParsedCall, decision: Decision, execs: &mut Execs) {
-        if decision == Decision::Deny {
-            let lines = agent.codec.tool_result(&reply, &ModelResult { text: NOT_APPROVED.into(), is_error: true });
-            agent.write(lines).await.ok();
-            if matches!(self.tool_mut(&call).map(|t| &t.status), Some(ToolStatus::Running | ToolStatus::AwaitingApproval { .. })) {
-                self.set_tool_status(&call, ToolStatus::Failed { message: NOT_APPROVED.into() });
-            }
-            return;
-        }
+    fn start_tool(&mut self, reply: ReplyTo, call: ToolCallId, parsed: ParsedCall, execs: &mut Execs) {
         if matches!(self.tool_mut(&call).map(|t| &t.status), Some(ToolStatus::AwaitingApproval { .. })) {
             self.set_tool_status(&call, ToolStatus::Running);
         }
@@ -514,21 +533,7 @@ impl Turn {
 
     async fn on_work(&mut self, agent: &mut Agent, work: Work, execs: &mut Execs) {
         match work {
-            Work::Permission { reply, call, decision } => {
-                let input = self.tool_mut(&call).map(|t| t.input.clone()).unwrap_or(Value::Null);
-                let message = if self.stopping.is_some() { STOPPED_TOOL } else { DECLINED };
-                let lines = agent.codec.permission(&reply, decision, &input, message);
-                agent.write(lines).await.ok();
-                match decision {
-                    Decision::Run => self.set_tool_status(&call, ToolStatus::Running),
-                    Decision::Deny => self.set_tool_status(&call, ToolStatus::Denied { stopped: self.stopping.is_some() }),
-                }
-                self.refresh_phase();
-            }
-            Work::Gated { reply, call, parsed, decision } => {
-                self.refresh_phase();
-                self.start_tool(agent, reply, call, parsed, decision, execs).await;
-            }
+            Work::Gated { site, call, parsed, verdict } => self.settle(agent, site, call, parsed, verdict, execs).await,
             Work::Tool { reply, call, executed } => {
                 let lines = agent.codec.tool_result(&reply, &executed.for_model);
                 agent.write(lines).await.ok();
@@ -540,11 +545,11 @@ impl Turn {
         }
     }
 
+    /// Pending approvals are denied here; each waiter then answers its provider request and marks
+    /// its card.
     async fn on_stop(&mut self, agent: &mut Agent, grace: Duration) {
         self.stopping = Some(Instant::now() + grace);
-        for call in self.chat.deny_pending() {
-            self.set_tool_status(&call, ToolStatus::Denied { stopped: true });
-        }
+        self.chat.deny_pending(Refusal::Stopped);
         let running: Vec<(ToolCallId, ReplyTo, AbortHandle)> = self.tools.iter_mut().filter_map(|t| t.running.take().map(|(reply, abort)| (t.call.clone(), reply, abort))).collect();
         for (call, reply, abort) in running {
             abort.abort();
@@ -574,8 +579,10 @@ impl Turn {
     /// In this order, so a crash at any step leaves rows `recover` can close.
     async fn finish(&mut self, outcome: TurnOutcome) {
         self.publish_texts(true);
-        for call in self.chat.deny_pending() {
-            self.set_tool_status(&call, ToolStatus::Denied { stopped: outcome == TurnOutcome::Stopped });
+        if outcome == TurnOutcome::Stopped {
+            for call in self.chat.deny_pending(Refusal::Stopped) {
+                self.set_tool_status(&call, ToolStatus::Denied { stopped: true });
+            }
         }
         let open: Vec<ToolCallId> = self.tools.iter_mut().filter(|t| matches!(t.status, ToolStatus::Running | ToolStatus::AwaitingApproval { .. })).map(|t| {
             if let Some((_, abort)) = t.running.take() {
@@ -615,6 +622,28 @@ impl Turn {
         if let TurnOutcome::Failed { error: AgentError::NotFound { .. } | AgentError::SignedOut | AgentError::Exited { .. } } = outcome {
             self.shared.probe(self.options.provider, ProbeDepth::Full);
         }
+    }
+}
+
+/// What the model hears for a refusal.
+fn refusal_text(why: &Refusal) -> String {
+    match why {
+        Refusal::Policy(message) => message.clone(),
+        Refusal::Declined => DECLINED.into(),
+        Refusal::Stopped => STOPPED_TOOL.into(),
+        Refusal::Cancelled => CANCELLED_TOOL.into(),
+        Refusal::Expired => EXPIRED_TOOL.into(),
+        Refusal::Mismatch => NOT_APPROVED.into(),
+    }
+}
+
+/// What the card shows for a refusal.
+fn refusal_status(why: Refusal) -> ToolStatus {
+    match why {
+        Refusal::Declined => ToolStatus::Denied { stopped: false },
+        Refusal::Stopped => ToolStatus::Denied { stopped: true },
+        Refusal::Expired => ToolStatus::Expired,
+        Refusal::Policy(_) | Refusal::Cancelled | Refusal::Mismatch => ToolStatus::Failed { message: refusal_text(&why) },
     }
 }
 

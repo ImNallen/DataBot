@@ -64,15 +64,57 @@ pub(crate) struct Ledger {
     calls: HashMap<ToolCallId, Gate>,
 }
 
+/// Why a call does not run. The turn maps each to what the model hears and what the card shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// The policy refused it before anyone was asked: a write, a bad input, an unknown tool.
+    Policy(String),
+    /// The user pressed Deny.
+    Declined,
+    /// Stop denied it.
+    Stopped,
+    /// The provider cancelled the call while it waited.
+    Cancelled,
+    /// The turn ended before an answer.
+    Expired,
+    /// Called with other arguments than the ones approved.
+    Mismatch,
+}
+
+type Verdict = Result<(), Refusal>;
+
 enum Gate {
-    Pending { approval: ApprovalId, input: Value, answer: watch::Sender<Option<Decision>> },
-    Decided { input: Value, decision: Decision },
+    Pending { approval: ApprovalId, input: Value, answer: watch::Sender<Option<Verdict>> },
+    Run { input: Value },
+    Denied { why: Refusal },
+}
+
+impl Ledger {
+    /// Moves a pending call to its verdict and wakes its waiters. False when nothing was pending.
+    fn decide(&mut self, call: &ToolCallId, verdict: Verdict) -> bool {
+        if !matches!(self.calls.get(call), Some(Gate::Pending { .. })) {
+            return false;
+        }
+        let Some(Gate::Pending { input, answer, .. }) = self.calls.remove(call) else { unreachable!("checked above") };
+        let settled = match &verdict {
+            Ok(()) => Gate::Run { input },
+            Err(why) => Gate::Denied { why: why.clone() },
+        };
+        self.calls.insert(call.clone(), settled);
+        let _ = answer.send(Some(verdict));
+        true
+    }
+
+    fn pending(&self) -> Vec<ToolCallId> {
+        self.calls.iter().filter(|(_, g)| matches!(g, Gate::Pending { .. })).map(|(c, _)| c.clone()).collect()
+    }
 }
 
 pub(crate) enum Gated {
-    Decided(Decision),
+    Run,
+    Deny(Refusal),
     /// `fresh` is true for the caller that created the approval; it publishes the waiting status.
-    Wait { approval: ApprovalId, answer: watch::Receiver<Option<Decision>>, fresh: bool },
+    Wait { approval: ApprovalId, answer: watch::Receiver<Option<Verdict>>, fresh: bool },
 }
 
 impl Chat {
@@ -91,18 +133,20 @@ impl Chat {
     pub(crate) fn gate(&self, assistant: &Assistant, call: &ToolCallId, input: &Value, ask: &Ask) -> Gated {
         let mut inner = self.inner.lock().unwrap();
         match inner.ledger.calls.get(call) {
-            Some(Gate::Decided { input: approved, decision }) => return Gated::Decided(if approved == input { *decision } else { Decision::Deny }),
+            Some(Gate::Run { input: approved }) => return if approved == input { Gated::Run } else { Gated::Deny(Refusal::Mismatch) },
+            Some(Gate::Denied { why }) => return Gated::Deny(why.clone()),
             Some(Gate::Pending { approval, answer, .. }) => return Gated::Wait { approval: *approval, answer: answer.subscribe(), fresh: false },
             None => {}
         }
         match ask {
             Ask::Allow => {
-                inner.ledger.calls.insert(call.clone(), Gate::Decided { input: input.clone(), decision: Decision::Run });
-                Gated::Decided(Decision::Run)
+                inner.ledger.calls.insert(call.clone(), Gate::Run { input: input.clone() });
+                Gated::Run
             }
-            Ask::Refuse(_) => {
-                inner.ledger.calls.insert(call.clone(), Gate::Decided { input: input.clone(), decision: Decision::Deny });
-                Gated::Decided(Decision::Deny)
+            Ask::Refuse(message) => {
+                let why = Refusal::Policy(message.clone());
+                inner.ledger.calls.insert(call.clone(), Gate::Denied { why: why.clone() });
+                Gated::Deny(why)
             }
             Ask::User(_) => {
                 let approval = assistant.next_approval();
@@ -113,28 +157,32 @@ impl Chat {
         }
     }
 
-    /// The only transition out of `Pending`, made under the lock, so a second answer, an answer
-    /// after Stop, and another chat's id all find nothing and get `NotPending`.
+    /// The user's answer. Made under the lock, so a second answer, an answer after Stop, and
+    /// another chat's id all find nothing and get `NotPending`.
     pub(crate) fn answer(&self, approval: ApprovalId, decision: Decision) -> Result<(), ApproveError> {
         let mut inner = self.inner.lock().unwrap();
         let call = inner.ledger.calls.iter().find(|(_, g)| matches!(g, Gate::Pending { approval: a, .. } if *a == approval)).map(|(c, _)| c.clone()).ok_or(ApproveError::NotPending)?;
-        let Some(Gate::Pending { input, answer, .. }) = inner.ledger.calls.remove(&call) else { unreachable!("found above") };
-        inner.ledger.calls.insert(call, Gate::Decided { input, decision });
-        let _ = answer.send(Some(decision));
+        let verdict = match decision {
+            Decision::Run => Ok(()),
+            Decision::Deny => Err(Refusal::Declined),
+        };
+        inner.ledger.decide(&call, verdict);
         Ok(())
     }
 
-    /// Every Pending becomes Decided(Deny) and its waiter wakes. Returns the call ids.
-    pub(crate) fn deny_pending(&self) -> Vec<ToolCallId> {
+    /// Every pending call is denied for `why` and its waiter wakes. Returns the call ids.
+    pub(crate) fn deny_pending(&self, why: Refusal) -> Vec<ToolCallId> {
         let mut inner = self.inner.lock().unwrap();
-        let pending: Vec<ToolCallId> = inner.ledger.calls.iter().filter(|(_, g)| matches!(g, Gate::Pending { .. })).map(|(c, _)| c.clone()).collect();
+        let pending = inner.ledger.pending();
         for call in &pending {
-            if let Some(Gate::Pending { input, answer, .. }) = inner.ledger.calls.remove(call) {
-                inner.ledger.calls.insert(call.clone(), Gate::Decided { input, decision: Decision::Deny });
-                let _ = answer.send(Some(Decision::Deny));
-            }
+            inner.ledger.decide(call, Err(why.clone()));
         }
         pending
+    }
+
+    /// The provider withdrew the call: its pending approval, if any, is denied as cancelled.
+    pub(crate) fn cancel(&self, call: &ToolCallId) {
+        self.inner.lock().unwrap().ledger.decide(call, Err(Refusal::Cancelled));
     }
 
     pub(crate) fn has_pending(&self) -> bool {
@@ -187,10 +235,10 @@ impl Chat {
     }
 }
 
-/// A waiter treats a dropped sender (the turn ended) as Deny.
-pub(crate) async fn wait(mut answer: watch::Receiver<Option<Decision>>) -> Decision {
+/// A waiter treats a dropped sender (the turn ended) as expired.
+pub(crate) async fn wait(mut answer: watch::Receiver<Option<Verdict>>) -> Verdict {
     match answer.wait_for(Option::is_some).await {
-        Ok(decision) => decision.unwrap_or(Decision::Deny),
-        Err(_) => Decision::Deny,
+        Ok(verdict) => verdict.clone().unwrap_or(Err(Refusal::Expired)),
+        Err(_) => Err(Refusal::Expired),
     }
 }
