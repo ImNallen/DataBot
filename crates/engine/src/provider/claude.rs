@@ -373,13 +373,13 @@ pub(crate) struct ClaudeCodec {
     open: Open,
     message: u32,
     text_blocks: HashSet<BlockKey>,
-    calls: HashMap<String, ToolCallId>,
+    calls_by_rpc_id: HashMap<String, ToolCallId>,
     interrupted: bool,
 }
 
 impl ClaudeCodec {
     pub(crate) fn new(prefer_model: Option<String>, open: Open) -> Self {
-        Self { next_request: 0, pending: HashMap::new(), prefer_model, open, message: 0, text_blocks: HashSet::new(), calls: HashMap::new(), interrupted: false }
+        Self { next_request: 0, pending: HashMap::new(), prefer_model, open, message: 0, text_blocks: HashSet::new(), calls_by_rpc_id: HashMap::new(), interrupted: false }
     }
 
     fn request(&mut self, kind: HostRequest, body: Value) -> String {
@@ -413,11 +413,11 @@ impl ClaudeCodec {
             Some("tools/call") => {
                 let params = &message["params"];
                 let call = ToolCallId(params["_meta"]["claudecode/toolUseId"].as_str().map_or_else(|| format!("rpc-{rpc_id}"), str::to_owned));
-                self.calls.insert(rpc_id.to_string(), call.clone());
+                self.calls_by_rpc_id.insert(rpc_id.to_string(), call.clone());
                 Step {
                     replies: Vec::new(),
                     events: vec![AgentEvent::ToolCall {
-                        reply: ReplyTo(json!({ "request_id": request_id, "id": rpc_id })),
+                        reply: ReplyTo::new(json!({ "request_id": request_id, "id": rpc_id })),
                         call,
                         name: params["name"].as_str().unwrap_or_default().to_owned(),
                         input: params.get("arguments").cloned().unwrap_or(json!({})),
@@ -427,7 +427,7 @@ impl ClaudeCodec {
             Some("notifications/cancelled") => {
                 let cancelled = message["params"]["requestId"].as_str().map(str::to_owned).or_else(|| message["params"]["requestId"].as_u64().map(|n| n.to_string()));
                 let mut step = reply(json!({}));
-                if let Some(call) = cancelled.and_then(|id| self.calls.remove(&id)) {
+                if let Some(call) = cancelled.and_then(|id| self.calls_by_rpc_id.remove(&id)) {
                     step.events.push(AgentEvent::ToolCancelled { call });
                 }
                 step
@@ -488,7 +488,7 @@ impl Codec for ClaudeCodec {
     }
 
     fn permission(&mut self, reply: &ReplyTo, decision: Decision, input: &Value, message: &str) -> Vec<String> {
-        let (request_id, tool_use_id) = (&reply.0["request_id"], &reply.0["tool_use_id"]);
+        let (request_id, tool_use_id) = (reply.field("request_id"), reply.field("tool_use_id"));
         let response = match decision {
             Decision::Run => json!({ "behavior": "allow", "updatedInput": input, "toolUseID": tool_use_id }),
             Decision::Deny => json!({ "behavior": "deny", "message": message, "toolUseID": tool_use_id }),
@@ -497,13 +497,13 @@ impl Codec for ClaudeCodec {
     }
 
     fn tool_result(&mut self, reply: &ReplyTo, result: &ModelResult) -> Vec<String> {
-        let rpc_id = &reply.0["id"];
-        self.calls.remove(&rpc_id.to_string());
+        let rpc_id = reply.field("id");
+        self.calls_by_rpc_id.remove(&rpc_id.to_string());
         let mut body = json!({ "content": [{ "type": "text", "text": result.text }] });
         if result.is_error {
             body["isError"] = json!(true);
         }
-        vec![mcp_reply(reply.0["request_id"].as_str().unwrap_or_default(), json!({ "jsonrpc": "2.0", "id": rpc_id, "result": body }))]
+        vec![mcp_reply(reply.field("request_id").as_str().unwrap_or_default(), json!({ "jsonrpc": "2.0", "id": rpc_id, "result": body }))]
     }
 
     fn read(&mut self, line: &str) -> Step {
@@ -528,7 +528,7 @@ impl Codec for ClaudeCodec {
                 match request["subtype"].as_str() {
                     Some("mcp_message") if request["server_name"] == SERVER => self.mcp(&request_id, &request["message"]),
                     Some("can_use_tool") => event(AgentEvent::Permission {
-                        reply: ReplyTo(json!({ "request_id": request_id, "tool_use_id": request["tool_use_id"] })),
+                        reply: ReplyTo::new(json!({ "request_id": request_id, "tool_use_id": request["tool_use_id"] })),
                         call: ToolCallId(request["tool_use_id"].as_str().unwrap_or_default().to_owned()),
                         name: tool_name(request["tool_name"].as_str().unwrap_or_default()),
                         input: request.get("input").cloned().unwrap_or(json!({})),
@@ -539,7 +539,7 @@ impl Codec for ClaudeCodec {
             Some("system") if v["subtype"] == "init" => event(AgentEvent::TurnStarted { session_id: v["session_id"].as_str().unwrap_or_default().to_owned() }),
             Some("stream_event") if v["parent_tool_use_id"].is_null() => {
                 let ev = &v["event"];
-                let key = |index: &Value| BlockKey(self.message, index.as_u64().unwrap_or(0) as u32);
+                let key = |index: &Value| BlockKey { message: self.message, index: index.as_u64().unwrap_or(0) as u32 };
                 match ev["type"].as_str() {
                     Some("message_start") => {
                         self.message += 1;
@@ -755,15 +755,15 @@ mod tests {
             events,
             vec![
                 AgentEvent::TurnStarted { session_id: "47f4ae39-701c-42cb-8889-9c74f6359898".into() },
-                AgentEvent::Text { block: BlockKey(1, 0), delta: "391".into() },
-                AgentEvent::TextDone { block: BlockKey(1, 0) },
+                AgentEvent::Text { block: BlockKey { message: 1, index: 0 }, delta: "391".into() },
+                AgentEvent::TextDone { block: BlockKey { message: 1, index: 0 } },
                 AgentEvent::TurnEnded(TurnOutcome::Completed),
             ]
         );
         let second = codec.read(frame(TURN, |v| v["event"]["type"] == "message_start"));
         assert!(second.events.is_empty());
         let delta = codec.read(frame(TURN, |v| v["event"]["delta"]["type"] == "text_delta"));
-        assert_eq!(delta.events, vec![AgentEvent::Text { block: BlockKey(2, 0), delta: "391".into() }], "the next message restarts the block index under a new message number");
+        assert_eq!(delta.events, vec![AgentEvent::Text { block: BlockKey { message: 2, index: 0 }, delta: "391".into() }], "the next message restarts the block index under a new message number");
         let stop_without_text = codec.read(&json!({ "type": "stream_event", "event": { "type": "content_block_stop", "index": 3 }, "parent_tool_use_id": null }).to_string());
         assert_eq!(stop_without_text, Step::default(), "a stop for a block that streamed no text is not a TextDone");
     }

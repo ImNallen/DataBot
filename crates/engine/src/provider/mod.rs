@@ -53,7 +53,17 @@ pub(crate) struct Step {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ReplyTo(pub(crate) Value);
+pub(crate) struct ReplyTo(Value);
+
+impl ReplyTo {
+    pub(crate) fn new(address: Value) -> Self {
+        Self(address)
+    }
+
+    pub(crate) fn field(&self, key: &str) -> &Value {
+        &self.0[key]
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModelResult {
@@ -82,7 +92,10 @@ pub(crate) struct Handshake {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct BlockKey(pub u32, pub u32);
+pub(crate) struct BlockKey {
+    pub message: u32,
+    pub index: u32,
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct Open {

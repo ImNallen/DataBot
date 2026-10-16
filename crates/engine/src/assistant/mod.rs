@@ -188,7 +188,7 @@ impl Shared {
             let seq = inner.next_seq;
             inner.next_seq += 1;
             let (control, control_rx) = mpsc::channel(4);
-            inner.turn = Some(ActiveTurn { db: request.tab.as_ref().and_then(|t| t.db.clone()), control, task: None, abort: None });
+            inner.turn = Some(ActiveTurn { db: request.tab.as_ref().and_then(|t| t.db.clone()), control, supervisor: None, abort: None });
             inner.status = ChatStatus::Running { turn: seq, started_at_ms: now_ms(), phase: TurnPhase::Starting };
             if !inner.stored {
                 inner.stored = true;
@@ -207,9 +207,9 @@ impl Shared {
         let plan = TurnPlan { chat: chat.clone(), turn: seq, options, user_text: text, tab: request.tab, closing };
         let turn = self.spawn(turn::run_turn(self.clone(), plan, control_rx));
         let abort = turn.abort_handle();
-        let task = self.spawn(supervise(self.clone(), chat.clone(), turn));
+        let supervisor = self.spawn(supervise(self.clone(), chat.clone(), turn));
         if let Some(active) = chat.inner.lock().unwrap().turn.as_mut() {
-            active.task = Some(task);
+            active.supervisor = Some(supervisor);
             active.abort = Some(abort);
         }
         Ok(TurnAccepted { turn: seq })
@@ -235,14 +235,14 @@ impl Shared {
                 inner.status = ChatStatus::Deleted;
                 let running = inner.turn.as_mut().map(|t| {
                     let _ = t.control.try_send(TurnControl::Stop { grace: QUIT_GRACE });
-                    (t.task.take(), t.abort.take())
+                    (t.supervisor.take(), t.abort.take())
                 });
                 (Some(inner.record.clone()), running)
             }
             None => (self.store.chat(id).ok().flatten(), None),
         };
-        if let Some((Some(task), abort)) = running
-            && tokio::time::timeout(DELETE_WAIT, task).await.is_err()
+        if let Some((Some(supervisor), abort)) = running
+            && tokio::time::timeout(DELETE_WAIT, supervisor).await.is_err()
         {
             eprintln!("chat {} did not stop within {} s; its turn is aborted", id.0, DELETE_WAIT.as_secs());
             if let Some(abort) = abort {
@@ -266,7 +266,7 @@ impl Shared {
         for chat in self.assistant.all() {
             if let Some(active) = chat.inner.lock().unwrap().turn.as_mut() {
                 let _ = active.control.try_send(TurnControl::Stop { grace: QUIT_GRACE });
-                tasks.extend(active.task.take());
+                tasks.extend(active.supervisor.take());
                 aborts.extend(active.abort.take());
             }
         }

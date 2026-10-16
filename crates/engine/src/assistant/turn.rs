@@ -42,7 +42,7 @@ pub(crate) async fn run_turn(shared: Arc<Shared>, plan: TurnPlan, control: mpsc:
     let mut turn = Turn {
         shared,
         chat: plan.chat,
-        seq: plan.turn,
+        turn: plan.turn,
         options: plan.options,
         user_text: plan.user_text,
         db: plan.tab.as_ref().and_then(|t| t.db.clone()),
@@ -52,7 +52,7 @@ pub(crate) async fn run_turn(shared: Arc<Shared>, plan: TurnPlan, control: mpsc:
         catalog: None,
         texts: Vec::new(),
         tools: Vec::new(),
-        stopping: None,
+        stop_deadline: None,
         session_id: None,
         agent: None,
     };
@@ -63,7 +63,7 @@ pub(crate) async fn run_turn(shared: Arc<Shared>, plan: TurnPlan, control: mpsc:
 struct Turn {
     shared: Arc<Shared>,
     chat: Arc<Chat>,
-    seq: u32,
+    turn: u32,
     options: ChatOptions,
     user_text: String,
     tab: Option<TabContext>,
@@ -73,7 +73,7 @@ struct Turn {
     catalog: Option<Arc<Catalog>>,
     texts: Vec<TextState>,
     tools: Vec<ToolState>,
-    stopping: Option<Instant>,
+    stop_deadline: Option<Instant>,
     session_id: Option<String>,
     agent: Option<Agent>,
 }
@@ -181,7 +181,7 @@ impl Turn {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut streamed = false;
         let outcome = loop {
-            let deadline = self.stopping.unwrap_or_else(|| Instant::now() + FAR_FUTURE);
+            let deadline = self.stop_deadline.unwrap_or_else(|| Instant::now() + FAR_FUTURE);
             let ended = tokio::select! {
                 next = agent.next() => match next {
                     Next::Eof { code } => Some(Attempt::Done(TurnOutcome::Failed { error: AgentError::Exited { code, detail: agent.stderr_tail() } })),
@@ -205,7 +205,7 @@ impl Turn {
                     }
                     None
                 }
-                Some(TurnControl::Stop { grace }) = control.recv(), if self.stopping.is_none() => {
+                Some(TurnControl::Stop { grace }) = control.recv(), if self.stop_deadline.is_none() => {
                     self.on_stop(&mut agent, grace).await;
                     None
                 }
@@ -213,7 +213,7 @@ impl Turn {
                     self.publish_texts(false);
                     None
                 }
-                _ = tokio::time::sleep_until(deadline.into()), if self.stopping.is_some() => Some(Attempt::Done(TurnOutcome::Stopped)),
+                _ = tokio::time::sleep_until(deadline.into()), if self.stop_deadline.is_some() => Some(Attempt::Done(TurnOutcome::Stopped)),
             };
             if let Err(e) = agent.flush().await {
                 eprintln!("chat {} write failed: {e}", self.chat.id.0);
@@ -272,7 +272,7 @@ impl Turn {
                 RunTarget::Selection { from, to } => sql::ByteTarget::Selection { from: map.from_utf16(from), to: map.from_utf16(to) },
             };
             let spans = sql::pick(&sql::split_statements(&t.text), &t.text, target);
-            Some((spans.first()?.start, spans.last()?.end))
+            Some(sql::StmtSpan { start: spans.first()?.start, end: spans.last()?.end })
         });
         let selected = matches!(self.tab.as_ref().map(|t| t.target), Some(RunTarget::Selection { from, to }) if from.0 < to.0);
         let last_error = self.tab.as_ref().and_then(|t| self.last_run_error(t));
@@ -306,7 +306,7 @@ impl Turn {
 
     fn attachment(&self) -> Option<Attachment> {
         let inner = self.chat.inner.lock().unwrap();
-        match inner.live.get(&self.seq).map(|s| &s.entry) {
+        match inner.live.get(&self.turn).map(|s| &s.entry) {
             Some(Entry::User { attachment, .. }) => attachment.clone(),
             _ => None,
         }
@@ -422,9 +422,9 @@ impl Turn {
             state.dirty = false;
             let entry = Entry::Text { blocks: resolve_blocks(reply::parse_text(&state.text, state.done).blocks, self.catalog.as_deref()), done: state.done };
             if state.done {
-                self.chat.store_entry(&self.shared, state.seq, self.seq, &entry);
+                self.chat.store_entry(&self.shared, state.seq, self.turn, &entry);
             }
-            self.chat.publish_entry(&self.shared, state.seq, self.seq, entry);
+            self.chat.publish_entry(&self.shared, state.seq, self.turn, entry);
         }
     }
 
@@ -442,8 +442,8 @@ impl Turn {
         let tool = tools::describe(name, input, self.catalog.as_deref());
         self.tools.push(ToolState { call: call.clone(), seq, input: input.clone(), tool: tool.clone(), status: ToolStatus::Running, running: None });
         let entry = Entry::Tool { call: call.clone(), tool, status: ToolStatus::Running };
-        self.chat.store_entry(&self.shared, seq, self.seq, &entry);
-        self.chat.publish_entry(&self.shared, seq, self.seq, entry);
+        self.chat.store_entry(&self.shared, seq, self.turn, &entry);
+        self.chat.publish_entry(&self.shared, seq, self.turn, entry);
     }
 
     fn tool_mut(&mut self, call: &ToolCallId) -> Option<&mut ToolState> {
@@ -454,8 +454,8 @@ impl Turn {
         let Some(state) = self.tool_mut(call) else { return };
         state.status = status.clone();
         let (seq, entry) = (state.seq, Entry::Tool { call: call.clone(), tool: state.tool.clone(), status });
-        self.chat.store_entry(&self.shared, seq, self.seq, &entry);
-        self.chat.publish_entry(&self.shared, seq, self.seq, entry);
+        self.chat.store_entry(&self.shared, seq, self.turn, &entry);
+        self.chat.publish_entry(&self.shared, seq, self.turn, entry);
     }
 
     fn set_phase(&self, phase: TurnPhase) {
@@ -476,15 +476,15 @@ impl Turn {
     async fn on_gate(&mut self, agent: &mut Agent, site: Site, call: ToolCallId, name: &str, input: Value, waits: &mut Waits, execs: &mut Execs) {
         self.ensure_tool(&call, name, &input);
         let parsed = tools::parse_call(name, &input);
-        if self.stopping.is_some() {
+        if self.stop_deadline.is_some() {
             return self.settle(agent, site, call, parsed, Err(Refusal::Stopped), execs).await;
         }
         let ask = tools::policy(&parsed, self.chat.permission());
         match self.chat.gate(&self.shared.assistant, &call, &input, &ask) {
             Gated::Run => self.settle(agent, site, call, parsed, Ok(()), execs).await,
             Gated::Deny(why) => self.settle(agent, site, call, parsed, Err(why), execs).await,
-            Gated::Wait { approval, answer, fresh } => {
-                if fresh && let Ask::User(reason) = ask {
+            Gated::Wait { approval, answer, created_here } => {
+                if created_here && let Ask::User(reason) = ask {
                     self.set_tool_status(&call, ToolStatus::AwaitingApproval { approval, reason });
                     self.refresh_phase();
                 }
@@ -554,7 +554,7 @@ impl Turn {
     }
 
     async fn on_stop(&mut self, agent: &mut Agent, grace: Duration) {
-        self.stopping = Some(Instant::now() + grace);
+        self.stop_deadline = Some(Instant::now() + grace);
         self.chat.deny_pending(Refusal::Stopped);
         let running: Vec<(ToolCallId, ReplyTo, AbortHandle)> = self.tools.iter_mut().filter_map(|t| t.running.take().map(|(reply, abort)| (t.call.clone(), reply, abort))).collect();
         for (call, reply, abort) in running {
@@ -569,15 +569,15 @@ impl Turn {
     }
 
     fn recap(&self) -> String {
-        let earlier: Vec<(u32, u32, Entry)> = self.shared.store.chat_entries(self.chat.id).unwrap_or_default().into_iter().filter(|(_, turn, _)| *turn != self.seq).collect();
+        let earlier: Vec<(u32, u32, Entry)> = self.shared.store.chat_entries(self.chat.id).unwrap_or_default().into_iter().filter(|(_, turn, _)| *turn != self.turn).collect();
         reply::recap(&earlier, super::RECAP_MAX_CHARS)
     }
 
     fn notice(&mut self, text: String) {
         let seq = self.next_seq();
         let entry = Entry::Notice { text };
-        self.chat.store_entry(&self.shared, seq, self.seq, &entry);
-        self.chat.publish_entry(&self.shared, seq, self.seq, entry);
+        self.chat.store_entry(&self.shared, seq, self.turn, &entry);
+        self.chat.publish_entry(&self.shared, seq, self.turn, entry);
     }
 
     async fn finish(&mut self, outcome: TurnOutcome) {
@@ -599,8 +599,8 @@ impl Turn {
         let suggestions = if outcome == TurnOutcome::Completed { self.texts.last().map(|t| reply::parse_text(&t.text, true).followups).unwrap_or_default() } else { Vec::new() };
         let seq = self.next_seq();
         let end = Entry::End { at_ms: now_ms(), outcome: outcome.clone(), suggestions };
-        self.chat.store_entry(&self.shared, seq, self.seq, &end);
-        self.chat.publish_entry(&self.shared, seq, self.seq, end);
+        self.chat.store_entry(&self.shared, seq, self.turn, &end);
+        self.chat.publish_entry(&self.shared, seq, self.turn, end);
         let closing = self.agent.take().map(|agent| Closing::start(&self.shared, agent));
         {
             let mut inner = self.chat.inner.lock().unwrap();

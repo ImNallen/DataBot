@@ -1,5 +1,6 @@
 use crate::model::{Attachment, Catalog, DatabaseRef, RelKind, Relation};
 use crate::results::ResultSet;
+use crate::sql::StmtSpan;
 
 pub(crate) const CONTEXT_MAX: usize = 28_000;
 const TAB_SQL_MAX: usize = 8_000;
@@ -20,7 +21,7 @@ pub(crate) struct ConnectionFacts<'a> {
 pub(crate) struct TabFacts<'a> {
     pub title: &'a str,
     pub text: &'a str,
-    pub picked: Option<(usize, usize)>,
+    pub picked: Option<StmtSpan>,
     pub selected: bool,
     pub last_error: Option<&'a str>,
 }
@@ -68,9 +69,9 @@ pub(crate) fn build(input: &ContextInput<'_>) -> String {
                 out.push('\n');
             }
         }
-        if let Some((from, to)) = tab.picked {
+        if let Some(picked) = tab.picked {
             out.push_str(if tab.selected { "Selected statement:\n" } else { "Statement at the cursor:\n" });
-            out.push_str(&cut(&tab.text[from..to], STATEMENT_MAX));
+            out.push_str(&cut(picked.text(tab.text), STATEMENT_MAX));
             out.push('\n');
         }
         if let Some(error) = tab.last_error {
@@ -100,11 +101,11 @@ pub(crate) fn build(input: &ContextInput<'_>) -> String {
     out
 }
 
-fn tab_sql(text: &str, picked: Option<(usize, usize)>) -> (String, bool) {
+fn tab_sql(text: &str, picked: Option<StmtSpan>) -> (String, bool) {
     if text.chars().count() <= TAB_SQL_MAX {
         return (text.to_owned(), false);
     }
-    let (from, to) = picked.unwrap_or((0, 0));
+    let (from, to) = picked.map_or((0, 0), |p| (p.start, p.end));
     let start = text[..from].char_indices().rev().nth(TAB_SQL_WINDOW - 1).map_or(0, |(i, _)| i);
     let end = text[to..].char_indices().nth(TAB_SQL_WINDOW).map_or(text.len(), |(i, _)| to + i);
     let mut out = String::new();
@@ -253,7 +254,7 @@ mod tests {
         let c = catalog(2);
         let db = c.db.clone();
         let text = "select 1;\nselect 2 frm orders";
-        let tab = TabFacts { title: "scratch.sql", text, picked: Some((10, text.len())), selected: false, last_error: Some("syntax error at or near \"orders\" (line 2, column 10)") };
+        let tab = TabFacts { title: "scratch.sql", text, picked: Some(StmtSpan { start: 10, end: text.len() }), selected: false, last_error: Some("syntax error at or near \"orders\" (line 2, column 10)") };
         let built = build(&input(&c, &db, Some(tab), None));
         assert_eq!(
             built,
@@ -286,7 +287,7 @@ mod tests {
         let at = filler.len();
         let c = catalog(1);
         let db = c.db.clone();
-        let tab = TabFacts { title: "long.sql", text: &text, picked: Some((at, at + 14)), selected: true, last_error: None };
+        let tab = TabFacts { title: "long.sql", text: &text, picked: Some(StmtSpan { start: at, end: at + 14 }), selected: true, last_error: None };
         let built = build(&input(&c, &db, Some(tab), None));
         assert!(built.contains("Tab SQL (the part around the cursor):\n…\n"), "{}", &built[..300]);
         assert!(built.contains("select 'here';") && built.contains("\n…\nSelected statement:\nselect 'here';\n"));
@@ -299,7 +300,7 @@ mod tests {
         let text = format!("select '{}'", "y".repeat(5_000));
         let c = catalog(1);
         let db = c.db.clone();
-        let tab = TabFacts { title: "t.sql", text: &text, picked: Some((0, text.len())), selected: false, last_error: None };
+        let tab = TabFacts { title: "t.sql", text: &text, picked: Some(StmtSpan { start: 0, end: text.len() }), selected: false, last_error: None };
         let built = build(&input(&c, &db, Some(tab), None));
         let statement = built.split("Statement at the cursor:\n").nth(1).unwrap().lines().next().unwrap();
         assert_eq!(statement.chars().count(), STATEMENT_MAX + 1);
@@ -312,7 +313,7 @@ mod tests {
         let text = format!("select '{}'", "z".repeat(CONTEXT_MAX));
         let c = catalog(1);
         let db = c.db.clone();
-        let tab = TabFacts { title: "t.sql", text: &text, picked: Some((0, text.len())), selected: false, last_error: None };
+        let tab = TabFacts { title: "t.sql", text: &text, picked: Some(StmtSpan { start: 0, end: text.len() }), selected: false, last_error: None };
         let built = build(&input(&c, &db, Some(tab), None));
         assert_eq!(built.chars().count(), CONTEXT_MAX);
         assert!(built.ends_with("z…\n</l1_context>"), "{}", &built[built.len() - 40..]);

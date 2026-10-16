@@ -44,7 +44,7 @@ impl ChatInner {
 pub(crate) struct ActiveTurn {
     pub db: Option<DatabaseRef>,
     pub control: mpsc::Sender<TurnControl>,
-    pub task: Option<JoinHandle<()>>,
+    pub supervisor: Option<JoinHandle<()>>,
     pub abort: Option<AbortHandle>,
 }
 
@@ -124,7 +124,7 @@ impl Ledger {
 pub(crate) enum Gated {
     Run,
     Deny(Refusal),
-    Wait { approval: ApprovalId, answer: watch::Receiver<Option<Verdict>>, fresh: bool },
+    Wait { approval: ApprovalId, answer: watch::Receiver<Option<Verdict>>, created_here: bool },
 }
 
 impl Chat {
@@ -145,7 +145,7 @@ impl Chat {
         match inner.ledger.calls.get(call) {
             Some(Gate::Run { input: approved }) => return if approved == input { Gated::Run } else { Gated::Deny(Refusal::Mismatch) },
             Some(Gate::Denied { why }) => return Gated::Deny(why.clone()),
-            Some(Gate::Pending { approval, answer, .. }) => return Gated::Wait { approval: *approval, answer: answer.subscribe(), fresh: false },
+            Some(Gate::Pending { approval, answer, .. }) => return Gated::Wait { approval: *approval, answer: answer.subscribe(), created_here: false },
             None => {}
         }
         match ask {
@@ -162,7 +162,7 @@ impl Chat {
                 let approval = assistant.next_approval();
                 let (answer, receiver) = watch::channel(None);
                 inner.ledger.calls.insert(call.clone(), Gate::Pending { approval, input: input.clone(), answer });
-                Gated::Wait { approval, answer: receiver, fresh: true }
+                Gated::Wait { approval, answer: receiver, created_here: true }
             }
         }
     }

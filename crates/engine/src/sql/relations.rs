@@ -23,7 +23,7 @@ struct Level {
 
 const CLAUSES: [&str; 17] = ["WHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT", "WINDOW", "FETCH", "FOR", "RETURNING", "SET", "VALUES", "SELECT", "ON"];
 
-const READ_VERBS: [&str; 6] = ["SELECT", "WITH", "VALUES", "TABLE", "SHOW", "EXPLAIN"];
+const RUN_QUERY_VERBS: [&str; 6] = ["SELECT", "WITH", "VALUES", "TABLE", "SHOW", "EXPLAIN"];
 
 /// Whether one statement may run with nobody watching. `READ ONLY` stops writes but not a call
 /// that acts outside the transaction, so the answer is closed by default: only a read whose
@@ -343,7 +343,7 @@ pub fn is_read_statement(sql: &str) -> bool {
     let stmt = span.text(sql);
     let toks = tokens(stmt);
     let leads_with_read = match toks.first() {
-        Some(Token::Word(w)) => READ_VERBS.iter().any(|v| w.eq_ignore_ascii_case(v)),
+        Some(Token::Word(w)) => RUN_QUERY_VERBS.iter().any(|v| w.eq_ignore_ascii_case(v)),
         Some(Token::Open) => true,
         _ => false,
     };
