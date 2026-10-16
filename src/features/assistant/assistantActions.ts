@@ -4,8 +4,11 @@ import {
   type ApprovalId,
   type ChatId,
   type ChatOptions,
+  type ChatState,
   type DatabaseRef,
   type Decision,
+  type EffortId,
+  type ModelOption,
   type ResultRef,
   type RunState,
   type TabContext,
@@ -28,6 +31,7 @@ const opening = new Map<ChatId, Promise<void>>();
 export function openChat(id: ChatId): Promise<void> {
   const inFlight = opening.get(id);
   if (inFlight) return inFlight;
+  useLive.getState().seedTranscript(id);
   const open = commands
     .assistantOpen(id)
     .then((res) => {
@@ -96,6 +100,14 @@ export async function answerApproval(chatId: ChatId, approval: ApprovalId, decis
   if (res.status === "error") notify(approveErrorText(res.error));
 }
 
+/** The effort a chat keeps when it switches to `model`. */
+export function effortFor(model: ModelOption, current: EffortId | null): EffortId | null {
+  const ids = model.efforts.map((e) => e.id);
+  if (current !== null && ids.includes(current)) return current;
+  if (ids.includes("high")) return "high";
+  return ids.at(-1) ?? null;
+}
+
 export async function configureChat(chatId: ChatId, options: ChatOptions): Promise<void> {
   const res = await commands.assistantConfigure(chatId, options);
   if (res.status === "error") return notify(chatErrorText(res.error));
@@ -103,8 +115,14 @@ export async function configureChat(chatId: ChatId, options: ChatOptions): Promi
 }
 
 /** The engine publishes the tombstone; the panel moves to a new chat when the one it shows is deleted. */
-export function deleteChat(chatId: ChatId): void {
-  void commands.assistantDelete(chatId);
+export function confirmDeleteChat(chat: ChatState): void {
+  ws().open({
+    kind: "confirm",
+    title: "Delete this chat?",
+    body: `This removes the chat from L1 Data. ${chat.options.provider} keeps its own copy of the conversation in its config directory.`,
+    confirmLabel: "Delete",
+    onConfirm: () => void commands.assistantDelete(chat.id),
+  });
 }
 
 export function runInNewTab(sql: string, db: DatabaseRef | null): void {
@@ -130,14 +148,20 @@ export function replaceTabSql(sql: string): void {
   focusEditor();
 }
 
-/** Reopens an opened chat once when it goes idle holding fewer entries than the engine reports, which means a lagged broadcast dropped one. */
-export function startAssistantSync(): void {
-  const reopenedAt = new Map<ChatId, number>();
-  useLive.subscribe((s, prev) => {
+/**
+ * Reopens an opened chat when it goes idle holding fewer entries than the engine reports, which means a lagged broadcast dropped one.
+ * Each gap gets one reopen, keyed on the counts rather than the rev, so a reopen that leaves the gap open does not loop.
+ */
+export function startAssistantSync(): () => void {
+  const reopenedGap = new Map<ChatId, string>();
+  return useLive.subscribe((s, prev) => {
     if (s.chats === prev.chats) return;
     for (const chat of Object.values(s.chats)) {
-      if (chat === prev.chats[chat.id] || reopenedAt.get(chat.id) === chat.rev || !needsResync(chat, s.transcripts[chat.id])) continue;
-      reopenedAt.set(chat.id, chat.rev);
+      const held = s.transcripts[chat.id];
+      if (chat === prev.chats[chat.id] || !held || !needsResync(chat, held)) continue;
+      const gap = `${chat.entryCount}:${Object.keys(held).length}`;
+      if (reopenedGap.get(chat.id) === gap) continue;
+      reopenedGap.set(chat.id, gap);
       void openChat(chat.id);
     }
   });

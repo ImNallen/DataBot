@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import type { ChatState, Entry, EntrySnapshot, ToolStatus, ToolUse } from "../ipc/bindings";
-import { groupTurns, needsResync, toolLine } from "./transcript";
+import type { ChatState, ChatStatus, Entry, EntrySnapshot, ToolStatus, ToolUse, TurnPhase } from "../ipc/bindings";
+import { awaitsApproval, groupTurns, needsResync, runningNote, toolLine } from "./transcript";
 
 const CHAT = "6f1c2d3e-0000-4000-8000-000000000001";
 const snap = (seq: number, turn: number, entry: Entry): EntrySnapshot => ({ chatId: CHAT, seq, rev: 100 + seq, turn, entry });
@@ -93,4 +93,15 @@ it("asks for a reopen only when an opened, idle chat reports more entries than t
     needsResync(chat({ kind: "Running", turn: 0, startedAtMs: 1, phase: "Working" }, 3), two),
     needsResync(chat({ kind: "Idle" }, 3), undefined),
   ]).toEqual([true, false, false, false]);
+});
+
+it("notes a running chat for the history list, and says when it waits for approval", () => {
+  const running = (phase: TurnPhase): ChatStatus => ({ kind: "Running", turn: 0, startedAtMs: 1, phase });
+  const statuses: ChatStatus[] = [{ kind: "Idle" }, running("Starting"), running("Working"), running("AwaitingApproval")];
+  expect(statuses.map((s) => [runningNote(s), awaitsApproval(chat(s, 2))])).toEqual([
+    [null, false],
+    ["Running", false],
+    ["Running", false],
+    ["Waiting for approval", true],
+  ]);
 });

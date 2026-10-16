@@ -4,6 +4,7 @@ import type { ChatState, ChatStatus, Entry, EntrySnapshot, ProbeOutcome, Provide
 import { useLive, type LiveData } from "../../state/live";
 import { useWorkspace } from "../../state/workspace";
 import { AssistantPanel } from "./AssistantPanel";
+import { ChatHistory } from "./ChatHistory";
 
 const initialLive = { ...useLive.getInitialState() };
 const initialWorkspace = { ...useWorkspace.getInitialState() };
@@ -155,4 +156,21 @@ it("ends a failed turn with its error and the fix, and warns above the composer 
   const banner = section(failed, "assistant-provider-banner", "assistant-input") ?? "";
   expect(text(banner)).toMatch(/^Claude is signed out\. Run claude auth login in a terminal, then refresh\b/);
   expect(banner).toMatch(/>refresh<\/button>\.<\/p><button[^>]*>Open settings<\/button>/);
+});
+
+it("dots the history button while any chat waits for approval", () => {
+  const OTHER = "0b7d5a52-9f1e-4c55-9d43-3c1f3c6e2a11";
+  const chat = (id: string, status: ChatStatus): ChatState => ({ id, rev: 1, title: "t", updatedAtMs: 1, options: { provider: "Claude", model: "opus", effort: "high", permission: "AskFirst" }, status, entryCount: 1 });
+  const history = (status: ChatStatus) => {
+    Object.assign(useLive.getInitialState(), { chats: { [ID]: chat(ID, { kind: "Idle" }), [OTHER]: chat(OTHER, status) } });
+    const html = renderToStaticMarkup(<ChatHistory />);
+    return [/aria-label="([^"]*)"/.exec(html)?.[1], html.includes('data-testid="assistant-history-waiting"')];
+  };
+  expect([
+    history({ kind: "Running", turn: 0, startedAtMs: 1, phase: "AwaitingApproval" }),
+    history({ kind: "Running", turn: 0, startedAtMs: 1, phase: "Working" }),
+  ]).toEqual([
+    ["Chat history, a chat is waiting for approval", true],
+    ["Chat history", false],
+  ]);
 });

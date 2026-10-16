@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AppEvent, BootSnapshot, ChatState, ChatStatus, ConnectionState, ConsoleState, DatabaseState, EntrySnapshot, OutputEntry, ProviderState } from "../ipc/bindings";
-import { applyEvent, emptyLive, hydrateChatLive, hydrateLive, OUTPUT_LIMIT, wantedCatalogs, type LiveData } from "./live";
+import { applyEvent, emptyLive, hydrateChatLive, hydrateLive, OUTPUT_LIMIT, seedTranscriptLive, wantedCatalogs, type LiveData } from "./live";
 
 const CONN = "c0000000-0000-4000-8000-000000000001";
 const TAB = "t0000000-0000-4000-8000-000000000001";
@@ -124,6 +124,19 @@ describe("live.apply", () => {
     s = hydrateChatLive(s, { state: chatAt(3), entries: [entryAt(0, 1, "first"), entryAt(1, 8, "older")] });
     expect(s.chats).toEqual({ [CHAT]: chatAt(3) });
     expect(s.transcripts).toEqual({ [CHAT]: { 0: entryAt(0, 1, "first"), 1: entryAt(1, 9, "newer") } });
+  });
+
+  it("a seeded transcript keeps an entry event that raced the open, and the older view hydrated on top does not replace it", () => {
+    let s = seedTranscriptLive(emptyLive, CHAT);
+    s = applyEvent(s, { kind: "ChatEntryChanged", ...entryAt(1, 9, "newer") });
+    s = hydrateChatLive(s, { state: chatAt(3), entries: [entryAt(0, 1, "first"), entryAt(1, 8, "older")] });
+    expect(s.transcripts).toEqual({ [CHAT]: { 0: entryAt(0, 1, "first"), 1: entryAt(1, 9, "newer") } });
+  });
+
+  it("seeding leaves a held transcript as it is and holds nothing for a deleted chat", () => {
+    const held = hydrateChatLive(emptyLive, { state: chatAt(1), entries: [entryAt(0, 1, "first")] });
+    const deleted = applyEvent(emptyLive, { kind: "ChatChanged", ...chatAt(7, { kind: "Deleted" }) });
+    expect([seedTranscriptLive(held, CHAT).transcripts, seedTranscriptLive(deleted, CHAT).transcripts]).toEqual([{ [CHAT]: { 0: entryAt(0, 1, "first") } }, {}]);
   });
 
   it("a deleted chat drops its transcript, and nothing older brings it back", () => {

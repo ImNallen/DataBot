@@ -3,9 +3,10 @@ import { IconHistory, IconTrash } from "@tabler/icons-react";
 import { useMemo } from "react";
 import type { ChatState } from "../../ipc/bindings";
 import { useLive } from "../../state/live";
+import { awaitsApproval, runningNote } from "../../state/transcript";
 import { useWorkspace } from "../../state/workspace";
 import { cx, IconButton, MenuContent, StatusDot } from "../../ui/primitives";
-import { deleteChat, showChat } from "./assistantActions";
+import { confirmDeleteChat, showChat } from "./assistantActions";
 import { timeAgo } from "./assistantText";
 
 /** Stored chats, newest first. Drafts are not stored and tombstones are gone. */
@@ -16,6 +17,7 @@ function listedChats(chats: Record<string, ChatState>): ChatState[] {
 }
 
 function HistoryItem({ chat, current, now }: { chat: ChatState; current: boolean; now: number }) {
+  const note = runningNote(chat.status);
   return (
     <Menu.Item
       data-testid={`chat-history-item-${chat.id}`}
@@ -23,23 +25,25 @@ function HistoryItem({ chat, current, now }: { chat: ChatState; current: boolean
       onKeyDown={(e) => {
         if (e.key !== "Delete" && e.key !== "Backspace") return;
         e.preventDefault();
-        deleteChat(chat.id);
+        confirmDeleteChat(chat);
       }}
       className={cx(
         "group flex h-8 cursor-default items-center gap-2 rounded-md pr-1 pl-2 text-ui-13 outline-none data-[highlighted]:bg-selected",
         current ? "text-fg" : "text-muted data-[highlighted]:text-fg",
       )}
     >
-      <span className="grid w-1.5 shrink-0 place-items-center">{chat.status.kind === "Running" && <StatusDot tone="pending" />}</span>
+      <span className="grid w-1.5 shrink-0 place-items-center">{note && <StatusDot tone="pending" />}</span>
       <span className="min-w-0 flex-1 truncate">{chat.title || "Untitled chat"}</span>
-      <span className="shrink-0 text-ui-11.5 text-dim group-hover:hidden group-data-[highlighted]:hidden">{timeAgo(now, chat.updatedAtMs)}</span>
+      <span className={cx("shrink-0 text-ui-11.5 group-hover:hidden group-data-[highlighted]:hidden", awaitsApproval(chat) ? "text-amber" : "text-dim")}>
+        {note ?? timeAgo(now, chat.updatedAtMs)}
+      </span>
       <IconButton
         aria-label={`Delete ${chat.title || "chat"}`}
         title="Delete chat"
         className="hidden size-6 group-hover:inline-grid group-data-[highlighted]:inline-grid"
         onClick={(e) => {
           e.stopPropagation();
-          deleteChat(chat.id);
+          confirmDeleteChat(chat);
         }}
       >
         <IconTrash size={13} />
@@ -52,12 +56,19 @@ export function ChatHistory() {
   const chats = useLive((s) => s.chats);
   const listed = useMemo(() => listedChats(chats), [chats]);
   const current = useWorkspace((s) => s.layout.assistantChat);
+  const waiting = useLive((s) => Object.values(s.chats).some(awaitsApproval));
+  const label = waiting ? "Chat history, a chat is waiting for approval" : "Chat history";
   const now = Date.now();
   return (
     <Menu.Root modal={false}>
       <Menu.Trigger asChild>
-        <IconButton data-testid="assistant-history" aria-label="Chat history" title="Chat history">
+        <IconButton data-testid="assistant-history" aria-label={label} title={label} className="relative">
           <IconHistory size={16} />
+          {waiting && (
+            <span data-testid="assistant-history-waiting" className="absolute top-1 right-1 flex">
+              <StatusDot tone="pending" />
+            </span>
+          )}
         </IconButton>
       </Menu.Trigger>
       <MenuContent align="end" className="max-h-[420px] w-[300px] overflow-y-auto">

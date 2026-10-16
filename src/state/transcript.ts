@@ -1,4 +1,4 @@
-import type { ChatState, Entry, EntrySnapshot, ToolStatus, ToolUse } from "../ipc/bindings";
+import type { ChatState, ChatStatus, Entry, EntrySnapshot, ToolStatus, ToolUse, TurnPhase } from "../ipc/bindings";
 import { formatElapsed, pluralRows } from "../features/results/format";
 
 export type UserEntry = Extract<Entry, { kind: "User" }>;
@@ -33,6 +33,21 @@ export function groupTurns(entries: Record<number, EntrySnapshot> | undefined): 
 /** An idle chat that reports more entries than the panel holds lost a broadcast, so it needs reopening. */
 export function needsResync(chat: ChatState, held: Record<number, EntrySnapshot> | undefined): boolean {
   return chat.status.kind === "Idle" && held !== undefined && chat.entryCount > Object.keys(held).length;
+}
+
+export function awaitsApproval(chat: ChatState): boolean {
+  return chat.status.kind === "Running" && chat.status.phase === "AwaitingApproval";
+}
+
+const PHASE_NOTES = {
+  Starting: "Running",
+  Working: "Running",
+  AwaitingApproval: "Waiting for approval",
+} satisfies Record<TurnPhase, string>;
+
+/** What the history list shows in place of a chat's age while its turn runs. */
+export function runningNote(status: ChatStatus): string | null {
+  return status.kind === "Running" ? PHASE_NOTES[status.phase] : null;
 }
 
 const names = (xs: readonly string[]) => xs.join(", ");

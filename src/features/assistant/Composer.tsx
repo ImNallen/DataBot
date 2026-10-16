@@ -6,7 +6,7 @@ import { useLive } from "../../state/live";
 import { useWorkspace } from "../../state/workspace";
 import { cx, IconButton, MenuContent, MenuItem, MenuLabel } from "../../ui/primitives";
 import { pluralRows } from "../results/format";
-import { configureChat, gridResult, sendMessage, stopTurn } from "./assistantActions";
+import { configureChat, effortFor, gridResult, sendMessage, stopTurn } from "./assistantActions";
 import { providerBanner, type ProviderBanner } from "./assistantText";
 import { PROVIDER_ICONS } from "./providerIcons";
 
@@ -47,13 +47,8 @@ function Pickers({ chat, models }: { chat: ChatState; models: ModelOption[] }) {
     <div className="flex min-w-0 items-center">
       <Picker testId="assistant-model" label={model?.label ?? options.model} icon={<Icon size={13} />}>
         {models.length === 0 && <MenuLabel>Models appear once the provider is checked.</MenuLabel>}
-        {/* TODO(contract): ModelOption names no default effort, so a switch to a model without the current effort sends null, the CLI's own default. */}
         {models.map((m) => (
-          <MenuItem
-            key={m.id}
-            checked={m.id === options.model}
-            onSelect={() => configure({ model: m.id, effort: m.efforts.some((e) => e.id === options.effort) ? options.effort : null })}
-          >
+          <MenuItem key={m.id} checked={m.id === options.model} onSelect={() => configure({ model: m.id, effort: effortFor(m, options.effort) })}>
             {m.label}
             {m.recommended && <span className="ml-auto pl-4 text-ui-11.5 text-dim">Recommended</span>}
           </MenuItem>

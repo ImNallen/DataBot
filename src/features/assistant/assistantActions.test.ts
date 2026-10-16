@@ -2,11 +2,11 @@ import { undo } from "@codemirror/commands";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, expect, it, vi } from "vitest";
-import type { ConsoleState, ResultMeta, SendRequest } from "../../ipc/bindings";
+import type { ChatState, ChatStatus, ConsoleState, EntrySnapshot, ModelOption, ResultMeta, SendRequest } from "../../ipc/bindings";
 import { useLive } from "../../state/live";
 import { useWorkspace, type Tab } from "../../state/workspace";
 import { dropEditor, editorStateOf, insertAtCursor, seedEditor, textOf } from "../editor/editorStates";
-import { replaceTabSql, sendMessage, tabContext } from "./assistantActions";
+import { confirmDeleteChat, effortFor, openChat, replaceTabSql, sendMessage, startAssistantSync, tabContext } from "./assistantActions";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -113,4 +113,86 @@ it("replaces the active tab's SQL as one edit that a single undo reverts", () =>
   let after = editorStateOf(TAB.id);
   undo({ state: after, dispatch: (tr) => void (after = tr.state) });
   expect(after.doc.toString()).toBe("select 1;\nselect 2;");
+});
+
+const CHAT = "0b7d5a52-9f1e-4c55-9d43-3c1f3c6e2a10";
+const IDLE: ChatStatus = { kind: "Idle" };
+const chatAt = (rev: number, status: ChatStatus, entryCount: number): ChatState => ({
+  id: CHAT,
+  rev,
+  title: "Which regions grew",
+  updatedAtMs: 1,
+  options: { provider: "Claude", model: "opus", effort: "high", permission: "AskFirst" },
+  status,
+  entryCount,
+});
+const notice = (seq: number, rev: number, text: string): EntrySnapshot => ({ chatId: CHAT, seq, rev, turn: 0, entry: { kind: "Notice", text } });
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+it("reopens a chat once per gap, even when the reopen leaves the gap open and a newer rev follows", async () => {
+  vi.stubGlobal("window", {});
+  const opened: unknown[] = [];
+  mockIPC((cmd, args) => {
+    if (cmd !== "assistant_open") return;
+    opened.push(args);
+    return { state: chatAt(100 + opened.length, IDLE, 3), entries: [notice(0, 1, "first")] };
+  });
+  const stop = startAssistantSync();
+  try {
+    useLive.setState({ chats: { [CHAT]: chatAt(5, { kind: "Running", turn: 0, startedAtMs: 1, phase: "Working" }, 1) }, transcripts: { [CHAT]: { 0: notice(0, 1, "first") } } });
+    useLive.getState().apply({ kind: "ChatChanged", ...chatAt(6, IDLE, 3) });
+    await settle();
+    useLive.getState().apply({ kind: "ChatChanged", ...chatAt(102, IDLE, 3) });
+    await settle();
+    expect(opened).toEqual([{ chatId: CHAT }]);
+
+    useLive.getState().apply({ kind: "ChatChanged", ...chatAt(200, IDLE, 4) });
+    await settle();
+    expect(opened).toEqual([{ chatId: CHAT }, { chatId: CHAT }]);
+  } finally {
+    stop();
+  }
+});
+
+it("keeps an entry event that arrives while the chat opens over the older copy in the reply", async () => {
+  vi.stubGlobal("window", {});
+  mockIPC((cmd) => {
+    if (cmd !== "assistant_open") return;
+    useLive.getState().apply({ kind: "ChatEntryChanged", ...notice(1, 9, "newer") });
+    return { state: chatAt(8, IDLE, 2), entries: [notice(0, 1, "first"), notice(1, 7, "older")] };
+  });
+  await openChat(CHAT);
+  expect(useLive.getState().transcripts).toEqual({ [CHAT]: { 0: notice(0, 1, "first"), 1: notice(1, 9, "newer") } });
+});
+
+it("deletes a chat only after the user confirms, and says the provider keeps its own copy", async () => {
+  vi.stubGlobal("window", {});
+  const deleted: unknown[] = [];
+  mockIPC((cmd, args) => {
+    if (cmd === "assistant_delete") deleted.push(args);
+  });
+  confirmDeleteChat(chatAt(4, IDLE, 2));
+  const overlay = useWorkspace.getState().overlay;
+  if (overlay.kind !== "confirm") throw new Error(`expected a confirmation, got ${overlay.kind}`);
+  expect([overlay.title, overlay.body, overlay.confirmLabel, deleted.length]).toEqual([
+    "Delete this chat?",
+    "This removes the chat from L1 Data. Claude keeps its own copy of the conversation in its config directory.",
+    "Delete",
+    0,
+  ]);
+  overlay.onConfirm();
+  await settle();
+  expect(deleted).toEqual([{ chatId: CHAT }]);
+});
+
+const model = (...efforts: string[]): ModelOption => ({ id: "m", label: "M", description: "", recommended: false, efforts: efforts.map((id) => ({ id, label: id })) });
+
+it("keeps the effort across a model switch when the model lists it, else high, else the model's last level, else none", () => {
+  expect([
+    effortFor(model("low", "medium", "high", "max"), "max"),
+    effortFor(model("low", "medium", "high"), "max"),
+    effortFor(model("low", "medium", "high"), null),
+    effortFor(model("low", "medium"), "max"),
+    effortFor(model(), "high"),
+  ]).toEqual(["max", "high", "high", "medium", null]);
 });

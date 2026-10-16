@@ -30,13 +30,14 @@ export type LiveData = {
   historyTail: HistoryEntry[];
   providers: Partial<Record<ProviderKind, ProviderState>>;
   chats: Record<ChatId, ChatState>;
-  /** Only chats the panel opened. Entry events for other chats are dropped; opening loads them whole. */
+  /** Only chats the panel opened or is opening. Entry events for other chats are dropped; opening loads them whole. */
   transcripts: Record<ChatId, Record<number, EntrySnapshot>>;
 };
 
 type LiveState = LiveData & {
   hydrate(b: BootSnapshot): void;
   hydrateChat(view: ChatView): void;
+  seedTranscript(id: ChatId): void;
   apply(e: AppEvent): void;
 };
 
@@ -150,9 +151,16 @@ export function hydrateChatLive(s: LiveData, view: ChatView): LiveData {
   return withEntries(next, view.state.id, next.transcripts[view.state.id] ?? {}, view.entries);
 }
 
+/** Holds an empty transcript for a chat about to be opened, so entry events that race `assistant_open` are kept. */
+export function seedTranscriptLive(s: LiveData, id: ChatId): LiveData {
+  if (s.transcripts[id] || s.chats[id]?.status.kind === "Deleted") return s;
+  return { ...s, transcripts: { ...s.transcripts, [id]: {} } };
+}
+
 export const useLive = create<LiveState>()((set) => ({
   ...emptyLive,
   hydrate: (b) => set((s) => hydrateLive(s, b)),
   hydrateChat: (view) => set((s) => hydrateChatLive(s, view)),
+  seedTranscript: (id) => set((s) => seedTranscriptLive(s, id)),
   apply: (e) => set((s) => applyEvent(s, e)),
 }));
