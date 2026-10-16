@@ -615,6 +615,12 @@ impl Engine {
         &self.shared.data_dir
     }
 
+    /// The runtime the engine's tasks run on, for a caller outside any runtime, such as the
+    /// shell's exit handler.
+    pub fn runtime(&self) -> tokio::runtime::Handle {
+        self.shared.runtime.clone()
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<AppEvent> {
         self.shared.events.subscribe()
     }

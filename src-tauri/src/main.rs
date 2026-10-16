@@ -306,8 +306,26 @@ fn main() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running L1 Data");
+        .build(tauri::generate_context!())
+        .expect("error while building L1 Data")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                stop_assistant_processes(app);
+            }
+        });
+}
+
+const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Quit must leave no `claude` behind and must not hang on one that ignores Stop. The exit event
+/// arrives on the main thread, outside the runtime, so the engine's own handle blocks on it; the
+/// timeout is built inside the async block because a tokio timer needs the runtime at creation.
+fn stop_assistant_processes(app: &AppHandle) {
+    let engine = app.state::<Arc<Engine>>();
+    let bounded = engine.runtime().block_on(async { tokio::time::timeout(SHUTDOWN_TIMEOUT, engine.shutdown()).await });
+    if bounded.is_err() {
+        eprintln!("assistant shutdown did not finish within {} s", SHUTDOWN_TIMEOUT.as_secs());
+    }
 }
 
 #[cfg(test)]

@@ -104,5 +104,10 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(ADDR).await.expect("bind dev-bridge port");
     eprintln!("dev-bridge on http://{ADDR} (data dir {})", engine.data_dir().display());
-    axum::serve(listener, app).await.expect("serve");
+    // Not a graceful shutdown: that would wait for the `/events` stream, which never ends.
+    tokio::select! {
+        served = axum::serve(listener, app) => served.expect("serve"),
+        _ = tokio::signal::ctrl_c() => eprintln!("dev-bridge: stopping assistant processes"),
+    }
+    engine.shutdown().await;
 }
