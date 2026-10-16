@@ -190,3 +190,8 @@ export function insertAtCursor(id: TabId, text: string): void {
     return { changes: { from, to, insert: text }, selection: { anchor: from + text.length } };
   });
 }
+
+/** Swaps the whole document in one transaction. Its userEvent keeps history from joining it with recent typing, so one undo restores the old text. */
+export function replaceDoc(id: TabId, text: string): void {
+  updateEditor(id, (state) => ({ changes: { from: 0, to: state.doc.length, insert: text }, selection: { anchor: text.length }, userEvent: "input" }));
+}

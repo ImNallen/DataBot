@@ -137,13 +137,13 @@ export function DialogBackdrop() {
   return <Dialog.Overlay className="motion-fade fixed inset-0 z-40 bg-backdrop/50 backdrop-blur-[6px]" />;
 }
 
-export function MenuContent({ children, align = "start" }: { children: ReactNode; align?: "start" | "end" }) {
+export function MenuContent({ children, align = "start", className }: { children: ReactNode; align?: "start" | "end"; className?: string }) {
   return (
     <Menu.Portal>
       <Menu.Content
         align={align}
         sideOffset={6}
-        className={MENU_PANEL}
+        className={cx(MENU_PANEL, className)}
       >
         {children}
       </Menu.Content>

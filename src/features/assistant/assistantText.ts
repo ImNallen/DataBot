@@ -1,4 +1,6 @@
-import type { ProbeOutcome, ProviderState } from "../../ipc/bindings";
+import type { AgentError, ProbeOutcome, ProviderConfig, ProviderState } from "../../ipc/bindings";
+import type { UserEntry } from "../../state/transcript";
+import { pluralRows } from "../results/format";
 
 /** "just now" under a minute, then whole minutes, hours, or days. */
 export function timeAgo(nowMs: number, atMs: number): string {
@@ -48,4 +50,69 @@ export function outcomeVersion(outcome: ProbeOutcome | null | undefined): string
 export function ignoredFlags(launchArgs: string, ownedFlags: readonly string[]): string[] {
   const words = launchArgs.split(/\s+/).filter(Boolean);
   return ownedFlags.filter((flag) => words.some((w) => w === flag || w.startsWith(`${flag}=`)));
+}
+
+/** How the transcript names a provider: its display name and the command that signs it in. */
+export type ProviderVoice = { name: string; signInCommand: string };
+
+/** A failed turn's line, and whether its fix lives in Settings → Providers or in sending the turn again. */
+export function agentErrorText(e: AgentError, p: ProviderVoice): { text: string; action: "settings" | "retry" } {
+  switch (e.kind) {
+    case "NotFound":
+      return { text: `${p.name} CLI not found at ${e.binary}.`, action: "settings" };
+    case "SignedOut":
+      return { text: `${p.name} is signed out. Run ${p.signInCommand} in a terminal.`, action: "settings" };
+    case "Exited": {
+      const code = e.code === null ? "" : ` (code ${e.code})`;
+      const detail = e.detail.trim();
+      return { text: detail ? `${p.name} exited${code}: ${detail}` : `${p.name} exited${code}.`, action: "retry" };
+    }
+    case "Provider":
+      return { text: e.message, action: "retry" };
+    default: {
+      const unreachable: never = e;
+      return unreachable;
+    }
+  }
+}
+
+/** The dim line under a sent message: where it was asked from and what rode along. */
+export function contextChip(user: UserEntry): string | null {
+  const { context, attachment } = user;
+  const parts: string[] = [];
+  const db = context?.db?.database;
+  const where = context?.connectionName && db ? `${context.connectionName} / ${db}` : (db ?? context?.connectionName);
+  if (where) parts.push(where);
+  if (context?.tabTitle) parts.push(context.tabTitle);
+  if (attachment) parts.push(`${pluralRows(attachment.totalRows)} attached`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+export type ProviderBanner =
+  | { kind: "Off"; name: string }
+  | { kind: "NotFound"; name: string; binary: string }
+  | { kind: "SignedOut"; name: string; command: string }
+  | { kind: "Broken"; name: string; message: string };
+
+/** Why the chat's provider may not answer. Only Off blocks Send, since a probe can be stale. */
+export function providerBanner(config: ProviderConfig | undefined, state: ProviderState | undefined): ProviderBanner | null {
+  if (!config) return null;
+  const name = config.displayName;
+  if (!config.enabled) return { kind: "Off", name };
+  const outcome = state?.outcome;
+  switch (outcome?.kind) {
+    case "NotFound":
+      return { kind: "NotFound", name, binary: outcome.binary };
+    case "SignedOut":
+      return { kind: "SignedOut", name, command: state?.info.signInCommand ?? "" };
+    case "Broken":
+      return { kind: "Broken", name, message: outcome.message };
+    case "Ready":
+    case undefined:
+      return null;
+    default: {
+      const unreachable: never = outcome;
+      return unreachable;
+    }
+  }
 }

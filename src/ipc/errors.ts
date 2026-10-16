@@ -1,4 +1,17 @@
-import type { ApplyError, CatalogError, ConfigureError, ConnectError, DetailError, DisconnectError, ExportError, RunError, TxnError } from "./bindings";
+import type {
+  ApplyError,
+  ApproveError,
+  CatalogError,
+  ChatError,
+  ConfigureError,
+  ConnectError,
+  DetailError,
+  DisconnectError,
+  ExportError,
+  RunError,
+  SendError,
+  TxnError,
+} from "./bindings";
 
 export function connectErrorText(e: ConnectError): string {
   switch (e.kind) {
@@ -142,6 +155,53 @@ export function detailErrorText(e: DetailError): string {
       return e.message;
     default: {
       const unreachable: never = e;
+      return unreachable;
+    }
+  }
+}
+
+export function sendErrorText(e: SendError): string {
+  switch (e.kind) {
+    case "Busy":
+      return "The assistant is still answering. Stop it or wait for it to finish.";
+    case "EmptyMessage":
+      return "Type a message first.";
+    case "ProviderOff":
+      return `${e.provider} is turned off. Turn it on in Settings → Providers.`;
+    case "UnknownModel":
+      return `The model ${e.model} is no longer offered. Pick another model.`;
+    case "AttachmentGone":
+      return "The attached result is gone. Run the query again, then attach it.";
+    case "Store":
+      return `The chat could not be saved. ${e.message}`;
+    default: {
+      const unreachable: never = e;
+      return unreachable;
+    }
+  }
+}
+
+export function chatErrorText(e: ChatError): string {
+  switch (e.kind) {
+    case "UnknownModel":
+      return `The model ${e.model} is no longer offered. Pick another model.`;
+    case "UnsupportedEffort":
+      return `This model has no ${e.effort} effort level.`;
+    case "Store":
+      return `The chat could not be saved. ${e.message}`;
+    default: {
+      const unreachable: never = e;
+      return unreachable;
+    }
+  }
+}
+
+export function approveErrorText(e: ApproveError): string {
+  switch (e.kind) {
+    case "NotPending":
+      return "This query was already answered, stopped, or expired.";
+    default: {
+      const unreachable: never = e.kind;
       return unreachable;
     }
   }

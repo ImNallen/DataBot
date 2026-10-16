@@ -8,6 +8,7 @@ import { startAppearance } from "./shell/appearance";
 import { startTheme } from "./shell/theme";
 import { seedEditor, textOf } from "./features/editor/editorStates";
 import { browseQuery, installRunBehavior, onEditorDocChanged, openSqlTab } from "./features/editor/runActions";
+import { startAssistantSync } from "./features/assistant/assistantActions";
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -52,4 +53,5 @@ export async function boot(): Promise<void> {
   if (snapshot.workspace.tabs.length === 0) openSqlTab();
   startPersistence();
   startCatalogSync();
+  startAssistantSync();
 }
