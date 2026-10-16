@@ -51,8 +51,8 @@ pub(crate) struct ChatInner {
 
 impl ChatInner {
     /// Set by `assistant_delete` under the lock. From then on the turn task's stores and
-    /// publishes are no-ops, so a chat whose rows are gone cannot come back.
-    fn deleted(&self) -> bool {
+    /// publishes are no-ops and a send is `Busy`, so a chat whose rows are gone cannot come back.
+    pub(super) fn deleted(&self) -> bool {
         self.status == ChatStatus::Deleted
     }
 }

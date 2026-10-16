@@ -202,7 +202,7 @@ impl Shared {
         let connection_name = request.tab.as_ref().and_then(|t| t.db.as_ref()).and_then(|db| self.config(db.connection_id)).map(|c| c.name);
         let (seq, control_rx, closing) = {
             let mut inner = chat.inner.lock().unwrap();
-            if inner.turn.is_some() {
+            if inner.turn.is_some() || inner.deleted() {
                 return Err(SendError::Busy);
             }
             let seq = inner.next_seq;

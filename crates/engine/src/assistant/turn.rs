@@ -649,7 +649,9 @@ impl Turn {
             if closing.is_some() {
                 inner.closing = closing;
             }
-            inner.status = ChatStatus::Idle;
+            if !inner.deleted() {
+                inner.status = ChatStatus::Idle;
+            }
             inner.live.clear();
             if let Some(last) = inner.last_context.as_mut()
                 && let Some(session) = &self.session_id

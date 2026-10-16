@@ -967,6 +967,30 @@ async fn delete_stops_the_turn_and_publishes_a_tombstone() {
     h.engine.assistant_delete(chat).await;
 }
 
+#[tokio::test]
+async fn a_chat_being_deleted_stays_deleted_when_its_turn_ends_and_refuses_sends() {
+    let mut h = Harness::open().await;
+    h.use_fake_with("slow", "--fake-linger-ms 500");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "go").await;
+    h.wait_entry(chat, "streaming text", |s| matches!(s.entry, Entry::Text { .. })).await;
+    let sends = async {
+        loop {
+            match h.engine.assistant_send(chat, SendRequest { text: "again".into(), tab: None }).await {
+                Err(SendError::Busy) => tokio::time::sleep(Duration::from_millis(2)).await,
+                other => return other,
+            }
+        }
+    };
+    tokio::select! {
+        () = h.engine.assistant_delete(chat) => {}
+        other = sends => panic!("a send to the chat being deleted returned {other:?}"),
+    }
+    let next = h.wait_chat(chat, "an idle or deleted state", |s| matches!(s.status, ChatStatus::Idle | ChatStatus::Deleted)).await;
+    assert_eq!(next.status, ChatStatus::Deleted, "the stopped turn published Idle after the delete began");
+    assert!(h.engine.boot().chats.is_empty(), "a row came back");
+}
+
 #[cfg(feature = "pg-tests")]
 mod pg {
     use super::*;
