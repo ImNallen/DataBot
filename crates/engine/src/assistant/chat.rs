@@ -166,13 +166,15 @@ impl Chat {
 
     /// The one answer to "may this call run?". Idempotent per call id: the provider asks before
     /// the call and the engine asks again at execution; the second ask returns what the first
-    /// recorded, and a call whose input differs from the approved one is denied.
+    /// recorded, and a call whose input differs from the approved or pending one is denied.
     pub(crate) fn gate(&self, assistant: &Assistant, call: &ToolCallId, input: &Value, ask: &Ask) -> Gated {
         let mut inner = self.inner.lock().unwrap();
         match inner.ledger.calls.get(call) {
             Some(Gate::Run { input: approved }) => return if approved == input { Gated::Run } else { Gated::Deny(Refusal::Mismatch) },
             Some(Gate::Denied { why }) => return Gated::Deny(why.clone()),
-            Some(Gate::Pending { approval, answer, .. }) => return Gated::Wait { approval: *approval, answer: answer.subscribe(), created_here: false },
+            Some(Gate::Pending { approval, input: asked, answer }) => {
+                return if asked == input { Gated::Wait { approval: *approval, answer: answer.subscribe(), created_here: false } } else { Gated::Deny(Refusal::Mismatch) };
+            }
             None => {}
         }
         match ask {
@@ -220,6 +222,10 @@ impl Chat {
 
     pub(crate) fn has_pending(&self) -> bool {
         self.inner.lock().unwrap().ledger.calls.values().any(|g| matches!(g, Gate::Pending { .. }))
+    }
+
+    pub(crate) fn is_pending(&self, call: &ToolCallId) -> bool {
+        matches!(self.inner.lock().unwrap().ledger.calls.get(call), Some(Gate::Pending { .. }))
     }
 
     pub(crate) fn publish_entry(&self, shared: &Shared, seq: u32, turn: u32, entry: Entry) {

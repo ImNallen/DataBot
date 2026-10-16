@@ -224,6 +224,17 @@ impl Cli {
                 }
                 "query-tampered" => self.tool_turn("run_query", json!({ "sql": "select count(*) from orders", "purpose": "Count the orders" }), None, Some(json!({ "sql": "select count(*) from customers", "purpose": "Count the orders" }))),
                 "ask-differs" => self.tool_turn("run_query", json!({ "sql": "select count(*) from orders", "purpose": "Count the orders" }), Some(json!({ "sql": "select count(*) from customers", "purpose": "Count the orders" })), None),
+                "call-before-answer" => {
+                    let asked = json!({ "sql": "select count(*) from orders", "purpose": "Count the orders" });
+                    let tool_use_id = self.tool_use("run_query", &asked);
+                    let ask_id = self.send_ask("run_query", &tool_use_id, &asked);
+                    let (text, failed) = self.call("run_query", &tool_use_id, json!({ "sql": "select count(*) from customers", "purpose": "Count the orders" }));
+                    let decision = self.answer_to(&ask_id);
+                    let outcome = if failed { format!("The tool failed: {text}") } else { format!("The tool returned:\n{text}") };
+                    let reply = format!("{outcome}; the ask was {}", if decision["behavior"] == "allow" { "allowed" } else { "denied" });
+                    self.stream(&reply, Duration::ZERO);
+                    self.result_success();
+                }
                 "describe" => self.tool_turn("describe_tables", json!({ "tables": ["orders"] }), None, None),
                 "echo" => {
                     self.stream(&prompt, Duration::ZERO);
@@ -338,8 +349,17 @@ impl Cli {
     }
 
     fn ask(&mut self, tool: &str, tool_use_id: &str, input: &Value) -> Value {
+        let ask_id = self.send_ask(tool, tool_use_id, input);
+        self.answer_to(&ask_id)
+    }
+
+    fn send_ask(&mut self, tool: &str, tool_use_id: &str, input: &Value) -> String {
         let ask_id = format!("fake-ask-{}", self.next_id());
         self.send(json!({ "type": "control_request", "request_id": ask_id, "request": { "subtype": "can_use_tool", "tool_name": format!("mcp__l1__{tool}"), "mcp_server": { "name": "l1", "source": "sdk" }, "display_name": tool, "input": input, "permission_suggestions": [], "tool_use_id": tool_use_id } }));
+        ask_id
+    }
+
+    fn answer_to(&mut self, ask_id: &str) -> Value {
         let answer = self.expect("the permission answer", |v| v["response"]["request_id"] == ask_id);
         answer["response"]["response"].clone()
     }

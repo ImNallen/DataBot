@@ -389,6 +389,33 @@ async fn a_tools_call_whose_arguments_differ_from_the_approved_input_is_refused(
 }
 
 #[tokio::test]
+async fn a_call_with_other_arguments_while_its_ask_waits_is_refused_and_the_ask_stays_answerable() {
+    let mut h = Harness::open().await;
+    h.use_fake("call-before-answer");
+    let chat = h.chat(Permission::AskFirst);
+    h.send(chat, "How many orders?").await;
+    let (approval, _) = h.wait_approval(chat).await;
+    let refused = |lines: &[String]| lines.iter().position(|l| l.contains("\"isError\":true") && l.contains("This call was not approved."));
+    let started = Instant::now();
+    while refused(&h.stdin_lines()).is_none() {
+        assert!(started.elapsed() < Duration::from_secs(10), "the call with other arguments was not refused while the ask waited: {:?}", h.stdin_lines());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let waiting = h.entries(chat).await;
+    assert!(matches!(&waiting[1], Entry::Tool { tool: ToolUse::RunQuery { sql, .. }, status: ToolStatus::AwaitingApproval { .. }, .. } if sql == "select count(*) from orders"), "the card still asks about the asked input: {:?}", waiting[1]);
+    h.engine.assistant_approve(chat, approval, Decision::Run).unwrap();
+    assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+    let entries = h.entries(chat).await;
+    assert!(matches!(&entries[1], Entry::Tool { tool: ToolUse::RunQuery { sql, .. }, status: ToolStatus::Expired, .. } if sql == "select count(*) from orders"), "approved for the asked input and never called with it: {:?}", entries[1]);
+    assert!(text_of(&entries[2]).contains("The tool failed: This call was not approved.; the ask was allowed"), "{}", text_of(&entries[2]));
+    let lines = h.stdin_lines();
+    let allowed = lines.iter().position(|l| l.contains("\"behavior\":\"allow\"")).unwrap();
+    assert!(refused(&lines).unwrap() < allowed, "the refusal waited for the user");
+    assert!(lines[allowed].contains("\"updatedInput\":{\"purpose\":\"Count the orders\",\"sql\":\"select count(*) from orders\"}"), "{}", lines[allowed]);
+    assert!(!lines.iter().any(|l| l.contains("\"mcp_response\"") && l.contains("No database is selected")), "a query ran: {lines:?}");
+}
+
+#[tokio::test]
 async fn the_card_and_the_allow_reply_carry_the_input_the_provider_asked_about() {
     let mut h = Harness::open().await;
     h.use_fake("ask-differs");

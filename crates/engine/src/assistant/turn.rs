@@ -471,13 +471,14 @@ impl Turn {
     }
 
     async fn on_gate(&mut self, agent: &mut Agent, site: Site, call: ToolCallId, name: &str, input: Value, waits: &mut Waits, execs: &mut Execs) {
-        self.ensure_tool(&call, name, &input);
         let parsed = tools::parse_call(name, &input);
-        if self.stop_deadline.is_some() {
-            return self.settle(agent, site, call, parsed, Err(Refusal::Stopped), execs).await;
-        }
         let ask = tools::policy(&parsed, self.chat.permission());
-        match self.chat.gate(&self.shared.assistant, &call, &input, &ask) {
+        let gated = if self.stop_deadline.is_some() { Gated::Deny(Refusal::Stopped) } else { self.chat.gate(&self.shared.assistant, &call, &input, &ask) };
+        // The card and the allow reply hold the input the ledger holds, never one it refused.
+        if !matches!(gated, Gated::Deny(Refusal::Mismatch)) {
+            self.ensure_tool(&call, name, &input);
+        }
+        match gated {
             Gated::Run => self.settle(agent, site, call, parsed, Ok(()), execs).await,
             Gated::Deny(why) => self.settle(agent, site, call, parsed, Err(why), execs).await,
             Gated::Wait { approval, answer, created_here } => {
@@ -509,7 +510,8 @@ impl Turn {
             (Site::Call(reply), Err(why)) => {
                 let lines = agent.codec.tool_result(&reply, &ModelResult { text: refusal_text(&why), is_error: true });
                 agent.write(lines).await.ok();
-                if matches!(self.tool_mut(&call).map(|t| &t.status), Some(ToolStatus::Running | ToolStatus::AwaitingApproval { .. })) {
+                // A refused call leaves a card whose ask the user can still answer.
+                if !self.chat.is_pending(&call) && matches!(self.tool_mut(&call).map(|t| &t.status), Some(ToolStatus::Running | ToolStatus::AwaitingApproval { .. })) {
                     self.set_tool_status(&call, refusal_status(why));
                 }
             }
