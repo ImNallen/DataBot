@@ -2027,7 +2027,7 @@ mod tests {
                 config_env: "CLAUDE_CONFIG_DIR".into(),
                 config_dir_default: "~/.claude".into(),
                 sign_in_command: "claude auth login".into(),
-                owned_flags: vec!["--model".into()],
+                owned_flags: vec!["--verbose".into()],
             },
             checking: true,
             checked_at_ms: Some(1700),
@@ -2039,7 +2039,7 @@ mod tests {
                 "kind": "ProviderChanged", "provider": "Claude", "rev": 4,
                 "info": {
                     "defaultName": "Claude", "defaultBinary": "claude", "configEnv": "CLAUDE_CONFIG_DIR",
-                    "configDirDefault": "~/.claude", "signInCommand": "claude auth login", "ownedFlags": ["--model"]
+                    "configDirDefault": "~/.claude", "signInCommand": "claude auth login", "ownedFlags": ["--verbose"]
                 },
                 "checking": true, "checkedAtMs": 1700, "outcome": { "kind": "SignedOut", "version": "2.1.301" }
             })

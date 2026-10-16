@@ -604,6 +604,25 @@ async fn a_draft_opens_with_default_options_and_configure_validates_against_the_
     assert_eq!(h.engine.assistant_open(chat).await.unwrap().state.options, options("haiku", Some("max")));
 }
 
+/// The model and effort a new chat opens with, once the fake has probed with `launch_args`.
+async fn draft_with(launch_args: &str) -> (String, Option<String>) {
+    let mut h = Harness::open().await;
+    h.configure_provider(|p| {
+        p.binary_path = FAKE.into();
+        p.launch_args = format!("--fake-scenario none {launch_args}");
+    });
+    h.wait_outcome(ready).await;
+    let options = h.engine.assistant_open(ChatId(uuid::Uuid::new_v4())).await.unwrap().state.options;
+    (options.model.0, options.effort.map(|e| e.0))
+}
+
+#[tokio::test]
+async fn launch_arguments_choose_a_new_chats_model_and_effort() {
+    assert_eq!(draft_with("--model claude-sonnet-5-5 --effort low").await, ("sonnet".into(), Some("low".into())));
+    assert_eq!(draft_with("--model haiku --effort turbo").await, ("haiku".into(), Some("high".into())), "an effort the model does not list falls back to high");
+    assert_eq!(draft_with("--model fake --effort low").await, ("fake".into(), None), "a model without effort levels starts with none");
+}
+
 #[tokio::test]
 async fn delete_stops_the_turn_and_publishes_a_tombstone() {
     let mut h = Harness::open().await;

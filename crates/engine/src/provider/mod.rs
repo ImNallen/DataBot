@@ -28,6 +28,8 @@ pub(crate) trait Provider: Send + Sync {
     fn info(&self) -> ProviderInfo;
     /// What a chat starts on before any probe has answered.
     fn fallback_model(&self) -> (ModelId, Option<EffortId>);
+    /// The effort the launch arguments ask a new chat to start at.
+    fn launch_effort(&self, cfg: &ProviderConfig) -> Option<EffortId>;
     /// Version and sign-in without a model turn.
     fn quick_probe<'a>(&'a self, cfg: &'a ProviderConfig, host: &'a HostEnv) -> BoxFuture<'a, Result<Quick, ProbeOutcome>>;
     /// argv, env, and cwd for one process. Pure.

@@ -95,8 +95,9 @@ impl Shared {
         Ok(chat)
     }
 
-    /// The newest stored chat's options, else the first enabled provider's recommended model at
-    /// `high` effort when the model lists it, and Ask first.
+    /// The newest stored chat's options, else the first enabled provider's recommended model and Ask
+    /// first. The effort is the launch arguments' one when the model lists it, else `high` when it
+    /// lists that, else its last level.
     fn default_options(&self) -> ChatOptions {
         if let Ok(chats) = self.store.chats(1)
             && let Some((_, record)) = chats.into_iter().next()
@@ -104,10 +105,13 @@ impl Shared {
             return record.options;
         }
         let settings = self.settings();
-        let kind = settings.providers.iter().find(|c| c.enabled).map_or(ProviderKind::ALL[0], |c| c.provider);
+        let cfg = settings.providers.iter().find(|c| c.enabled);
+        let kind = cfg.map_or(ProviderKind::ALL[0], |c| c.provider);
         let (model, effort) = match self.providers.models(kind).and_then(|models| models.into_iter().find(|m| m.recommended)) {
             Some(model) => {
-                let effort = model.efforts.iter().find(|e| e.id.0 == "high").or(model.efforts.first()).map(|e| e.id.clone());
+                let asked = cfg.and_then(|c| provider(kind).launch_effort(c));
+                let listed = |id: &str| model.efforts.iter().find(|e| e.id.0 == id);
+                let effort = asked.and_then(|a| listed(&a.0)).or_else(|| listed("high")).or(model.efforts.last()).map(|e| e.id.clone());
                 (model.id, effort)
             }
             None => provider(kind).fallback_model(),

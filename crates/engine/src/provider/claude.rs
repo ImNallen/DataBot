@@ -20,7 +20,7 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(4);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Flags the engine owns. A launch argument naming one is dropped, so the field cannot turn off
-/// isolation or the permission prompt. `--model` and `--effort` become the probe's default instead.
+/// isolation or the permission prompt.
 const ENGINE_FLAGS: &[&str] = &[
     "--output-format",
     "--input-format",
@@ -47,8 +47,6 @@ const ENGINE_FLAGS: &[&str] = &[
     "--system-prompt",
     "--system-prompt-file",
     "--append-system-prompt",
-    "--model",
-    "--effort",
     "--bare",
 ];
 
@@ -66,6 +64,10 @@ impl Provider for Claude {
 
     fn fallback_model(&self) -> (ModelId, Option<EffortId>) {
         (ModelId("opus".into()), Some(EffortId("high".into())))
+    }
+
+    fn launch_effort(&self, cfg: &ProviderConfig) -> Option<EffortId> {
+        parse_launch_args(&cfg.launch_args).effort.map(EffortId)
     }
 
     fn quick_probe<'a>(&'a self, cfg: &'a ProviderConfig, host: &'a HostEnv) -> BoxFuture<'a, Result<Quick, ProbeOutcome>> {
@@ -207,13 +209,16 @@ fn effort_label(id: &str) -> String {
 }
 
 /// The `initialize` response's `models`. The `default` alias is hidden and the model it resolves to
-/// is `recommended`, unless the launch arguments' `--model` names one in the list.
+/// is `recommended`, unless the launch arguments' `--model` names a listed model, by its value
+/// (`opus`) or by the model it resolves to (`claude-opus-5-5`).
 pub(crate) fn models(raw: &[Value], prefer: Option<&str>) -> Vec<ModelOption> {
     let default_resolved = raw.iter().find(|m| m["value"] == "default").and_then(|m| m["resolvedModel"].as_str());
     let listed: Vec<&Value> = raw.iter().filter(|m| m["value"].as_str().is_some_and(|v| v != "default")).collect();
+    let resolving_to = |model: &str| listed.iter().find(|m| m["resolvedModel"] == model);
     let recommended = prefer
-        .filter(|p| listed.iter().any(|m| m["value"] == *p))
-        .or_else(|| listed.iter().find(|m| m["resolvedModel"].as_str().is_some_and(|r| Some(r) == default_resolved)).and_then(|m| m["value"].as_str()));
+        .and_then(|p| listed.iter().find(|m| m["value"] == p).or_else(|| resolving_to(p)))
+        .or_else(|| default_resolved.and_then(resolving_to))
+        .and_then(|m| m["value"].as_str());
     listed
         .iter()
         .map(|m| {
@@ -233,13 +238,13 @@ pub(crate) fn models(raw: &[Value], prefer: Option<&str>) -> Vec<ModelOption> {
         .collect()
 }
 
+/// `--model` and `--effort` choose a new chat's model and effort, and the probe runs with them; a
+/// chat's own options decide its argv, so they never pass through.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct LaunchArgs {
     pub passthrough: Vec<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
-    /// Engine-owned flags the text named, each once.
-    pub ignored: Vec<String>,
 }
 
 /// Whitespace-separated with single or double quotes grouping. `--flag value`, `--flag=value`, and
@@ -263,19 +268,15 @@ pub(crate) fn parse_launch_args(raw: &str) -> LaunchArgs {
             value = Some(tokens[i].clone());
             i += 1;
         }
-        if ENGINE_FLAGS.contains(&flag.as_str()) {
-            match flag.as_str() {
-                "--model" => out.model = value.filter(|v| !v.is_empty()),
-                "--effort" => out.effort = value.filter(|v| !v.is_empty()),
-                _ => {}
+        match flag.as_str() {
+            "--model" => out.model = value.filter(|v| !v.is_empty()),
+            "--effort" => out.effort = value.filter(|v| !v.is_empty()),
+            owned if ENGINE_FLAGS.contains(&owned) => {}
+            _ => {
+                out.passthrough.push(flag);
+                out.passthrough.extend(value);
             }
-            if !out.ignored.contains(&flag) {
-                out.ignored.push(flag);
-            }
-            continue;
         }
-        out.passthrough.push(flag);
-        out.passthrough.extend(value);
     }
     out
 }
@@ -638,16 +639,29 @@ mod tests {
     }
 
     #[test]
-    fn a_launch_argument_model_becomes_the_recommended_one() {
-        let recommended_with = |prefer: &str| {
-            let mut codec = ClaudeCodec::new(Some(prefer.into()), Open::PROBE);
+    fn a_launch_argument_model_names_the_recommended_one_by_value_or_by_resolved_model() {
+        let recommended_with = |launch_args: &str| {
+            let cfg = ProviderConfig { launch_args: launch_args.into(), ..crate::model::default_config(crate::model::ProviderKind::Claude) };
+            let mut codec = Claude.codec(&cfg, Open::PROBE);
             codec.open();
             let step = codec.read(&initialize_response());
             let [AgentEvent::Ready(handshake)] = step.events.as_slice() else { panic!("{:?}", step.events) };
             handshake.models.iter().filter(|m| m.recommended).map(|m| m.id.0.clone()).collect::<Vec<_>>()
         };
-        assert_eq!(recommended_with("sonnet"), ["sonnet"]);
-        assert_eq!(recommended_with("nope"), ["opus"], "an unknown preference falls back to the default's model");
+        assert_eq!(recommended_with("--model claude-opus-5-5"), ["opus"]);
+        assert_eq!(recommended_with("--model claude-sonnet-5-5"), ["sonnet"], "a resolved model that is not the default's");
+        assert_eq!(recommended_with("--model sonnet"), ["sonnet"]);
+        assert_eq!(recommended_with("--model nope"), ["opus"], "an unknown model falls back to the default's model");
+    }
+
+    #[test]
+    fn owned_flags_are_the_launch_arguments_that_change_nothing() {
+        let owned = Claude.info().owned_flags;
+        for flag in &owned {
+            assert_eq!(parse_launch_args(&format!("{flag} x")), LaunchArgs::default(), "{flag} changed the launch");
+        }
+        assert!(owned.contains(&"--permission-mode".to_owned()), "{owned:?}");
+        assert!(!owned.iter().any(|f| f == "--model" || f == "--effort"), "{owned:?}");
     }
 
     #[test]
@@ -845,7 +859,6 @@ mod tests {
         let args = parse_launch_args("--model claude-opus-5-5 --effort=low --debug-file '/tmp/my log' --permission-mode=plan --verbose -p hello --betas x --dangerously-skip-permissions");
         assert_eq!(args.passthrough, ["--debug-file", "/tmp/my log", "--betas", "x"]);
         assert_eq!((args.model.as_deref(), args.effort.as_deref()), (Some("claude-opus-5-5"), Some("low")));
-        assert_eq!(args.ignored, ["--model", "--effort", "--permission-mode", "--verbose", "--dangerously-skip-permissions"]);
         assert_eq!(parse_launch_args("  hello -x "), LaunchArgs::default());
         assert_eq!(parse_launch_args("--betas=x --debug").passthrough, ["--betas", "x", "--debug"]);
     }
