@@ -64,6 +64,11 @@ function TextField({
   below?: ReactNode;
 }) {
   const [draft, setDraft] = useState(value);
+  const [shown, setShown] = useState(value);
+  if (shown !== value) {
+    setShown(value);
+    setDraft(value);
+  }
   return (
     <div className="px-4 py-3.5">
       <label htmlFor={id} className="block">
@@ -160,7 +165,6 @@ function ProviderDetail({ config, state }: { config: ProviderConfig; state: Prov
       </div>
       <div className="rounded-xl border border-control">
         <TextField
-          key={config.displayName}
           id="provider-display-name"
           testId="provider-display-name"
           label="Display name"
@@ -173,7 +177,6 @@ function ProviderDetail({ config, state }: { config: ProviderConfig; state: Prov
       <h3 className="mt-1 px-1 text-ui-13 text-fg">Runtime</h3>
       <div className="divide-y divide-border rounded-xl border border-control">
         <TextField
-          key={`binary:${config.binaryPath}`}
           id="provider-binary-path"
           testId="provider-binary-path"
           label="Binary path"
@@ -183,7 +186,6 @@ function ProviderDetail({ config, state }: { config: ProviderConfig; state: Prov
           onCommit={(next) => saveProvider(kind, { binaryPath: next.trim() })}
         />
         <TextField
-          key={`config:${config.configDir}`}
           id="provider-config-dir"
           testId="provider-config-dir"
           label="Config directory"
@@ -193,7 +195,6 @@ function ProviderDetail({ config, state }: { config: ProviderConfig; state: Prov
           onCommit={(next) => saveProvider(kind, { configDir: next.trim() })}
         />
         <TextField
-          key={`args:${config.launchArgs}`}
           id="provider-launch-args"
           testId="provider-launch-args"
           label="Launch arguments"
