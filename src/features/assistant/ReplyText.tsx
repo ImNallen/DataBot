@@ -8,7 +8,6 @@ const REMARK = [remarkGfm];
 
 const InPre = createContext(false);
 
-// Links and images draw as their text: a reply never opens a URL or loads a remote image in the app's webview.
 const COMPONENTS: Components = {
   a: ({ children }) => <span className="text-fg">{children}</span>,
   img: ({ alt }) => <span>{alt}</span>,

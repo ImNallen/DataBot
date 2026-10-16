@@ -35,7 +35,6 @@ BRIDGE_PID=$!
 PIDS+=("$BRIDGE_PID")
 until curl -s "$BRIDGE/invoke/app_boot" -d '{}' >/dev/null 2>&1; do sleep 0.1; done
 
-# Settings stay on fake-claude, so the app draws the stored chat and the model picker without the real CLI.
 python3 - "$BRIDGE" "$PG_PORT" "$PWD/target/debug/fake-claude" <<'EOF'
 import json, sys, time, urllib.request, uuid
 bridge, pg_port, fake = sys.argv[1], int(sys.argv[2]), sys.argv[3]
@@ -59,7 +58,6 @@ settings = invoke("app_boot")["settings"]
 claude = next(p for p in settings["providers"] if p["provider"] == "Claude")
 claude.update(binaryPath=fake, launchArgs="--fake-scenario card")
 invoke("settings_set", settings=settings)
-# Only the stand-in lists a model named "fake", so this waits for its probe and not an earlier one.
 probed = lambda: any(m["id"] == "fake" for p in invoke("app_boot")["providers"] for m in (p["outcome"] or {}).get("models", []))
 wait_for("the fake-claude probe", probed)
 

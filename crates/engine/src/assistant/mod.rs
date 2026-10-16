@@ -1,6 +1,3 @@
-//! The chats and the seven operations behind the assistant commands. Everything here is
-//! provider-neutral: a structure test keeps the provider's wire format out of this directory.
-
 pub(crate) mod chat;
 mod context;
 mod reply;
@@ -30,10 +27,7 @@ pub(crate) const RECAP_MAX_CHARS: usize = 16_000;
 const TITLE_CHARS: usize = 60;
 const STOP_GRACE: Duration = Duration::from_secs(5);
 const QUIT_GRACE: Duration = Duration::from_secs(1);
-/// Long enough for a turn to close its process on its own: the quit grace, then the 2 s the
-/// process gets after stdin closes.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
-/// How long `shutdown` waits for the tasks it aborted, after the kill sweep.
 const ABORT_WAIT: Duration = Duration::from_secs(1);
 const DELETE_WAIT: Duration = Duration::from_secs(5);
 
@@ -59,7 +53,6 @@ impl Assistant {
         self.chats.read().unwrap().values().cloned().collect()
     }
 
-    /// Databases of `connection` that a running turn uses, so their catalog slots open.
     pub(crate) fn running_databases(&self, connection: ConnectionId) -> BTreeSet<String> {
         self.all()
             .iter()
@@ -69,15 +62,12 @@ impl Assistant {
             .collect()
     }
 
-    /// The live state of every loaded chat, which boot overlays on the stored list.
     pub(crate) fn live_states(&self) -> HashMap<ChatId, ChatState> {
         self.all().iter().map(|chat| (chat.id, chat.state())).collect()
     }
 }
 
 impl Shared {
-    /// The registry entry, loaded from the store or created as a draft. A stored chat's rows are
-    /// recovered first, so whatever a crash left open is closed before anyone reads it.
     fn chat(&self, id: ChatId) -> Result<Arc<Chat>, StoreError> {
         if let Some(chat) = self.assistant.get(id) {
             return Ok(chat);
@@ -107,11 +97,6 @@ impl Shared {
         ChatRecord { title: String::new(), created_at_ms: now, updated_at_ms: now, options: self.default_options(), session: None, entry_count: 0 }
     }
 
-    /// Ask first, always. The model and effort come from the newest stored chat when the
-    /// provider's last Ready probe still lists them and the launch arguments name neither. Else
-    /// the recommended model, with the launch arguments' effort when the model lists it, else
-    /// `high` when it lists that, else its last level; with no Ready probe, the provider's
-    /// fallback.
     fn default_options(&self) -> ChatOptions {
         let settings = self.settings();
         let cfg = settings.providers.iter().find(|c| c.enabled);
@@ -139,8 +124,6 @@ impl Shared {
         ChatOptions { provider: kind, model, effort, permission: Permission::AskFirst }
     }
 
-    /// Against the last Ready probe. With none, the options are kept as they are, so a stale or
-    /// missing probe never blocks the user.
     fn validate_options(&self, options: &ChatOptions) -> Result<(), ChatError> {
         let Some(models) = self.providers.models(options.provider) else { return Ok(()) };
         let model = models.iter().find(|m| m.id == options.model).ok_or_else(|| ChatError::UnknownModel { model: options.model.clone() })?;
@@ -152,9 +135,6 @@ impl Shared {
         Ok(())
     }
 
-    /// Mints no rev: a stored row is served at the chat's own rev, which every event for that
-    /// row preceded, and the running turn's snapshots keep theirs. Two opens of an unchanged
-    /// chat return the same view.
     pub(crate) fn assistant_open(&self, id: ChatId) -> Result<ChatView, ChatError> {
         let store_error = |e: StoreError| ChatError::Store { message: e.to_string() };
         let chat = self.chat(id).map_err(store_error)?;
@@ -235,7 +215,6 @@ impl Shared {
         Ok(TurnAccepted { turn: seq })
     }
 
-    /// Idempotent: a chat without a running turn, or one already stopping, is left alone.
     pub(crate) fn assistant_stop(&self, id: ChatId) {
         if let Some(chat) = self.assistant.get(id)
             && let Some(active) = chat.inner.lock().unwrap().turn.as_ref()
@@ -248,11 +227,6 @@ impl Shared {
         self.assistant.get(id).ok_or(ApproveError::NotPending)?.answer(approval, decision)
     }
 
-    /// Marks the chat deleted under its lock, so its turn task stores and publishes nothing
-    /// more, stops the turn and waits for it, aborts it past the bound, waits for the last
-    /// process to close, deletes the rows, and emits one `Deleted` tombstone with a fresh rev,
-    /// also for a chat this session never loaded. The provider's own transcript file is left
-    /// alone.
     pub(crate) async fn assistant_delete(&self, id: ChatId) {
         let loaded = self.assistant.get(id);
         let (record, running) = match &loaded {
@@ -286,11 +260,6 @@ impl Shared {
         self.emit(AppEvent::ChatChanged(ChatState { id, rev: self.next_chat_rev(), title: record.title, updated_at_ms: record.updated_at_ms, options: record.options, status: ChatStatus::Deleted, entry_count: record.entry_count }));
     }
 
-    /// Stops every running turn and waits for the tasks, then for every process still closing,
-    /// the stopped turns' included, all within one bound. Then every agent process group still
-    /// registered gets SIGKILL on this thread, whether a turn's, a probe's, or one a task past
-    /// the bound still holds, and those tasks are aborted and awaited briefly. A turn ended that
-    /// way gets its End from its supervisor.
     pub(crate) async fn shutdown(&self) {
         let mut tasks: FuturesUnordered<JoinHandle<()>> = FuturesUnordered::new();
         let mut aborts = Vec::new();
@@ -313,13 +282,10 @@ impl Shared {
     }
 }
 
-/// Awaits every task still in the set; a timeout leaves the unfinished ones in it.
 async fn drain(tasks: &mut FuturesUnordered<JoinHandle<()>>) {
     while tasks.next().await.is_some() {}
 }
 
-/// Awaits the turn task. A turn that panicked, or was aborted before `finish`, still ends: its
-/// chat gets an End and goes Idle, so the slot frees and nothing waits on a dead turn.
 async fn supervise(shared: Arc<Shared>, chat: Arc<Chat>, turn: JoinHandle<()>) {
     let Err(e) = turn.await else { return };
     let outcome = match e.try_into_panic() {
@@ -338,7 +304,6 @@ mod tests {
 
     const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/assistant");
 
-    /// Each file's text, with this test module cut away from `mod.rs`.
     fn sources() -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = std::fs::read_dir(DIR)
             .unwrap()

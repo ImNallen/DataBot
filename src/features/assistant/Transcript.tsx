@@ -9,7 +9,6 @@ import { sendMessage } from "./assistantActions";
 import { ReplyText } from "./ReplyText";
 import { ToolCard } from "./ToolCard";
 
-/** Within this many pixels of the end counts as reading the newest output. */
 const PIN_SLACK_PX = 32;
 
 function UserMessage({ seq, entry }: { seq: number; entry: UserEntry }) {

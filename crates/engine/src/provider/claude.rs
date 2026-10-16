@@ -1,6 +1,3 @@
-//! Claude Code over stream-json, as captured from `claude` 2.1.301 in `tests/fixtures/claude/`.
-//! Every wire shape stays in this file: the engine sees `AgentEvent`s.
-
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -13,14 +10,11 @@ use crate::model::{AgentError, Decision, EffortId, EffortOption, ModelId, ModelO
 
 pub(crate) struct Claude;
 
-/// The MCP server name the CLI sees. Its tools reach the model as `mcp__l1__<name>`.
 const SERVER: &str = "l1";
 const TOOL_PREFIX: &str = "mcp__l1__";
 const VERSION_TIMEOUT: Duration = Duration::from_secs(4);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Flags the engine owns. A launch argument naming one is dropped, so the field cannot turn off
-/// isolation or the permission prompt.
 const ENGINE_FLAGS: &[&str] = &[
     "--output-format",
     "--input-format",
@@ -105,10 +99,6 @@ impl Provider for Claude {
     }
 }
 
-/// The binary the config names, or `claude` on the host PATH, as an absolute path: the process
-/// starts in the assistant directory, so a relative path is taken against the engine's own
-/// working directory here, where the user typed it. The error text says what was looked up and
-/// where, because "not found" is the first thing a new user hits.
 fn resolve_binary(cfg: &ProviderConfig, host: &HostEnv) -> Result<PathBuf, String> {
     let name = cfg.binary_path.trim();
     let name = if name.is_empty() { "claude" } else { name };
@@ -170,7 +160,6 @@ async fn quick_probe(cfg: &ProviderConfig, host: &HostEnv) -> Result<Quick, Prob
     Ok(Quick { version, signed_in, plan })
 }
 
-/// `2.1.301 (Claude Code)`.
 pub(crate) fn parse_version(output: &str) -> Option<String> {
     output
         .split(|c: char| c.is_whitespace() || c == '(' || c == ')')
@@ -179,7 +168,6 @@ pub(crate) fn parse_version(output: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// `claude auth status` prints JSON: `(loggedIn, plan)`.
 pub(crate) fn parse_auth_status(stdout: &str) -> Option<(bool, Option<String>)> {
     let v: Value = serde_json::from_str(stdout.trim()).ok()?;
     let logged_in = v["loggedIn"].as_bool()?;
@@ -231,9 +219,6 @@ fn effort_label(id: &str) -> String {
     }
 }
 
-/// The `initialize` response's `models`. The `default` alias is hidden and the model it resolves to
-/// is `recommended`, unless the launch arguments' `--model` names a listed model, by its value
-/// (`opus`) or by the model it resolves to (`claude-opus-5-5`).
 pub(crate) fn models(raw: &[Value], prefer: Option<&str>) -> Vec<ModelOption> {
     let default_resolved = raw.iter().find(|m| m["value"] == "default").and_then(|m| m["resolvedModel"].as_str());
     let listed: Vec<&Value> = raw.iter().filter(|m| m["value"].as_str().is_some_and(|v| v != "default")).collect();
@@ -261,9 +246,6 @@ pub(crate) fn models(raw: &[Value], prefer: Option<&str>) -> Vec<ModelOption> {
         .collect()
 }
 
-/// `--model` and `--effort` choose a new chat's model and effort, and the probe runs with them; a
-/// chat's own options decide its argv, so they never pass through. `ignored` lists the engine's
-/// own flags found in the text, as typed, each once.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct LaunchArgs {
     pub passthrough: Vec<String>,
@@ -340,8 +322,7 @@ fn split_args(text: &str) -> Vec<String> {
 
 /// `--setting-sources=` drops hooks, plugins, and user settings; `--strict-mcp-config` drops
 /// account connectors; `--tools=` removes every built-in tool; `--permission-prompt-tool=stdio`
-/// makes permission asks reach the host. The passthrough arguments go first: when the CLI reads a
-/// flag from both, the engine's later one wins.
+/// makes permission asks reach the host.
 pub(crate) fn argv(start: &SessionStart, args: &LaunchArgs) -> Vec<String> {
     let mut argv: Vec<String> = args.passthrough.clone();
     argv.extend(["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--setting-sources=", "--strict-mcp-config", "--tools=", "--permission-prompt-tool=stdio", "--permission-mode=default"].map(str::to_owned));
@@ -359,8 +340,7 @@ pub(crate) fn argv(start: &SessionStart, args: &LaunchArgs) -> Vec<String> {
 }
 
 /// Starts from the engine's env, drops what leaks in from whatever launched the app (another
-/// Claude Code session, a different login), and sets what the SDK sets. `HOME` stays, for the
-/// macOS keychain lookup.
+/// Claude Code session, a different login), and sets what the SDK sets.
 pub(crate) fn env(cfg: &ProviderConfig, host: &HostEnv, parent: impl Iterator<Item = (OsString, OsString)>) -> (Vec<(OsString, OsString)>, Vec<OsString>) {
     let remove: Vec<OsString> = parent
         .map(|(k, _)| k)
@@ -388,14 +368,11 @@ enum HostRequest {
 
 pub(crate) struct ClaudeCodec {
     next_request: u64,
-    /// Our own control requests in flight.
     pending: HashMap<String, HostRequest>,
     prefer_model: Option<String>,
     open: Open,
-    /// Incremented on `message_start`; the first half of a `BlockKey`.
     message: u32,
     text_blocks: HashSet<BlockKey>,
-    /// JSON-RPC ids of `tools/call` requests in flight, so `notifications/cancelled` names the call.
     calls: HashMap<String, ToolCallId>,
     interrupted: bool,
 }
@@ -634,8 +611,6 @@ mod tests {
         input_schema: || json!({ "type": "object", "properties": {}, "additionalProperties": false }),
     }];
 
-    /// The captured `initialize` response answers the request id the SDK used; the codec's own
-    /// id is `req_1`, so the fixture's id is rewritten to it.
     fn initialize_response() -> String {
         let mut v = json(frame(INITIALIZE, |v| v["type"] == "control_response"));
         v["response"]["request_id"] = json!("req_1");

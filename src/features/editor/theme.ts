@@ -92,13 +92,11 @@ const SQL_TOKENS = [
 
 export const editorHighlighting = syntaxHighlighting(HighlightStyle.define(SQL_TOKENS.map(({ tag, color }) => ({ tag, color }))));
 
-/** The editor's token colors as utility classes, for SQL highlighted without an EditorView. */
 export const staticSqlHighlighter = tagHighlighter(SQL_TOKENS.map(({ tag, className }) => ({ tag, class: className })));
 
 const NOT_CALLS = new Set(["in", "values", "exists", "any", "all", "some", "over", "filter", "within", "using", "not", "and", "or", "on", "as", "from", "into", "table", "returning", "select"]);
 const callMark = Decoration.mark({ class: "cm-call" });
 
-/** A keyword followed by `(` that names a function, such as `count(`, which draws as a plain identifier. */
 export function isKeywordCall(word: string, next: string): boolean {
   return next === "(" && !NOT_CALLS.has(word.toLowerCase());
 }

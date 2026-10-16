@@ -1,6 +1,3 @@
-//! The `<l1_context>` block that precedes the user's text in every message: a pure function from
-//! structured state to a string within budgets.
-
 use crate::model::{Attachment, Catalog, DatabaseRef, RelKind, Relation};
 use crate::results::ResultSet;
 
@@ -17,14 +14,12 @@ pub(crate) const CELL_CHARS: usize = 200;
 pub(crate) struct ConnectionFacts<'a> {
     pub name: &'a str,
     pub server_version: Option<&'a str>,
-    /// `Err` carries why the connection is not open.
     pub connected: Result<(), &'a str>,
 }
 
 pub(crate) struct TabFacts<'a> {
     pub title: &'a str,
     pub text: &'a str,
-    /// Byte span of the statement at the cursor, or of the selection.
     pub picked: Option<(usize, usize)>,
     pub selected: bool,
     pub last_error: Option<&'a str>,
@@ -33,7 +28,6 @@ pub(crate) struct TabFacts<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Repeat {
     Full,
-    /// The same text went to this provider session earlier, so one line says so.
     Unchanged,
 }
 
@@ -106,7 +100,6 @@ pub(crate) fn build(input: &ContextInput<'_>) -> String {
     out
 }
 
-/// The whole text, or the picked statement with a window around it when the text is too long.
 fn tab_sql(text: &str, picked: Option<(usize, usize)>) -> (String, bool) {
     if text.chars().count() <= TAB_SQL_MAX {
         return (text.to_owned(), false);
@@ -140,7 +133,6 @@ fn attachment_text(a: &Attachment) -> String {
     out
 }
 
-/// The rows the model and the chip see.
 pub(crate) fn attachment(set: &ResultSet, tab_title: &str) -> Attachment {
     let meta = set.meta();
     let page = set.page(0, ATTACHMENT_ROWS).expect("a result always has a first page").rows;
@@ -157,8 +149,6 @@ pub(crate) fn attachment(set: &ResultSet, tab_title: &str) -> Attachment {
     Attachment { tab_title: tab_title.to_owned(), columns: set.columns.iter().map(|c| c.name.clone()).collect(), rows, total_rows: meta.rows_seen }
 }
 
-/// `schema.table (~rows): col type PK, col type FK, …` for the shown schemas. Past the budget,
-/// tables lose column types, then columns, then the rest become one "and N more" line.
 pub(crate) fn outline(catalog: &Catalog, shown: &[String], budget: usize) -> String {
     let schemas: Vec<_> = catalog.schemas.iter().filter(|s| shown.contains(&s.name)).collect();
     for detail in [Detail::Types, Detail::Names, Detail::Counts] {
@@ -224,7 +214,6 @@ fn fit(lines: Vec<String>, budget: usize) -> String {
     out
 }
 
-/// At most `max` chars, with an ellipsis when cut.
 pub(crate) fn cut(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
         Some((i, _)) => format!("{}…", &text[..i]),

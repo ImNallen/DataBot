@@ -4,7 +4,6 @@ import { formatElapsed, pluralRows } from "../features/results/format";
 export type UserEntry = Extract<Entry, { kind: "User" }>;
 export type EndEntry = Extract<Entry, { kind: "End" }>;
 
-/** One user message, what the turn produced in seq order, and how it ended. `end` is null while the turn runs. */
 export type TurnView = {
   turn: number;
   user: { seq: number; entry: UserEntry } | null;
@@ -12,7 +11,6 @@ export type TurnView = {
   end: { seq: number; entry: EndEntry } | null;
 };
 
-/** Groups entries by the `turn` the engine stamped on each. Item snapshots keep their identity, so a memoized row redraws only when its entry changes. */
 export function groupTurns(entries: Record<number, EntrySnapshot> | undefined): TurnView[] {
   const turns = new Map<number, TurnView>();
   const ordered = Object.values(entries ?? {}).sort((a, b) => a.seq - b.seq);
@@ -30,7 +28,6 @@ export function groupTurns(entries: Record<number, EntrySnapshot> | undefined): 
   return [...turns.values()].sort((a, b) => a.turn - b.turn);
 }
 
-/** An idle chat that reports more entries than the panel holds lost a broadcast, so it needs reopening. */
 export function needsResync(chat: ChatState, held: Record<number, EntrySnapshot>): boolean {
   return chat.status.kind === "Idle" && chat.entryCount > Object.keys(held).length;
 }
@@ -45,7 +42,6 @@ const PHASE_NOTES = {
   AwaitingApproval: "Waiting for approval",
 } satisfies Record<TurnPhase, string>;
 
-/** What the history list shows in place of a chat's age while its turn runs. */
 export function runningNote(status: ChatStatus): string | null {
   return status.kind === "Running" ? PHASE_NOTES[status.phase] : null;
 }
@@ -87,7 +83,6 @@ function failed(tool: ToolUse): string {
   }
 }
 
-/** The one dim line a tool call shows in the transcript. */
 export function toolLine(tool: ToolUse, status: ToolStatus): string {
   switch (status.kind) {
     case "Running":

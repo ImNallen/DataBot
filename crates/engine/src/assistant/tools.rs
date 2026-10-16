@@ -1,8 +1,3 @@
-//! The three tools the model may call, the policy that decides whether a call needs the user,
-//! and the execution of an approved call. The only file under `assistant/` that reaches a
-//! session's client: every query the model writes runs on its own short-lived session inside a
-//! READ ONLY transaction, with Postgres's own parser refusing a second statement.
-
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -46,7 +41,6 @@ const MAX_MATCHES: usize = 50;
 
 pub(crate) const REFUSED_WRITE: &str = "Only SELECT, WITH, VALUES, TABLE, SHOW, and EXPLAIN run here. Put a write in a ```sql block for the user to run.";
 
-/// A call parsed from the provider's name and JSON input. Parse once here; trust it after.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParsedCall {
     DescribeTables { tables: Vec<String> },
@@ -75,7 +69,6 @@ pub(crate) fn parse_call(name: &str, input: &Value) -> ParsedCall {
     }
 }
 
-/// What `policy` says before any user is involved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Ask {
     Allow,
@@ -83,9 +76,6 @@ pub(crate) enum Ask {
     User(ApprovalReason),
 }
 
-/// Catalog tools run. A `run_query` that does not read is refused. A read that uses anything
-/// `sql::vet` cannot vouch for asks in both modes and names it. The rest asks in AskFirst and
-/// runs in Auto.
 pub(crate) fn policy(call: &ParsedCall, permission: Permission) -> Ask {
     match call {
         ParsedCall::DescribeTables { .. } | ParsedCall::SearchCatalog { .. } => Ask::Allow,
@@ -101,7 +91,6 @@ pub(crate) fn policy(call: &ParsedCall, permission: Permission) -> Ask {
     }
 }
 
-/// The card's view of a call, with "Uses" resolved against the turn's catalog.
 pub(crate) fn describe(name: &str, input: &Value, catalog: Option<&Catalog>) -> ToolUse {
     match parse_call(name, input) {
         ParsedCall::DescribeTables { tables } => ToolUse::DescribeTables { tables },
@@ -126,7 +115,6 @@ impl Executed {
     }
 }
 
-/// Runs one approved call. The turn bounds it at 45 s.
 pub(crate) async fn execute(shared: &Arc<Shared>, db: Option<&DatabaseRef>, call: ParsedCall) -> Executed {
     let Some(db) = db else { return Executed::failed("No database is selected. Ask the user to open a tab on a connection.") };
     let Some(instance) = shared.instance(db.connection_id) else { return Executed::failed(not_connected(shared, db)) };
@@ -269,7 +257,6 @@ async fn describe_tables(shared: &Arc<Shared>, db: &DatabaseRef, tables: &[Strin
     Ok(Executed { for_model: ModelResult { text: cap(text), is_error: found.is_empty() }, status: ToolStatus::Done { result: ToolResult::Described { found, missing } } })
 }
 
-/// `schema.name`, or `name` in the default schema first and then in any other schema.
 fn find_relation<'a>(catalog: &'a Catalog, name: &str) -> Option<(&'a str, &'a Relation)> {
     let unquote = |s: &str| s.trim_matches('"').to_owned();
     let (schema, table) = match name.split_once('.') {

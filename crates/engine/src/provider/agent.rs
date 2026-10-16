@@ -1,6 +1,3 @@
-//! One provider process: spawned in its own process group, read by an independent task, written
-//! through its codec, and killed as a group so a wrapper script's child dies with it.
-
 use std::collections::{HashSet, VecDeque};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -32,12 +29,10 @@ impl ProcessGroups {
         self.0.lock().unwrap().insert(pgid);
     }
 
-    /// Whether the group was still registered.
     fn remove(&self, pgid: i32) -> bool {
         self.0.lock().unwrap().remove(&pgid)
     }
 
-    /// SIGKILL to every registered group, on this thread, now.
     pub(crate) fn kill_all(&self) {
         for pgid in self.0.lock().unwrap().drain() {
             kill_group(pgid);
@@ -56,8 +51,6 @@ pub(crate) struct Agent {
     outbox: Vec<String>,
     pending: VecDeque<AgentEvent>,
     stderr: Arc<Mutex<String>>,
-    /// The reader reached the end of stdout. Kept here so a `next` cancelled during the exit
-    /// wait reports it again.
     eof: bool,
 }
 
@@ -68,7 +61,6 @@ enum Line {
 
 pub(crate) enum Next {
     Event(AgentEvent),
-    /// A line the codec answered on its own; the answer waits in the outbox for `flush`.
     Flush,
     Eof { code: Option<i32> },
 }
@@ -76,10 +68,7 @@ pub(crate) enum Next {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StartError {
     NotFound { binary: String },
-    /// The process ended before it answered `open`. `detail` is its stderr tail.
     Exited { code: Option<i32>, detail: String },
-    /// The CLI answered with an error instead of the handshake: signed out, a lost session, an
-    /// API failure.
     Reported(AgentError),
     Timeout,
 }
@@ -167,16 +156,12 @@ impl Agent {
             let code = agent.exit_code().await;
             return Err(StartError::Exited { code, detail: agent.failure_detail(&e.to_string()) });
         }
-        // Events that arrive before the handshake answer are kept aside for `next` to hand out
-        // after it, in order.
         let mut early = VecDeque::new();
         let ready = tokio::time::timeout(READY_TIMEOUT, async {
             loop {
                 match agent.next().await {
                     Next::Event(AgentEvent::Ready(handshake)) => return Ok(handshake),
                     Next::Event(AgentEvent::TurnEnded(TurnOutcome::Failed { error })) => {
-                        // The CLI exits on its own after such a result; reaping it here spares
-                        // the drop a signal.
                         let _ = agent.exit_code().await;
                         return Err(StartError::Reported(error));
                     }
@@ -207,9 +192,6 @@ impl Agent {
         if tail.trim().is_empty() { fallback.to_owned() } else { tail }
     }
 
-    /// The next event. Cancel-safe: a cancelled line read loses nothing, the codec's replies wait
-    /// in the outbox until `flush`, and the end of stream is remembered, so a cancelled exit wait
-    /// starts again on the next call.
     pub(crate) async fn next(&mut self) -> Next {
         loop {
             if let Some(event) = self.pending.pop_front() {
@@ -238,7 +220,6 @@ impl Agent {
         self.flush().await
     }
 
-    /// Writes every queued line. Not cancel-safe; call it outside a `select!`.
     pub(crate) async fn flush(&mut self) -> std::io::Result<()> {
         if self.outbox.is_empty() {
             return Ok(());
@@ -255,15 +236,12 @@ impl Agent {
         self.stderr.lock().unwrap().clone()
     }
 
-    /// The exit code once the child is reaped, which takes its group out of the registry.
     async fn exit_code(&mut self) -> Option<i32> {
         let status = tokio::time::timeout(EXIT_CODE_WAIT, self.child.wait()).await.ok().and_then(Result::ok)?;
         self.groups.remove(self.pgid);
         status.code()
     }
 
-    /// Closes stdin, which the CLI takes as its cue to exit, waits 2 s, then kills the group, and
-    /// returns only once the child is reaped.
     pub(crate) async fn close(mut self) {
         drop(self.stdin.take());
         if tokio::time::timeout(CLOSE_GRACE, self.child.wait()).await.is_err() {
@@ -277,8 +255,6 @@ impl Agent {
 }
 
 impl Drop for Agent {
-    /// A panic, an early return, or an aborted task never orphans a process. A group already
-    /// reaped or swept is not signalled: its pid may be someone else's by now.
     fn drop(&mut self) {
         if self.groups.remove(self.pgid) {
             kill_group(self.pgid);

@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Rewrites crates/engine/src/sql/keywords.rs from the server's own keyword table. Needs
-# `pnpm db:up`, or L1_DATA_TEST_PG pointing at any PostgreSQL 16.
 set -euo pipefail
 
 URL=${L1_DATA_TEST_PG:-postgres://l1data:l1data@localhost:5433/shop}

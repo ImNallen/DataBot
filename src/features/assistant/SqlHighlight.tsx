@@ -6,7 +6,6 @@ import { isKeywordCall, staticSqlHighlighter } from "../editor/theme";
 
 type Span = { text: string; className: string };
 
-/** The editor's highlighting as class-named spans, from one parse and no EditorView. */
 export function sqlSpans(sql: string): Span[] {
   const tree = PostgreSQL.language.parser.parse(sql);
   const calls = new Set<number>();

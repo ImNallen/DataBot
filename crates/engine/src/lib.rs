@@ -69,10 +69,7 @@ pub(crate) struct Shared {
     runtime: tokio::runtime::Handle,
     providers: provider::Providers,
     assistant: assistant::Assistant,
-    /// Every live agent process, for the kill sweep at quit.
     process_groups: Arc<provider::agent::ProcessGroups>,
-    /// One counter for every chat and entry snapshot, so a chat recreated after a delete never
-    /// reissues a rev the webview holds.
     next_chat_rev: AtomicU64,
 }
 

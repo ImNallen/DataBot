@@ -63,7 +63,6 @@ struct StoreState {
     history_revision: u64,
 }
 
-/// One `chats` row. The wire sees a chat as `ChatState`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatRecord {
@@ -71,13 +70,10 @@ pub struct ChatRecord {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub options: ChatOptions,
-    /// The provider's own session, which the next turn resumes.
     pub session: Option<ProviderSession>,
     pub entry_count: u32,
 }
 
-/// `config_dir` is the one the session was made under. The CLI keeps its transcript there, so a
-/// changed directory cannot resume it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSession {
@@ -335,8 +331,6 @@ impl Store {
     const PUT_ENTRY: &str = "INSERT INTO chat_entries (chat_id, seq, turn, json) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (chat_id, seq) DO UPDATE SET turn = excluded.turn, json = excluded.json";
 
-    /// The newest `limit` chats. A row that fails to parse is logged and left out, so it never
-    /// hides the others.
     pub fn chats(&self, limit: u32) -> Result<Vec<(ChatId, ChatRecord)>, StoreError> {
         self.with(|c| {
             let mut stmt = c.prepare("SELECT id, json FROM chats ORDER BY updated_ms DESC, id LIMIT ?1")?;
@@ -361,8 +355,6 @@ impl Store {
         })
     }
 
-    /// `(seq, turn, entry)` in seq order. A row this build cannot parse reads as `Entry::Unreadable`,
-    /// so the chat still opens.
     pub fn chat_entries(&self, id: ChatId) -> Result<Vec<(u32, u32, Entry)>, StoreError> {
         self.with(|c| {
             let mut stmt = c.prepare("SELECT seq, turn, json FROM chat_entries WHERE chat_id = ?1 ORDER BY seq")?;
@@ -408,7 +400,6 @@ impl Store {
         })
     }
 
-    /// The chat's entries go with it, by the foreign key's cascade.
     pub fn delete_chat(&self, id: ChatId) -> Result<(), StoreError> {
         self.with(|c| {
             c.execute("DELETE FROM chats WHERE id = ?1", [id.0.to_string()])?;

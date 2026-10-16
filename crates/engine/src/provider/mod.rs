@@ -1,7 +1,3 @@
-//! The seam between the engine and a CLI agent. Everything a provider differs in sits behind
-//! `Provider` and the sans-IO `Codec`; the registry, the probe scheduling, the health loop, and the
-//! process driver in `agent.rs` are written once.
-
 pub(crate) mod agent;
 pub(crate) mod claude;
 
@@ -26,40 +22,27 @@ const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(crate) trait Provider: Send + Sync {
     fn info(&self) -> ProviderInfo;
-    /// What a chat starts on before any probe has answered.
     fn fallback_model(&self) -> (ModelId, Option<EffortId>);
-    /// The model and effort the launch arguments name for a new chat, as typed.
     fn launch_choice(&self, cfg: &ProviderConfig) -> (Option<ModelId>, Option<EffortId>);
-    /// The launch-argument flags the engine drops, as typed, for the settings page.
     fn ignored_flags(&self, cfg: &ProviderConfig) -> Vec<String>;
-    /// Whether a turn failed because the CLI no longer has the session it was asked to resume.
     fn session_lost(&self, error: &AgentError) -> bool;
-    /// Version and sign-in without a model turn.
     fn quick_probe<'a>(&'a self, cfg: &'a ProviderConfig, host: &'a HostEnv) -> BoxFuture<'a, Result<Quick, ProbeOutcome>>;
-    /// argv, env, and cwd for one process. Pure.
     fn launch(&self, cfg: &ProviderConfig, host: &HostEnv, start: &SessionStart) -> Result<LaunchSpec, AgentError>;
-    /// A fresh protocol state machine for one process.
     fn codec(&self, cfg: &ProviderConfig, open: Open) -> Box<dyn Codec>;
 }
 
-/// Exhaustive, so adding a `ProviderKind` fails to compile until its module is named here.
 pub(crate) fn provider(kind: ProviderKind) -> &'static dyn Provider {
     match kind {
         ProviderKind::Claude => &claude::Claude,
     }
 }
 
-/// Sans-IO: lines in, provider-neutral events and reply lines out. No clock, no tasks, no pipes.
 pub(crate) trait Codec: Send {
-    /// Lines to write right after spawn.
     fn open(&mut self) -> Vec<String>;
     fn user_turn(&mut self, text: &str) -> Vec<String>;
     fn interrupt(&mut self) -> Vec<String>;
-    /// `input` is echoed back as the input to run on, so the tool runs on exactly what the gate saw.
     fn permission(&mut self, reply: &ReplyTo, decision: Decision, input: &Value, message: &str) -> Vec<String>;
     fn tool_result(&mut self, reply: &ReplyTo, result: &ModelResult) -> Vec<String>;
-    /// One stdout line. Answers what the codec can answer itself in `replies`; hands the rest up as
-    /// events. An unparseable or unknown line yields nothing.
     fn read(&mut self, line: &str) -> Step;
 }
 
@@ -69,18 +52,15 @@ pub(crate) struct Step {
     pub events: Vec<AgentEvent>,
 }
 
-/// The codec's routing data for one answer. Opaque outside the codec that made it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ReplyTo(pub(crate) Value);
 
-/// Text the model receives for one tool call; `is_error` marks a refusal or a failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModelResult {
     pub text: String,
     pub is_error: bool,
 }
 
-/// What the codec reports. `name` is the engine's tool name; the codec strips its own prefix.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AgentEvent {
     Ready(Handshake),
@@ -101,11 +81,9 @@ pub(crate) struct Handshake {
     pub models: Vec<ModelOption>,
 }
 
-/// (message number within the process, content block index). The index restarts with every message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct BlockKey(pub u32, pub u32);
 
-/// What `Codec::open` announces: the system prompt and the tools the process may call.
 #[derive(Clone, Copy)]
 pub(crate) struct Open {
     pub system_prompt: &'static str,
@@ -113,7 +91,6 @@ pub(crate) struct Open {
 }
 
 impl Open {
-    /// The no-turn handshake: no prompt, no tools.
     pub(crate) const PROBE: Open = Open { system_prompt: "", tools: &[] };
 }
 
@@ -125,13 +102,10 @@ pub(crate) struct ToolSpec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ProbeDepth {
-    /// Version and sign-in. The health loop's default.
     Quick,
-    /// Also the no-turn handshake for the plan and the models.
     Full,
 }
 
-/// A Quick probe that found a working binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Quick {
     pub version: String,
@@ -140,7 +114,6 @@ pub(crate) struct Quick {
 }
 
 pub(crate) struct SessionStart {
-    /// `None` runs the provider's default, as the no-turn handshake does.
     pub model: Option<ModelId>,
     pub effort: Option<EffortId>,
     pub resume: Option<String>,
@@ -166,7 +139,6 @@ pub enum AgentPath {
     Fixed(OsString),
 }
 
-/// Captured once per engine, on first use.
 pub(crate) struct HostEnv {
     pub path: OsString,
     pub home: PathBuf,
@@ -194,7 +166,6 @@ impl HostEnv {
         Self { path, home, cwd }
     }
 
-    /// An empty entry would mean the current directory to a shell; here it means nothing.
     pub(crate) fn dirs(&self) -> Vec<PathBuf> {
         std::env::split_paths(&self.path).filter(|p| !p.as_os_str().is_empty()).collect()
     }
@@ -231,7 +202,6 @@ struct ProviderEntry {
     checking: bool,
     checked_at_ms: Option<i64>,
     outcome: Option<ProbeOutcome>,
-    /// A probe runs; the deepest request that arrived meanwhile runs once it finishes.
     running: bool,
     owed: Option<ProbeDepth>,
 }
@@ -271,7 +241,6 @@ impl Providers {
         Self { entries: Mutex::new(HashMap::new()), agent_path, host: tokio::sync::OnceCell::new() }
     }
 
-    /// The last Ready probe's models, which `assistant_configure` and `assistant_send` validate against.
     pub(crate) fn models(&self, kind: ProviderKind) -> Option<Vec<ModelOption>> {
         self.entries.lock().unwrap().get(&kind)?.models().map(<[ModelOption]>::to_vec)
     }
@@ -296,8 +265,6 @@ impl Shared {
         self.settings().providers.into_iter().find(|c| c.provider == kind)
     }
 
-    /// Every provider's state, in `ProviderKind::ALL` order, with the ignored flags of its saved
-    /// launch arguments.
     pub(crate) fn provider_states(&self) -> Vec<ProviderState> {
         let settings = self.settings();
         let entries = self.providers.entries.lock().unwrap();
@@ -318,8 +285,6 @@ impl Shared {
         }
     }
 
-    /// Single-flight per provider: a burst of requests costs at most two probes, the second at the
-    /// deepest depth asked for meanwhile. Publishes `checking`, then the outcome.
     pub(crate) fn probe(self: &Arc<Self>, kind: ProviderKind, depth: ProbeDepth) {
         {
             let mut entries = self.providers.entries.lock().unwrap();
@@ -401,8 +366,6 @@ impl Shared {
         }
     }
 
-    /// Publishes each provider whose `enabled` or runtime fields changed, so the state's ignored
-    /// flags follow the saved launch arguments, and re-probes it when enabled.
     pub(crate) fn reprobe_changed(self: &Arc<Self>, before: &[ProviderConfig], after: &[ProviderConfig]) {
         for cfg in after {
             let was = before.iter().find(|c| c.provider == cfg.provider);
@@ -410,8 +373,6 @@ impl Shared {
             if !changed {
                 continue;
             }
-            // Published as checking when a probe follows, so no one reads the old outcome as
-            // the answer for the new configuration before the probe task even starts.
             self.publish_provider(cfg.provider, |e| e.checking |= cfg.enabled);
             if cfg.enabled {
                 self.probe(cfg.provider, ProbeDepth::Full);
@@ -420,8 +381,6 @@ impl Shared {
     }
 }
 
-/// Every 5 s: when `provider_health_check_secs > 0`, a Quick probe of each enabled provider whose
-/// last probe is older than that. `run_probe` escalates to Full on its own when the version changed.
 pub(crate) async fn health_loop(shared: Weak<Shared>) {
     let mut tick = tokio::time::interval(HEALTH_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

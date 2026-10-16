@@ -3,9 +3,7 @@ use super::split::{dollar_tag, skip_block_comment, skip_dollar_quoted, skip_quot
 #[derive(Debug, PartialEq)]
 pub(super) enum Token<'a> {
     Word(&'a str),
-    /// A double-quoted identifier, without its quotes.
     Quoted(&'a str),
-    /// The `U&` before a quoted identifier or string whose `\` escapes spell the real text.
     UnicodeEscape,
     Dot,
     Open,

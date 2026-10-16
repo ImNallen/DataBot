@@ -8,7 +8,6 @@ import { SqlHighlight } from "./SqlHighlight";
 
 const ACTION = "h-7 px-2.5 text-ui-12.5";
 
-/** A SQL block from a reply. `db` is the database the turn was asked from, which Run uses. */
 export function SqlCard({ sql, relations, writes, complete, db }: { sql: string; relations: string[]; writes: boolean; complete: boolean; db: DatabaseRef | null }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {

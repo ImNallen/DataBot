@@ -30,7 +30,6 @@ export type LiveData = {
   historyTail: HistoryEntry[];
   providers: Partial<Record<ProviderKind, ProviderState>>;
   chats: Record<ChatId, ChatState>;
-  /** Only chats the panel opened or is opening. Entry events for other chats are dropped; opening loads them whole. */
   transcripts: Record<ChatId, Record<number, EntrySnapshot>>;
 };
 
@@ -48,7 +47,6 @@ function keepHigher<K extends PropertyKey, V extends { rev: number }, M extends 
   return prev && prev.rev >= next.rev ? map : { ...map, [key]: next };
 }
 
-/** Keeps the higher chat snapshot. A chat that ends up deleted holds no transcript. */
 function withChat(s: LiveData, chat: ChatState): LiveData {
   const chats = keepHigher(s.chats, chat.id, chat);
   if (chats[chat.id]?.status.kind !== "Deleted") return { ...s, chats };
@@ -144,14 +142,12 @@ export function hydrateLive(s: LiveData, b: BootSnapshot): LiveData {
   return next;
 }
 
-/** `assistant_open`'s reply: the chat and every entry, by the same keep-higher rule as the events. */
 export function hydrateChatLive(s: LiveData, view: ChatView): LiveData {
   const next = withChat(s, view.state);
   if (next.chats[view.state.id]?.status.kind === "Deleted") return next;
   return withEntries(next, view.state.id, next.transcripts[view.state.id] ?? {}, view.entries);
 }
 
-/** Holds an empty transcript for a chat about to be opened, so entry events that race `assistant_open` are kept. */
 export function seedTranscriptLive(s: LiveData, id: ChatId): LiveData {
   if (s.transcripts[id] || s.chats[id]?.status.kind === "Deleted") return s;
   return { ...s, transcripts: { ...s.transcripts, [id]: {} } };

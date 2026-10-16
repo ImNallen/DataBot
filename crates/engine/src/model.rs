@@ -935,7 +935,6 @@ pub struct Layout {
     pub results_height: u16,
     pub sidebar_width: u16,
     pub right_panel_width: u16,
-    /// The chat the assistant panel shows, reopened after a restart.
     pub assistant_chat: Option<ChatId>,
 }
 
@@ -1080,7 +1079,6 @@ const DEFAULT_PROVIDER_HEALTH_CHECK_SECS: u32 = 300;
 const DEFAULT_LIGHT_THEME: &str = "l1-light";
 const DEFAULT_DARK_THEME: &str = "l1-dark";
 
-/// The first saved config of each kind, else its default. A kind added by a later build appears on its own.
 fn provider_configs(saved: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
     ProviderKind::ALL
         .iter()
@@ -1405,7 +1403,6 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    /// `Settings.providers` holds one config per kind, in this order.
     pub const ALL: [ProviderKind; 1] = [ProviderKind::Claude];
 }
 
@@ -1436,7 +1433,6 @@ pub struct ProviderConfig {
     pub launch_args: String,
 }
 
-// Hand-written so a config saved before a field existed loads with that field's default.
 impl<'de> Deserialize<'de> for ProviderConfig {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -1462,7 +1458,7 @@ impl<'de> Deserialize<'de> for ProviderConfig {
     }
 }
 
-/// What never changes for a kind. The settings page and the composer render from it.
+/// What never changes for a kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInfo {
@@ -1487,7 +1483,6 @@ pub struct ProviderState {
     pub ignored_flags: Vec<String>,
     /// A probe runs. `outcome` stays on screen meanwhile.
     pub checking: bool,
-    /// When the last probe finished.
     pub checked_at_ms: Option<i64>,
     /// `None` until the first probe finishes.
     pub outcome: Option<ProbeOutcome>,
@@ -1496,10 +1491,8 @@ pub struct ProviderState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum ProbeOutcome {
-    /// `plan` reads like `"Claude Max"`.
     Ready { version: String, plan: Option<String>, models: Vec<ModelOption> },
     SignedOut { version: String },
-    /// `binary` is what was looked up, and where.
     NotFound { binary: String },
     /// Found, but the version check, the sign-in check, or the handshake failed or timed out.
     Broken { version: Option<String>, message: String },
@@ -1509,7 +1502,6 @@ pub enum ProbeOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct ModelOption {
     pub id: ModelId,
-    /// `"Opus 5.5"`.
     pub label: String,
     pub description: String,
     /// Empty when the model takes no effort setting.
@@ -1522,7 +1514,6 @@ pub struct ModelOption {
 #[serde(rename_all = "camelCase")]
 pub struct EffortOption {
     pub id: EffortId,
-    /// `"High"`, `"Extra high"`.
     pub label: String,
 }
 

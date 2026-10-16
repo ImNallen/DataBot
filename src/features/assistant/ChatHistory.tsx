@@ -9,7 +9,6 @@ import { cx, IconButton, MenuContent, StatusDot } from "../../ui/primitives";
 import { confirmDeleteChat, showChat } from "./assistantActions";
 import { timeAgo } from "./assistantText";
 
-/** Stored chats, newest first. Drafts are not stored and tombstones are gone. */
 function listedChats(chats: Record<string, ChatState>): ChatState[] {
   return Object.values(chats)
     .filter((c) => c.status.kind !== "Draft" && c.status.kind !== "Deleted")

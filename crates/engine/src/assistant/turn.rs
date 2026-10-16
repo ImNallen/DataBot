@@ -1,7 +1,3 @@
-//! One turn: start or resume the provider process, send the message with its context, fold the
-//! events into entries, run tools behind the gate, and close the process at the end. The task
-//! owns the process, so its stdin has one writer, and every tool future is polled here.
-
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -35,12 +31,10 @@ const EXPIRED_TOOL: &str = "The turn ended before an answer.";
 
 pub(crate) struct TurnPlan {
     pub chat: Arc<Chat>,
-    /// Seq of the user entry. Every entry of this turn carries it.
     pub turn: u32,
     pub options: ChatOptions,
     pub user_text: String,
     pub tab: Option<TabContext>,
-    /// The last turn's process, if it is still closing. This turn starts its own only after it.
     pub closing: Option<Closing>,
 }
 
@@ -79,7 +73,6 @@ struct Turn {
     catalog: Option<Arc<Catalog>>,
     texts: Vec<TextState>,
     tools: Vec<ToolState>,
-    /// The deadline after which Stop kills the process.
     stopping: Option<Instant>,
     session_id: Option<String>,
     agent: Option<Agent>,
@@ -99,15 +92,11 @@ struct ToolState {
     input: Value,
     tool: ToolUse,
     status: ToolStatus,
-    /// Set while the call executes, so Stop or a cancel can answer and abort it.
     running: Option<(ReplyTo, AbortHandle)>,
 }
 
-/// Which of the provider's two consults of the gate a verdict answers.
 enum Site {
-    /// `can_use_tool`, before the call.
     Permission(ReplyTo),
-    /// The MCP `tools/call`, where the tool runs.
     Call(ReplyTo),
 }
 
@@ -124,11 +113,8 @@ enum Started {
     Stopped,
 }
 
-/// What one process made of the turn.
 enum Attempt {
     Done(TurnOutcome),
-    /// A resumed session the provider no longer has, found at start or at the first result
-    /// before any text or tool use. The turn retries once as a new session.
     Lost,
 }
 
@@ -168,8 +154,6 @@ impl Turn {
         }
     }
 
-    /// One process: start it, resuming when asked, send the prompt, and run the event loop until
-    /// the turn ends or the resumed session proves lost. Any other failure keeps the session.
     async fn attempt(&mut self, control: &mut mpsc::Receiver<TurnControl>, cfg: &ProviderConfig, resume: Option<String>, recap: Option<&str>) -> Attempt {
         let resumed = resume.is_some();
         let p = provider(self.options.provider);
@@ -245,7 +229,6 @@ impl Turn {
         outcome
     }
 
-    /// The provider no longer has the stored session, so no later turn should try it.
     fn forget_session(&mut self) {
         self.chat.inner.lock().unwrap().record.session = None;
         self.chat.store_record(&self.shared);
@@ -271,7 +254,6 @@ impl Turn {
         }
     }
 
-    /// The `<l1_context>` block, the recap when the session was lost, and the user's text.
     fn prompt(&self, fresh_session: bool, recap: Option<&str>) -> String {
         let instance = self.db.as_ref().and_then(|db| self.shared.instance(db.connection_id));
         let config = self.db.as_ref().and_then(|db| self.shared.config(db.connection_id));
@@ -322,7 +304,6 @@ impl Turn {
         }
     }
 
-    /// The user entry's attachment, as stored at send.
     fn attachment(&self) -> Option<Attachment> {
         let inner = self.chat.inner.lock().unwrap();
         match inner.live.get(&self.seq).map(|s| &s.entry) {
@@ -331,7 +312,6 @@ impl Turn {
         }
     }
 
-    /// The tab's last run, when a statement failed.
     fn last_run_error(&self, tab: &TabContext) -> Option<String> {
         let console = self.shared.console(tab.tab_id)?;
         let error = {
@@ -430,8 +410,6 @@ impl Turn {
         self.publish_texts(false);
     }
 
-    /// Publishes every changed text block. The 50 ms tick calls it, so a streaming block costs at
-    /// most 20 snapshots a second. `close` marks every open block done, at turn end.
     fn publish_texts(&mut self, close: bool) {
         for state in &mut self.texts {
             if close && !state.done {
@@ -450,8 +428,6 @@ impl Turn {
         }
     }
 
-    /// Creates the card, or refreshes it when the provider's ask carries other arguments than its
-    /// `tool_use` block did, so the card, the ledger, and `updatedInput` hold what the user sees.
     fn ensure_tool(&mut self, call: &ToolCallId, name: &str, input: &Value) {
         if let Some(state) = self.tools.iter_mut().find(|t| t.call == *call) {
             if state.input == *input {
@@ -497,10 +473,6 @@ impl Turn {
         self.set_phase(if self.chat.has_pending() { TurnPhase::AwaitingApproval } else { TurnPhase::Working });
     }
 
-    /// Both places the provider consults the gate: `can_use_tool` before a call, where the user's
-    /// wait happens, and the MCP `tools/call`, where the tool runs only on a recorded `Run` with
-    /// the same input. A provider that skipped the ask creates the approval at the call. After
-    /// Stop, both deny at once.
     async fn on_gate(&mut self, agent: &mut Agent, site: Site, call: ToolCallId, name: &str, input: Value, waits: &mut Waits, execs: &mut Execs) {
         self.ensure_tool(&call, name, &input);
         let parsed = tools::parse_call(name, &input);
@@ -521,8 +493,6 @@ impl Turn {
         }
     }
 
-    /// Answers the provider at `site` with the verdict and shows it on the card. The allow reply
-    /// echoes the card's input, so the tool runs on what the user saw.
     async fn settle(&mut self, agent: &mut Agent, site: Site, call: ToolCallId, parsed: ParsedCall, verdict: Result<(), Refusal>, execs: &mut Execs) {
         match (site, verdict) {
             (Site::Permission(reply), Ok(())) => {
@@ -583,8 +553,6 @@ impl Turn {
         }
     }
 
-    /// Pending approvals are denied here; each waiter then answers its provider request and marks
-    /// its card.
     async fn on_stop(&mut self, agent: &mut Agent, grace: Duration) {
         self.stopping = Some(Instant::now() + grace);
         self.chat.deny_pending(Refusal::Stopped);
@@ -600,8 +568,6 @@ impl Turn {
         self.refresh_phase();
     }
 
-    /// The stored conversation before this turn, as plain text, for a session that cannot
-    /// continue.
     fn recap(&self) -> String {
         let earlier: Vec<(u32, u32, Entry)> = self.shared.store.chat_entries(self.chat.id).unwrap_or_default().into_iter().filter(|(_, turn, _)| *turn != self.seq).collect();
         reply::recap(&earlier, super::RECAP_MAX_CHARS)
@@ -614,9 +580,6 @@ impl Turn {
         self.chat.publish_entry(&self.shared, seq, self.seq, entry);
     }
 
-    /// In this order, so a crash at any step leaves rows `recover` can close. The chat is Idle as
-    /// soon as its End is out; the process closes on its own task, and the next turn waits for
-    /// that before it starts its own.
     async fn finish(&mut self, outcome: TurnOutcome) {
         self.publish_texts(true);
         if outcome == TurnOutcome::Stopped {
@@ -645,7 +608,6 @@ impl Turn {
             inner.record.updated_at_ms = now_ms();
             inner.ledger = Default::default();
             inner.turn = None;
-            // A turn stopped before it started a process leaves its predecessor's handle in place.
             if closing.is_some() {
                 inner.closing = closing;
             }
@@ -670,7 +632,6 @@ impl Turn {
     }
 }
 
-/// What the model hears for a refusal.
 fn refusal_text(why: &Refusal) -> String {
     match why {
         Refusal::Policy(message) => message.clone(),
@@ -682,7 +643,6 @@ fn refusal_text(why: &Refusal) -> String {
     }
 }
 
-/// What the card shows for a refusal.
 fn refusal_status(why: Refusal) -> ToolStatus {
     match why {
         Refusal::Declined => ToolStatus::Denied { stopped: false },
@@ -701,7 +661,6 @@ fn start_failure(e: StartError) -> AgentError {
     }
 }
 
-/// Fills `relations` and `writes` for every closed SQL fence.
 fn resolve_blocks(blocks: Vec<ReplyBlock>, catalog: Option<&Catalog>) -> Vec<ReplyBlock> {
     blocks
         .into_iter()

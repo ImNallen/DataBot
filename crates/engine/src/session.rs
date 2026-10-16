@@ -72,8 +72,6 @@ impl Session {
         Ok(session)
     }
 
-    /// A session for one assistant query. Its default is read-only, so a statement that somehow
-    /// ran outside the query's `READ ONLY` transaction would still be refused.
     pub async fn open_assistant(p: &ConnectParams, timezone: &str) -> Result<Session, ConnectError> {
         let session = Session::open(p, None, timezone).await?;
         session.client.batch_execute("SET application_name = 'L1 Data assistant'; SET default_transaction_read_only = on").await.map_err(connect_error)?;

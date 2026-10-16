@@ -1,9 +1,3 @@
-//! One run against the installed `claude`, which the fake cannot stand in for: the argv and env
-//! are accepted, a resumed session remembers the earlier turn, and a `can_use_tool` ask waits
-//! past the 60 s MCP timer for the user. It needs a signed-in `claude` and `pnpm db:up`, and
-//! spends three Haiku turns at low effort:
-//!
-//!     cargo test -p engine --features claude-smoke --test claude_smoke -- --nocapture
 #![cfg(feature = "claude-smoke")]
 
 use std::sync::Arc;
@@ -15,7 +9,6 @@ use tokio::sync::broadcast;
 
 const DEFAULT_URL: &str = "postgres://l1data:l1data@localhost:5433/shop";
 const WAIT: Duration = Duration::from_secs(180);
-/// Longer than the 60 s MCP call timer Claude Code applies elsewhere.
 const APPROVAL_DELAY: Duration = Duration::from_secs(75);
 
 struct Smoke {

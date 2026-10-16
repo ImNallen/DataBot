@@ -11,7 +11,6 @@ import { PROVIDER_ICONS } from "../assistant/providerIcons";
 import { saveSettings } from "../editor/runActions";
 import { Row, SettingLabel } from "./SettingLayout";
 
-/** Providers L1 Data plans to support, listed under "Add provider" until they ship. */
 const UPCOMING = ["Codex"];
 
 const TONE_CLASS = { ok: "text-dim", warn: "text-amber", error: "text-danger", muted: "text-dim" } satisfies Record<StatusTone, string>;
@@ -45,7 +44,6 @@ function AddProviderMenu({ present }: { present: readonly ProviderKind[] }) {
   );
 }
 
-/** Commits on blur or Enter and restores on Escape. Key it on `value` so a saved change resets the draft. */
 function TextField({
   id,
   testId,

@@ -27,7 +27,6 @@ const notify = (text: string) => ws().notify(text);
 
 const opening = new Map<ChatId, Promise<void>>();
 
-/** Loads the chat and every entry into the live store. A second call while one is in flight shares it. */
 export function openChat(id: ChatId): Promise<void> {
   const inFlight = opening.get(id);
   if (inFlight) return inFlight;
@@ -43,7 +42,6 @@ export function openChat(id: ChatId): Promise<void> {
   return open;
 }
 
-/** Puts `id` in the panel. The engine holds an unknown id as a draft until its first message. */
 export function showChat(id: ChatId): Promise<void> {
   ws().setLayout({ assistantChat: id });
   return openChat(id);
@@ -53,7 +51,6 @@ export function newChat(): Promise<void> {
   return showChat(crypto.randomUUID());
 }
 
-/** The rows the tab's grid shows, which is what the attach button sends. Null while it shows output or nothing. */
 export function gridResult(run: RunState | undefined, picked: ResultPick | undefined, hasOutput: boolean): RowResult | null {
   if (!run) return null;
   const view = resultView(run, picked, hasOutput);
@@ -65,7 +62,6 @@ function shownResultRef(tabId: TabId): ResultRef | null {
   return gridResult(live.consoles[tabId]?.run, ws().activeResult[tabId], (live.output[tabId]?.length ?? 0) > 0)?.meta.ref ?? null;
 }
 
-/** What the engine needs from the active tab. Offsets are CodeMirror's, which are UTF-16 code units, as `runTab` sends them. */
 export function tabContext(tab: Tab, editor: EditorState, attach: ResultRef | null): TabContext {
   const sel = editor.selection.main;
   return {
@@ -78,7 +74,6 @@ export function tabContext(tab: Tab, editor: EditorState, attach: ResultRef | nu
   };
 }
 
-/** True once the engine stored the message. The reply arrives as entry events. */
 export async function sendMessage(chatId: ChatId, text: string, attach: boolean): Promise<boolean> {
   const { active, tabs } = ws();
   const tab = active ? tabs[active] : undefined;
@@ -100,7 +95,6 @@ export async function answerApproval(chatId: ChatId, approval: ApprovalId, decis
   if (res.status === "error") notify(approveErrorText(res.error));
 }
 
-/** The effort a chat keeps when it switches to `model`. */
 export function effortFor(model: ModelOption, current: EffortId | null): EffortId | null {
   const ids = model.efforts.map((e) => e.id);
   if (current !== null && ids.includes(current)) return current;
@@ -114,7 +108,6 @@ export async function configureChat(chatId: ChatId, options: ChatOptions): Promi
   useLive.getState().hydrateChat({ state: res.data, entries: [] });
 }
 
-/** The engine publishes the tombstone; the panel moves to a new chat when the one it shows is deleted. */
 export function confirmDeleteChat(chat: ChatState): void {
   ws().open({
     kind: "confirm",
@@ -148,10 +141,6 @@ export function replaceTabSql(sql: string): void {
   focusEditor();
 }
 
-/**
- * Reopens an opened chat when it goes idle holding fewer entries than the engine reports, which means a lagged broadcast dropped one.
- * Each gap gets one reopen, keyed on the counts rather than the rev, so a reopen that leaves the gap open does not loop.
- */
 export function startAssistantSync(): () => void {
   const reopenedGap = new Map<ChatId, string>();
   return useLive.subscribe((s, prev) => {

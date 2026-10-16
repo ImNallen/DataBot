@@ -315,7 +315,6 @@ fn main() {
         });
 }
 
-/// Above the engine's own bound, so the engine's kill sweep runs before this gives up.
 const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// Quit must leave no `claude` behind and must not hang on one that ignores Stop. The exit event

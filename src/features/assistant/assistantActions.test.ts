@@ -17,7 +17,6 @@ afterEach(() => {
 
 const TAB: Tab = { id: "tab-1", title: "orders_by_region.sql", console: { db: { connectionId: "c1", database: "shop" }, mode: "AutoCommit" }, table: null };
 
-// "🦀" is two UTF-16 code units, so every offset past it is one more than its code point index.
 const DOC = "-- 🦀 crab\nselect 1;\nselect 2;";
 
 it("sends a selection as UTF-16 offsets into the tab's text, with the tab's database and title", () => {

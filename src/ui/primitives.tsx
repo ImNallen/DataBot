@@ -95,7 +95,6 @@ export function IconButton({ className, ...rest }: ButtonHTMLAttributes<HTMLButt
   );
 }
 
-/** A pill toggle. A native button, so Space and Enter flip it like a click. */
 export function Switch({
   checked,
   onCheckedChange,

@@ -1,5 +1,3 @@
-//! Pure functions over the reply text and the stored transcript.
-
 use std::collections::HashSet;
 
 use super::context::cut;
@@ -14,14 +12,9 @@ pub(crate) const MAX_FOLLOWUP_CHARS: usize = 80;
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Parsed {
     pub blocks: Vec<ReplyBlock>,
-    /// From a trailing `followups` fence, which never shows. Empty while that fence is open.
     pub followups: Vec<String>,
 }
 
-/// Splits one text block at fences while it streams. `sql`, `postgresql`, and `pgsql` fences
-/// become Sql blocks with `relations` and `writes` left for the caller; an open fence at the end
-/// is `complete: false` until `done`. Other fences stay inside Markdown. A trailing partial fence
-/// line is hidden rather than flashed.
 pub(crate) fn parse_text(text: &str, done: bool) -> Parsed {
     let mut parsed = Parsed::default();
     let mut markdown = String::new();
@@ -95,8 +88,6 @@ fn fence_close(line: &str, ticks: usize) -> bool {
     line.len() - rest.len() <= 3 && !body.is_empty() && body.chars().all(|c| c == '`') && body.len() >= ticks
 }
 
-/// The card's "Uses" line. With a catalog, the names resolve against it: unknown names drop out,
-/// and a relation in the default schema prints bare. Without one, the names print as written.
 pub(crate) fn uses(sql: &str, catalog: Option<&Catalog>) -> Vec<String> {
     let names = sql::relation_names(sql);
     let Some(catalog) = catalog else {
@@ -126,15 +117,10 @@ fn display(schema: Option<&str>, name: &str, default: Option<&str>) -> String {
     }
 }
 
-/// Whether any statement in the text may not run unattended: a write, or a read `sql::vet` cannot
-/// vouch for. The card then offers Open in new tab instead of one-click Run.
 pub(crate) fn writes(sql: &str) -> bool {
     sql::split_statements(sql).iter().any(|span| sql::vet(span.text(sql)) != sql::Vet::Clear)
 }
 
-/// Closes what a crash or quit left open: open Text becomes done, a Running or waiting Tool
-/// becomes Expired, and a turn without an End gets one marked Lost. Returns only the rows to
-/// write, so running it on a closed transcript writes nothing.
 pub(crate) fn recover(entries: &[(u32, u32, Entry)], at_ms: i64) -> Vec<(u32, u32, Entry)> {
     let ended: HashSet<u32> = entries.iter().filter(|(_, _, e)| matches!(e, Entry::End { .. })).map(|(_, turn, _)| *turn).collect();
     let mut fixes = Vec::new();
@@ -160,8 +146,6 @@ pub(crate) fn recover(entries: &[(u32, u32, Entry)], at_ms: i64) -> Vec<(u32, u3
     fixes
 }
 
-/// The stored conversation as plain text for a session that could not resume, newest turns kept
-/// within `max_chars`.
 pub(crate) fn recap(entries: &[(u32, u32, Entry)], max_chars: usize) -> String {
     let mut turns: Vec<(u32, String)> = Vec::new();
     for (_, turn, entry) in entries {

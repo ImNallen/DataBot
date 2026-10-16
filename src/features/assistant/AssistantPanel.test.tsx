@@ -85,7 +85,6 @@ function render(status: ChatStatus, entries: EntrySnapshot[], outcome: ProbeOutc
   return renderToStaticMarkup(<AssistantPanel />);
 }
 
-/** Visible text: inline tags vanish, block tags become spaces. */
 const text = (html: string | undefined) =>
   html
     ?.replace(/<\/?(?:span|code)[^>]*>/g, "")
@@ -93,7 +92,6 @@ const text = (html: string | undefined) =>
     .replace(/&#x27;/g, "'")
     .replace(/\s+/g, " ")
     .trim();
-/** From the tag carrying `data-testid="id"` up to the tag carrying `next`, or to the end. */
 const section = (html: string, id: string, next?: string) => {
   const at = html.indexOf(`data-testid="${id}"`);
   if (at < 0) return undefined;

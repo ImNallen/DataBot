@@ -1,26 +1,17 @@
-//! What one statement names and whether it may run without a user, off the token stream. Pure
-//! and catalog-free: the assistant resolves the names against the database's catalog, so a
-//! function, a CTE, or a column that is not a relation drops out there.
-
 use super::history::{Token, history_is_write, tokens};
 use super::keywords::{NEVER_A_FUNCTION, OTHER_KEYWORDS};
 use super::split::split_statements;
 
-/// A relation name as written. An unquoted part is folded to lower case, a quoted part is verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameRef {
     pub schema: Option<String>,
     pub name: String,
 }
 
-/// What follows a relation name decides whether it was one: `generate_series(` after FROM is a
-/// function call, `t (a, b)` after INTO is a column list.
 #[derive(Clone, Copy, PartialEq)]
 enum Expect {
     No,
-    /// After FROM, JOIN, or a comma in a FROM list.
     FromItem,
-    /// After INTO, UPDATE, TABLE.
     Target,
 }
 
@@ -32,8 +23,6 @@ struct Level {
 
 const CLAUSES: [&str; 17] = ["WHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT", "WINDOW", "FETCH", "FOR", "RETURNING", "SET", "VALUES", "SELECT", "ON"];
 
-/// Statement verbs that read. `classify` also counts FETCH and set operations as queries for
-/// transaction tracking; this list is what `run_query` accepts.
 const READ_VERBS: [&str; 6] = ["SELECT", "WITH", "VALUES", "TABLE", "SHOW", "EXPLAIN"];
 
 /// Whether one statement may run with nobody watching. `READ ONLY` stops writes but not a call
@@ -42,17 +31,10 @@ const READ_VERBS: [&str; 6] = ["SELECT", "WITH", "VALUES", "TABLE", "SHOW", "EXP
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Vet {
     Clear,
-    /// Not a read statement. The assistant never runs it.
     NotARead,
-    /// A read that needs a user. Each item is a called function as written, `U& escape`, or
-    /// `SELECT INTO`, in order of first use.
     Unvetted(Vec<String>),
 }
 
-/// Built-in functions an analytics query calls: aggregates, window functions, math, strings, dates,
-/// JSON, arrays, ranges, text search, casts, and catalog helpers. Every overload is stable or
-/// immutable in `pg_catalog`, which a pg-test checks. Sorted, for the binary search. A bare or
-/// `pg_catalog.`-qualified call matches; any other schema is unvetted.
 pub(crate) const VETTED: &[&str] = &[
     "abbrev", "abs", "acos", "acosh", "age", "any_value", "array_agg", "array_append", "array_cat", "array_dims",
     "array_fill", "array_length", "array_lower", "array_ndims", "array_position", "array_positions", "array_prepend", "array_remove", "array_replace", "array_to_json",
@@ -114,16 +96,11 @@ const SYNTAX_AFTER: &[(&str, &[&str])] = &[
     ("bernoulli", &["tablesample"]),
 ];
 
-/// Words that end a GROUP BY list at its own paren level.
 const GROUP_BY_ENDS: [&str; 10] = ["having", "window", "order", "limit", "offset", "fetch", "for", "union", "intersect", "except"];
 
-/// Where a name sits within its paren level, for the two places a name before `(` is syntax by
-/// position alone.
 #[derive(Clone, Copy, Default)]
 struct Clause {
-    /// A WITH clause's list of CTE names, until the statement's own verb.
     cte_list: bool,
-    /// Between GROUP BY and the next clause, where ROLLUP and CUBE are grouping syntax.
     group_by: bool,
 }
 
@@ -143,7 +120,6 @@ fn is_keyword(word: &str) -> bool {
     NEVER_A_FUNCTION.binary_search(&word).is_ok() || OTHER_KEYWORDS.binary_search(&word).is_ok()
 }
 
-/// The matching `)` of the `(` at `open`.
 fn close_of(tokens: &[Token<'_>], open: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (i, t) in tokens.iter().enumerate().skip(open) {
@@ -161,8 +137,6 @@ fn close_of(tokens: &[Token<'_>], open: usize) -> Option<usize> {
     None
 }
 
-/// Names after FROM, JOIN, UPDATE, INTO, TABLE, USING, and in a FROM comma list, in first-use
-/// order, minus the names `WITH … AS` declared before their use.
 pub fn relation_names(sql: &str) -> Vec<NameRef> {
     let toks = tokens(sql);
     let first = match toks.first() {
@@ -255,7 +229,6 @@ pub fn relation_names(sql: &str) -> Vec<NameRef> {
     out
 }
 
-/// Reads a possibly dotted name starting at `i`; returns the index of its last token.
 fn take_name(toks: &[Token<'_>], mut i: usize, expect: Expect, found: &mut Vec<(NameRef, usize, Expect)>) -> usize {
     let at = i;
     let mut parts = vec![part(toks.get(i)).expect("a word or a quoted identifier")];
@@ -323,14 +296,10 @@ pub fn vet(sql: &str) -> Vet {
 }
 
 struct Call {
-    /// As written: a lowercased word, a verbatim quoted name, `schema.name` when qualified.
     name: String,
     vetted: bool,
 }
 
-/// The function that the `(` after `toks[i]` calls, or `None` when the name is syntax there: a
-/// keyword that is never a function, a CTE name, ROLLUP or CUBE inside GROUP BY, or what the
-/// token before it reveals.
 fn call_at(toks: &[Token<'_>], i: usize, clause: Clause) -> Option<Call> {
     let name = part(toks.get(i))?;
     let mut parts = vec![name.clone()];
@@ -355,10 +324,6 @@ fn call_at(toks: &[Token<'_>], i: usize, clause: Clause) -> Option<Call> {
     Some(Call { name: written, vetted })
 }
 
-/// Whether the token before `name(` makes it syntax: the statement's own verb (`EXPLAIN (`), a
-/// column alias list after `)` or AS, a clause after `)` such as OVER or FILTER, a clause word
-/// such as JOIN or LIKE after a table or column, or one of `SYNTAX_AFTER`. A keyword before the
-/// name means an expression starts there, so the name is a call.
 fn syntax_before(toks: &[Token<'_>], i: usize, name: &str) -> bool {
     let Some(before) = i.checked_sub(1) else { return true };
     match &toks[before] {
@@ -372,8 +337,6 @@ fn syntax_before(toks: &[Token<'_>], i: usize, name: &str) -> bool {
     }
 }
 
-/// One statement whose kind reads only: SELECT, WITH without a modifying CTE, VALUES, TABLE, SHOW,
-/// or EXPLAIN without ANALYZE of a write.
 pub fn is_read_statement(sql: &str) -> bool {
     let spans = split_statements(sql);
     let [span] = spans.as_slice() else { return false };

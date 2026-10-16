@@ -1,30 +1,3 @@
-//! A stand-in for the `claude` CLI that speaks the frames captured from 2.1.301. The engine tests
-//! point `binaryPath` at it and pick a scenario with `launchArgs = --fake-scenario <name>`. Every
-//! stdin line, the pid with the argv at start, and the pid at exit go to `--fake-log <path>` or
-//! `$L1_FAKE_CLAUDE_LOG`. `--fake-linger-ms <n>` delays the exit on stdin EOF. Not shipped.
-//!
-//! Scenarios, each one turn per user message:
-//! - `card`: streams prose, a `sql` fence, inline code, and a trailing `followups` fence in small
-//!   deltas 30 ms apart.
-//! - `query`: asks `can_use_tool` for `run_query` with `--fake-sql <sql>` (default
-//!   `select count(*) from orders`), calls it when allowed, and answers with the tool's result.
-//!   `query-tampered` calls with different arguments than it asked for. `ask-differs` asks about
-//!   different arguments than its `tool_use` block named.
-//! - `describe`: the same for `describe_tables(["orders"])`.
-//! - `slow`: a delta every 100 ms for 60 s; an `interrupt` gets the captured aborted sequence.
-//!   `stop-then-query` answers the interrupt with a `run_query` ask and then calls the tool
-//!   whatever the answer, before the aborted sequence.
-//! - `wedged`: streams forever and never reads stdin, so an `interrupt` and EOF change nothing.
-//!   Only a signal ends it.
-//! - `crash`: two deltas, then stderr text and exit 1.
-//! - `resume-lost`: exits with the captured "No conversation found" result before the handshake
-//!   when argv has `--resume`. `resume-lost-late` does the same after the handshake, on the first
-//!   user message. `resume-lost-twice` also exits with an unrelated error when argv has no
-//!   `--resume`. `resume-crash` exits with an unrelated error when argv has `--resume`.
-//! - `signed-out-start`: exits with the "Not logged in" result before the handshake.
-//! - `echo`: answers with the whole prompt it received.
-//! - anything else: answers "ok".
-
 use std::collections::VecDeque;
 use std::io::{BufRead, Write};
 use std::sync::mpsc;
@@ -83,7 +56,6 @@ fn main() {
     cli.run(&scenario);
 }
 
-/// The captured answer to `--resume` with an id the CLI has no transcript for, then exit 1.
 fn session_lost(id: &str) -> ! {
     println!("{}", json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 0, "session_id": id, "errors": [format!("No conversation found with session ID: {id}")], "result_index": 0 }));
     eprintln!("No conversation found with session ID: {id}");
@@ -127,16 +99,12 @@ fn stdin_lines() -> mpsc::Receiver<Stdin> {
 
 struct Cli {
     stdin: mpsc::Receiver<Stdin>,
-    /// Lines that arrived while `expect` waited for something else, handed out first, in order:
-    /// the host sends its user message while the MCP handshake is still in flight.
     backlog: VecDeque<Value>,
     log: Log,
     session_id: String,
     resumed: bool,
     model: String,
-    /// What the `query` scenarios ask to run.
     sql: String,
-    /// How long the exit on stdin EOF takes.
     linger: Duration,
     next_id: u64,
 }
@@ -153,7 +121,6 @@ impl Cli {
         serde_json::from_str(&line).unwrap_or(Value::Null)
     }
 
-    /// The next stdin line within `wait`, or `None` when the host stays silent.
     fn poll_line(&mut self, wait: Duration) -> Option<Value> {
         if let Some(v) = self.backlog.pop_front() {
             return Some(v);
@@ -165,7 +132,6 @@ impl Cli {
         }
     }
 
-    /// EOF ends the process like the real CLI does, after `linger`, and the log says so.
     fn exit_on_eof(&mut self) -> ! {
         std::thread::sleep(self.linger);
         self.log.write("exit", &std::process::id().to_string());
@@ -204,7 +170,6 @@ impl Cli {
         self.expect("an MCP answer", |v| v["response"]["request_id"] == id)
     }
 
-    /// `initialize` from the host, then the SDK MCP server's own handshake, as the real CLI does.
     fn handshake(&mut self) {
         let init = self.expect("initialize", |v| v["request"]["subtype"] == "initialize");
         let models = ["opus", "fable", "sonnet", "haiku"].map(|value| {
@@ -295,7 +260,6 @@ impl Cli {
         self.send(json!({ "type": "stream_event", "event": { "type": "message_stop" }, "session_id": self.session_id, "parent_tool_use_id": null }));
     }
 
-    /// One text message in deltas of a few characters, `gap` apart.
     fn stream(&mut self, text: &str, gap: Duration) {
         self.message_start();
         let chars: Vec<char> = text.chars().collect();
@@ -344,9 +308,6 @@ impl Cli {
         self.result_success();
     }
 
-    /// One tool call: the `assistant` frame, `can_use_tool` about `ask_with` or the same input,
-    /// then `tools/call` when allowed with `call_with` or the allowed input, then a text message
-    /// built from the answer.
     fn tool_turn(&mut self, tool: &str, input: Value, ask_with: Option<Value>, call_with: Option<Value>) {
         let tool_use_id = self.tool_use(tool, &input);
         let decision = self.ask(tool, &tool_use_id, &ask_with.unwrap_or_else(|| input.clone()));
@@ -363,7 +324,6 @@ impl Cli {
         self.result_success();
     }
 
-    /// The `assistant` message with one `tool_use` block; returns its tool-use id.
     fn tool_use(&mut self, tool: &str, input: &Value) -> String {
         let tool_use_id = format!("toolu_fake_{}", self.next_id());
         let full_name = format!("mcp__l1__{tool}");
@@ -377,7 +337,6 @@ impl Cli {
         tool_use_id
     }
 
-    /// `can_use_tool`; returns the host's decision object.
     fn ask(&mut self, tool: &str, tool_use_id: &str, input: &Value) -> Value {
         let ask_id = format!("fake-ask-{}", self.next_id());
         self.send(json!({ "type": "control_request", "request_id": ask_id, "request": { "subtype": "can_use_tool", "tool_name": format!("mcp__l1__{tool}"), "mcp_server": { "name": "l1", "source": "sdk" }, "display_name": tool, "input": input, "permission_suggestions": [], "tool_use_id": tool_use_id } }));
@@ -385,8 +344,6 @@ impl Cli {
         answer["response"]["response"].clone()
     }
 
-    /// The MCP `tools/call` and the `user` frame that carries its result back; returns the result
-    /// text and whether it was an error.
     fn call(&mut self, tool: &str, tool_use_id: &str, arguments: Value) -> (String, bool) {
         let call = self.mcp(json!({ "method": "tools/call", "params": { "name": tool, "arguments": arguments, "_meta": { "claudecode/toolUseId": tool_use_id, "progressToken": 2 } }, "jsonrpc": "2.0", "id": 2 }));
         let result = &call["response"]["response"]["mcp_response"]["result"];

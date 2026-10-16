@@ -1,6 +1,3 @@
-//! The assistant through the public `Engine`, with `fake-claude` standing in for the CLI. The fake
-//! is selected the way a user would select a binary: `binaryPath` and `launchArgs` in Settings.
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,12 +29,10 @@ impl Harness {
         self.dir.path().join("fake.log")
     }
 
-    /// Points the provider at the fake with `scenario`, which re-probes it.
     fn use_fake(&self, scenario: &str) {
         self.use_fake_with(scenario, "");
     }
 
-    /// As `use_fake`, with more launch arguments for the fake, such as `--fake-sql '…'`.
     fn use_fake_with(&self, scenario: &str, extra: &str) {
         self.configure_provider(|p| {
             p.binary_path = FAKE.into();
@@ -72,9 +67,6 @@ impl Harness {
         }
     }
 
-    /// A finished probe whose outcome `done` accepts, with no further probe running: a settings
-    /// change that lands while the open-time probe is still pending owes one more probe, and the
-    /// gate runs it right after.
     async fn wait_outcome(&mut self, done: impl Fn(&ProbeOutcome) -> bool) -> ProbeOutcome {
         self.wait_provider("a probe outcome", |s| !s.checking && s.outcome.as_ref().is_some_and(&done)).await;
         self.settle().await.outcome.unwrap()
@@ -98,7 +90,6 @@ impl Harness {
         self.log().lines().filter(|l| l.starts_with("argv\t")).count()
     }
 
-    /// The pid and argv of each turn process, in order. A probe's handshake carries no `--model`.
     fn turns(&self) -> Vec<(u32, Vec<String>)> {
         self.log()
             .lines()
@@ -120,7 +111,6 @@ impl Harness {
         self.log().lines().filter_map(|l| l.strip_prefix("stdin\t")).map(str::to_owned).collect()
     }
 
-    /// Every process start and exit in log order, as `("argv", pid)` or `("exit", pid)`.
     fn lifecycle(&self) -> Vec<(String, u32)> {
         self.log()
             .lines()
@@ -171,12 +161,10 @@ impl Harness {
         }
     }
 
-    /// Idle follows the End entry at once; the turn's process may still be closing behind it.
     async fn wait_idle(&mut self, chat: ChatId) -> ChatState {
         self.wait_chat(chat, "the idle state", |s| s.status == ChatStatus::Idle).await
     }
 
-    /// Every event for `chat` with a rev above `rev` that arrives within `window`.
     async fn events_above(&mut self, chat: ChatId, rev: u64, window: Duration) -> Vec<AppEvent> {
         let deadline = Instant::now() + window;
         let mut later = Vec::new();
@@ -199,7 +187,6 @@ fn ready(outcome: &ProbeOutcome) -> bool {
     matches!(outcome, ProbeOutcome::Ready { .. })
 }
 
-/// Whether the process still runs. A zombie waiting to be reaped does not.
 fn alive(pid: u32) -> bool {
     let out = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
     let stat = String::from_utf8_lossy(&out.stdout);
@@ -779,8 +766,6 @@ async fn shutdown_kills_a_wedged_process_within_its_bound() {
     assert_eq!(h.engine.boot().chats[0].status, ChatStatus::Idle);
 }
 
-/// The first process takes 500 ms to exit after its turn. The follow-up sent the moment the End
-/// arrives is accepted, and its process starts only after that exit.
 #[tokio::test]
 async fn a_quick_follow_up_is_accepted_and_starts_only_after_the_last_process_exited() {
     let mut h = Harness::open().await;
@@ -882,7 +867,6 @@ async fn a_draft_opens_with_default_options_and_configure_validates_against_the_
     assert_eq!(h.engine.assistant_open(chat).await.unwrap().state.options, options("haiku", Some("max")));
 }
 
-/// The model and effort a new chat opens with, once the fake has probed with `launch_args`.
 async fn draft_with(launch_args: &str) -> (String, Option<String>) {
     let mut h = Harness::open().await;
     h.configure_provider(|p| {

@@ -430,7 +430,6 @@ export type EffortId = string;
 
 export type EffortOption = {
 	id: EffortId,
-	/**  `"High"`, `"Extra high"`. */
 	label: string,
 };
 
@@ -610,7 +609,6 @@ export type Layout = {
 	resultsHeight: number,
 	sidebarWidth: number,
 	rightPanelWidth: number,
-	/**  The chat the assistant panel shows, reopened after a restart. */
 	assistantChat: ChatId | null,
 };
 
@@ -619,7 +617,6 @@ export type ModelId = string;
 
 export type ModelOption = {
 	id: ModelId,
-	/**  `"Opus 5.5"`. */
 	label: string,
 	description: string,
 	/**  Empty when the model takes no effort setting. */
@@ -673,11 +670,7 @@ export type PgTypeRef = {
 /**  The quick actions of a picker. `None` is an explicit empty selection. */
 export type Preset = "All" | "DefaultOnly" | "None";
 
-export type ProbeOutcome = 
-/**  `plan` reads like `"Claude Max"`. */
-{ kind: "Ready"; version: string; plan: string | null; models: ModelOption[] } | { kind: "SignedOut"; version: string } | 
-/**  `binary` is what was looked up, and where. */
-{ kind: "NotFound"; binary: string } | 
+export type ProbeOutcome = { kind: "Ready"; version: string; plan: string | null; models: ModelOption[] } | { kind: "SignedOut"; version: string } | { kind: "NotFound"; binary: string } | 
 /**  Found, but the version check, the sign-in check, or the handshake failed or timed out. */
 { kind: "Broken"; version: string | null; message: string };
 
@@ -693,7 +686,7 @@ export type ProviderConfig = {
 	launchArgs: string,
 };
 
-/**  What never changes for a kind. The settings page and the composer render from it. */
+/**  What never changes for a kind. */
 export type ProviderInfo = {
 	defaultName: string,
 	defaultBinary: string,
@@ -716,7 +709,6 @@ export type ProviderState = {
 	ignoredFlags: string[],
 	/**  A probe runs. `outcome` stays on screen meanwhile. */
 	checking: boolean,
-	/**  When the last probe finished. */
 	checkedAtMs: number | null,
 	/**  `None` until the first probe finishes. */
 	outcome: ProbeOutcome | null,
