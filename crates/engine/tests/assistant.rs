@@ -1095,6 +1095,25 @@ mod pg {
     }
 
     #[tokio::test]
+    async fn a_wide_row_stays_within_the_tool_budget_in_the_stored_result_and_the_model_text() {
+        let mut h = Harness::open().await;
+        let columns = (1..=60).map(|i| format!("repeat(chr(120), 300) as c{i}")).collect::<Vec<_>>().join(", ");
+        h.use_fake_with("query", &format!("--fake-sql 'select {columns}'"));
+        let config = connected(&h).await;
+        let chat = h.chat(Permission::Auto);
+        send_on(&h, chat, "Show me a wide row", tab(&config, "")).await;
+        assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+        let entries = h.entries(chat).await;
+        let Entry::Tool { status: ToolStatus::Done { result: ToolResult::Rows { columns, rows, more, .. } }, .. } = &entries[1] else { panic!("{:?}", entries[1]) };
+        assert_eq!((columns.len(), rows.len(), *more), (60, 1, false));
+        let stored: usize = rows.iter().flatten().map(|c| c.as_ref().map_or(4, String::len) + 1).sum();
+        assert!(stored <= 8 << 10, "the stored row holds {stored} bytes");
+        let sent = h.stdin_lines().into_iter().find(|l| l.contains("\"mcp_response\"") && l.contains("\"content\"")).unwrap();
+        let text = serde_json::from_str::<serde_json::Value>(&sent).unwrap()["response"]["response"]["mcp_response"]["result"]["content"][0]["text"].as_str().unwrap().len();
+        assert!(text <= 8 << 10, "the model got {text} bytes");
+    }
+
+    #[tokio::test]
     async fn describe_tables_lists_the_foreign_key_and_an_index() {
         let mut h = Harness::open().await;
         h.use_fake("describe");

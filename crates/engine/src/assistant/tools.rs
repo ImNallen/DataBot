@@ -301,18 +301,16 @@ pub(crate) async fn run_query(shared: &Shared, params: &ConnectParams, sql: &str
     let mut bytes = 0;
     let mut more = false;
     while let Some(message) = stream.next().await {
-        match message.map_err(|e| query_error_text(&e))? {
-            SimpleQueryMessage::Row(row) if rows.len() < TOOL_ROWS && bytes < TOOL_BYTES => {
-                let cells: Vec<Option<String>> = (0..row.len()).map(|i| row.get(i).map(|c| super::context::cut(c, TOOL_CELL_CHARS))).collect();
-                bytes += cells.iter().map(|c| c.as_ref().map_or(4, String::len) + 1).sum::<usize>();
-                rows.push(cells);
-            }
-            SimpleQueryMessage::Row(_) => {
-                more = true;
-                break;
-            }
-            _ => {}
+        let SimpleQueryMessage::Row(row) = message.map_err(|e| query_error_text(&e))? else { continue };
+        let cells: Vec<Option<String>> = (0..row.len()).map(|i| row.get(i).map(|c| super::context::cut(c, TOOL_CELL_CHARS))).collect();
+        let size = row_bytes(&cells);
+        if rows.len() == TOOL_ROWS || (!rows.is_empty() && bytes + size > TOOL_BYTES) {
+            more = true;
+            break;
         }
+        let cells = if size > TOOL_BYTES { fit(cells, TOOL_BYTES) } else { cells };
+        bytes += row_bytes(&cells);
+        rows.push(cells);
     }
     if !more {
         guard.handle = None;
@@ -365,15 +363,30 @@ fn rows_text(rows: &RowsOut) -> String {
     cap(text)
 }
 
+fn row_bytes(cells: &[Option<String>]) -> usize {
+    cells.iter().map(|c| c.as_ref().map_or(4, String::len) + 1).sum()
+}
+
+/// A first row that alone would cross the budget, each cell cut to an equal share of it.
+fn fit(cells: Vec<Option<String>>, budget: usize) -> Vec<Option<String>> {
+    let share = (budget / cells.len().max(1)).saturating_sub(1);
+    cells.into_iter().map(|cell| cell.map(|text| cut_bytes(&text, share))).collect()
+}
+
 fn cap(text: String) -> String {
-    if text.len() <= TOOL_BYTES {
-        return text;
+    cut_bytes(&text, TOOL_BYTES)
+}
+
+/// At most `max` bytes, the ellipsis included, cut at a char boundary.
+fn cut_bytes(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_owned();
     }
-    let mut cut = TOOL_BYTES;
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
+    let mut end = max.saturating_sub('…'.len_utf8());
+    while !text.is_char_boundary(end) {
+        end -= 1;
     }
-    format!("{}…", &text[..cut])
+    format!("{}…", &text[..end])
 }
 
 #[cfg(test)]
@@ -421,7 +434,9 @@ mod tests {
         let more = RowsOut { more: true, ..rows };
         assert!(rows_text(&more).ends_with("1+ rows; more not shown · 27 ms"));
         let long = cap("x".repeat(TOOL_BYTES + 10));
-        assert_eq!(long.len(), TOOL_BYTES + '…'.len_utf8());
+        assert_eq!((long.len(), long.ends_with('…')), (TOOL_BYTES, true), "the cap holds the ellipsis within the budget");
+        assert_eq!(cut_bytes("héllo", 4), "h…", "the cut lands on a char boundary");
+        assert_eq!(fit(vec![Some("x".repeat(100)), None, Some("y".repeat(3))], 40), vec![Some(format!("{}…", "x".repeat(9))), None, Some("yyy".into())], "each cell gets an equal share");
     }
 }
 
@@ -511,6 +526,24 @@ mod pg_tests {
         assert_eq!((few.rows.len(), few.more), (3, false));
         let explain = query(s, "explain select 1").await.unwrap();
         assert_eq!(explain.columns, vec!["QUERY PLAN".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn no_row_crosses_the_byte_budget_and_a_first_row_that_would_is_cut_to_fit() {
+        let (engine, _dir) = engine().await;
+        let s = &engine.shared;
+        let bytes_of = |out: &RowsOut| out.rows.iter().flatten().map(|c| c.as_ref().map_or(4, String::len) + 1).sum::<usize>();
+        let columns = |n: usize| (1..=n).map(|i| format!("repeat('x', 300) as c{i}")).collect::<Vec<_>>().join(", ");
+        let stacked = query(s, &format!("select {} from generate_series(1, 3)", columns(20))).await.unwrap();
+        assert_eq!((stacked.rows.len(), stacked.more), (2, true), "the third row would cross the budget");
+        assert!(bytes_of(&stacked) <= TOOL_BYTES, "{} bytes", bytes_of(&stacked));
+        let wide = query(s, &format!("select {}", columns(60))).await.unwrap();
+        assert_eq!((wide.rows.len(), wide.more), (1, false), "the first row is kept");
+        assert!(bytes_of(&wide) <= TOOL_BYTES, "{} bytes", bytes_of(&wide));
+        assert!(wide.rows[0].iter().all(|c| c.as_deref().is_some_and(|c| c.ends_with('…'))), "each cell is cut to fit");
+        assert!(rows_text(&wide).len() <= TOOL_BYTES, "{} bytes for the model", rows_text(&wide).len());
+        let heavy = query(s, "select repeat('y', 500) as wide from generate_series(1, 1000) g").await.unwrap();
+        assert!(bytes_of(&heavy) <= TOOL_BYTES && heavy.more, "{} bytes", bytes_of(&heavy));
     }
 
     #[tokio::test]
