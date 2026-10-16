@@ -38,11 +38,19 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 - A table tab pages through rows, from 10 to 1,000 per page. It filters with a `WHERE` condition or per-column filters, and sorts with `ORDER BY`. Click a header to sort by it, and Shift-click to add a column to the sort.
 - A table tab with a primary key can add, edit, and delete rows, and set a cell to `NULL` or `DEFAULT`. Changes stay pending until **Submit** (`⌘S`), which applies them all in one transaction or none of them. In manual mode, submitted changes wait in the tab's open transaction until **Commit**. **Revert** drops them.
 
+### The assistant
+
+- The right panel is a chat with Claude. It runs on your own Claude subscription through the `claude` CLI you have installed and signed in to, so L1 Data needs no API key. Each message sends Claude the active tab's connection, database, and SQL, the statement at the cursor or the selection, the last error, and an outline of the schemas the sidebar shows.
+- Claude reads the catalog through two tools that never ask. One describes tables, and the other searches table, column, and function names. It can also run a read-only query. The permission picker under the message box chooses when a query asks first. In **Ask first**, every query waits for **Run** or **Deny**. In **Auto**, read-only queries run without asking, but a query that calls a function acting outside its transaction still asks. Only `SELECT`, `WITH`, `VALUES`, `TABLE`, `SHOW`, and `EXPLAIN` run. Each query runs on its own session in a `READ ONLY` transaction with a 30-second timeout, and Claude sees at most 50 rows.
+- SQL in a reply shows as a card that names the tables it uses. **Run in new tab** opens the SQL in a new tab and runs it. **Insert at cursor** inserts it into the active tab. **Replace tab** replaces the active tab's text as one edit that `⌘Z` undoes. A card whose SQL writes offers **Open in new tab** in place of **Run in new tab**, so the write waits for you to run it.
+- The paperclip attaches the result the active tab shows, up to 100 rows. Suggestion chips under a reply send their text as the next message. `Enter` sends, `Shift+Enter` starts a new line, and **Stop** ends the turn.
+- The model and effort pickers list the models and effort levels your CLI offers. Chats are saved. A restart reopens the chat you had open, the history button lists the others, and the next message continues where the conversation left off.
+- **Settings** > **Providers** shows the CLI's version, sign-in state, and plan, with a switch that turns the provider on or off. It also sets the display name, the binary path, the config directory, and the launch arguments. Launch arguments pass to the CLI, except the flags the app sets itself, which the field lists as ignored. `--model` and `--effort` there set the model and effort a new chat starts with. **Health check interval** under **Advanced** sets how often the app checks the CLI in the background. The default is 300 seconds, and 0 turns the check off.
+
 ### The window
 
 - **Settings** (`⌘,`) opens in place of the sidebar and editor. **Appearance** picks a System, Light, or Dark scheme and the themes for each. It also sets the density (Compact, Standard, or Spacious), the speed of panel, dialog, and menu animations, and the interface and monospace fonts and sizes. The monospace font is used by the SQL editor and the result tables. **Queries** sets the row limit, the table page size, and whether a script stops at its first error. The search box above the sections filters the settings in place and shows the matches with their controls. `Esc` clears it and returns to the section you were on.
 - On macOS the window keeps the native traffic lights. On Windows and Linux the app draws its own window controls and resize edges.
-- The right panel holds a placeholder for an AI assistant.
 
 ## Keyboard shortcuts
 
@@ -91,12 +99,15 @@ pnpm test                # vitest
 pnpm build               # production frontend bundle
 pnpm self-check          # boots the engine inside the Tauri binary, connects to the Docker database, prints JSON, exits
 cargo build -p dev-bridge && dev/bridge-smoke.sh   # drives the bridge over HTTP against the Docker database
+cargo test -p engine --features claude-smoke --test claude_smoke -- --nocapture   # the assistant through your installed claude CLI
 pnpm bindings            # rewrites src/ipc/bindings.ts after an IPC type or command changes
 pnpm icons               # rewrites src-tauri/icons from src-tauri/app-icon.svg
 pnpm screenshot          # macOS: rewrites docs/images/l1-data.png from the running app
 ```
 
 A debug binary rewrites `src/ipc/bindings.ts` each time it starts, so `pnpm tauri dev` and `pnpm self-check` keep it current too.
+
+The `claude-smoke` test needs the `claude` CLI installed and signed in, and the Docker database. It spends three Haiku turns on your Claude subscription, and one of them waits 75 seconds for an approval.
 
 `pnpm screenshot` starts its own Postgres container on port 5434. It needs `swift`, `osascript`, and `python3`, free ports 7077, 5173, and 5434, and Accessibility and Screen Recording permission for the terminal.
 
@@ -108,7 +119,7 @@ A debug binary rewrites `src/ipc/bindings.ts` each time it starts, so `pnpm taur
 | `L1_DATA_SECRET_STORE=memory` | Keeps the master key in memory instead of the OS credential store. Debug builds only. |
 | `L1_DATA_SELF_CHECK=1` | Runs the self-check and exits without opening a window. |
 | `L1_DATA_SELF_CHECK_URL` | The database for the self-check. Default `postgres://l1data:l1data@localhost:5433/shop`. |
-| `L1_DATA_TEST_PG` | The database for `pg-tests`. Same default. |
+| `L1_DATA_TEST_PG` | The database for `pg-tests` and `claude-smoke`. Same default. |
 | `UPDATE_BINDINGS=1` | Makes the bindings drift test rewrite `src/ipc/bindings.ts` instead of failing. |
 
 ## Layout
