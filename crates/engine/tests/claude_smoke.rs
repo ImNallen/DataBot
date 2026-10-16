@@ -151,7 +151,7 @@ async fn haiku_answers_resumes_and_waits_for_an_approval() {
     let text = smoke.reply_text(chat, third.turn).await;
     println!("turn 3: {outcome:?} in {:.1} s, tools={tools:?}, reply={text:?}", t.elapsed().as_secs_f32());
     remove_transcript_dirs(&marker);
-    assert_eq!(answered, Ok(()), "the CLI did not wait {} s for the approval: fall back per SYNTHESIS D4", APPROVAL_DELAY.as_secs());
+    assert_eq!(answered, Ok(()), "the CLI did not wait {} s for the approval; see \"The CLI waits on `can_use_tool`\" in docs/architecture.md", APPROVAL_DELAY.as_secs());
     assert_eq!(outcome, TurnOutcome::Completed);
     assert!(tools.iter().any(|e| matches!(e, Entry::Tool { status: ToolStatus::Done { result: ToolResult::Rows { .. } }, .. })), "the approved query ran: {tools:?}");
     smoke.engine.shutdown().await;

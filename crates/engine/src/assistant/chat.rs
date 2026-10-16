@@ -343,7 +343,7 @@ impl Chat {
 /// A waiter treats a dropped sender (the turn ended) as expired.
 pub(crate) async fn wait(mut answer: watch::Receiver<Option<Verdict>>) -> Verdict {
     match answer.wait_for(Option::is_some).await {
-        Ok(verdict) => verdict.clone().unwrap_or(Err(Refusal::Expired)),
+        Ok(verdict) => verdict.clone().expect("wait_for returns a Some"),
         Err(_) => Err(Refusal::Expired),
     }
 }

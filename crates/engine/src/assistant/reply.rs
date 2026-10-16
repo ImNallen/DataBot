@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use super::context::cut;
 use crate::model::{Catalog, Entry, ReplyBlock, ToolResult, ToolStatus, ToolUse, TurnOutcome};
 use crate::sql;
 
@@ -75,11 +76,7 @@ pub(crate) fn parse_text(text: &str, done: bool) -> Parsed {
 }
 
 fn cut_followup(line: &str) -> String {
-    let line = line.trim_start_matches(['-', '*', ' ']).trim_matches('"').trim();
-    match line.char_indices().nth(MAX_FOLLOWUP_CHARS - 1) {
-        Some((cut, _)) => format!("{}…", &line[..cut]),
-        None => line.to_owned(),
-    }
+    cut(line.trim_start_matches(['-', '*', ' ']).trim_matches('"').trim(), MAX_FOLLOWUP_CHARS - 1)
 }
 
 fn fence_open(line: &str) -> Option<(usize, &str)> {

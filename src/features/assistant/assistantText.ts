@@ -93,16 +93,16 @@ export function providerBanner(config: ProviderConfig | undefined, state: Provid
   if (!config) return null;
   const name = config.displayName;
   if (!config.enabled) return { kind: "Off", name };
-  const outcome = state?.outcome;
-  switch (outcome?.kind) {
+  if (!state?.outcome) return null;
+  const outcome = state.outcome;
+  switch (outcome.kind) {
     case "NotFound":
       return { kind: "NotFound", name, binary: outcome.binary };
     case "SignedOut":
-      return { kind: "SignedOut", name, command: state?.info.signInCommand ?? "" };
+      return { kind: "SignedOut", name, command: state.info.signInCommand };
     case "Broken":
       return { kind: "Broken", name, message: outcome.message };
     case "Ready":
-    case undefined:
       return null;
     default: {
       const unreachable: never = outcome;

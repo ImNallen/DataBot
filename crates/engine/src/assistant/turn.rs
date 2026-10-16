@@ -54,7 +54,6 @@ pub(crate) async fn run_turn(shared: Arc<Shared>, plan: TurnPlan, control: mpsc:
         db: plan.tab.as_ref().and_then(|t| t.db.clone()),
         tab: plan.tab,
         closing: plan.closing,
-        control: Some(control),
         connected: Ok(()),
         catalog: None,
         texts: Vec::new(),
@@ -63,7 +62,7 @@ pub(crate) async fn run_turn(shared: Arc<Shared>, plan: TurnPlan, control: mpsc:
         session_id: None,
         agent: None,
     };
-    let outcome = turn.run().await;
+    let outcome = turn.run(control).await;
     turn.finish(outcome).await;
 }
 
@@ -76,7 +75,6 @@ struct Turn {
     tab: Option<TabContext>,
     db: Option<DatabaseRef>,
     closing: Option<Closing>,
-    control: Option<mpsc::Receiver<TurnControl>>,
     connected: Result<(), String>,
     catalog: Option<Arc<Catalog>>,
     texts: Vec<TextState>,
@@ -135,8 +133,7 @@ enum Attempt {
 }
 
 impl Turn {
-    async fn run(&mut self) -> TurnOutcome {
-        let mut control = self.control.take().expect("taken once");
+    async fn run(&mut self, mut control: mpsc::Receiver<TurnControl>) -> TurnOutcome {
         if let Some(db) = self.db.clone() {
             let connect = self.shared.connect(db.connection_id);
             tokio::select! {
@@ -255,7 +252,7 @@ impl Turn {
     }
 
     fn provider_config(&self) -> ProviderConfig {
-        self.shared.settings().providers.into_iter().find(|c| c.provider == self.options.provider).unwrap_or_else(|| crate::model::default_config(self.options.provider))
+        self.shared.settings().providers.into_iter().find(|c| c.provider == self.options.provider).unwrap_or_else(|| default_config(self.options.provider))
     }
 
     async fn start_agent(&mut self, control: &mut mpsc::Receiver<TurnControl>, cfg: &ProviderConfig, resume: Option<String>) -> Result<Started, StartError> {
@@ -275,7 +272,7 @@ impl Turn {
     }
 
     /// The `<l1_context>` block, the recap when the session was lost, and the user's text.
-    fn prompt(&mut self, fresh_session: bool, recap: Option<&str>) -> String {
+    fn prompt(&self, fresh_session: bool, recap: Option<&str>) -> String {
         let instance = self.db.as_ref().and_then(|db| self.shared.instance(db.connection_id));
         let config = self.db.as_ref().and_then(|db| self.shared.config(db.connection_id));
         let server_version = instance.as_ref().map(|i| i.server.version.clone());
@@ -284,7 +281,7 @@ impl Turn {
             (Some(instance), Some(catalog), Some(db)) => crate::view::resolve_schemas(&instance.view().database(&db.database, &instance.home), catalog),
             _ => Vec::new(),
         };
-        let tab_text = self.tab.as_ref().map(|t| t.text.clone()).unwrap_or_default();
+        let tab_text = self.tab.as_ref().map_or("", |t| t.text.as_str());
         let picked = self.tab.as_ref().and_then(|t| {
             let map = OffsetMap::new(&t.text);
             let target = match t.target {
@@ -314,7 +311,7 @@ impl Turn {
             Some(l) if same_session && l.sql_hash == sql_hash && self.db.as_ref() == Some(&l.db) => context::Repeat::Unchanged,
             _ => context::Repeat::Full,
         };
-        let tab = self.tab.as_ref().map(|t| context::TabFacts { title: &t.title, text: &tab_text, picked, selected, last_error: last_error.as_deref() });
+        let tab = self.tab.as_ref().map(|t| context::TabFacts { title: &t.title, text: tab_text, picked, selected, last_error: last_error.as_deref() });
         let block = context::build(&context::ContextInput { connection, db: self.db.as_ref(), catalog: self.catalog.as_deref(), shown_schemas: &shown, tab, tab_sql, attachment: attachment.as_ref(), outline });
         if let (Some(db), Some(catalog)) = (&self.db, &self.catalog) {
             self.chat.inner.lock().unwrap().last_context = Some(LastContext { session: session.unwrap_or_default(), db: db.clone(), catalog_version: catalog.version, sql_hash });
@@ -337,13 +334,15 @@ impl Turn {
     /// The tab's last run, when a statement failed.
     fn last_run_error(&self, tab: &TabContext) -> Option<String> {
         let console = self.shared.console(tab.tab_id)?;
-        let state = console.latest.lock().unwrap().clone();
-        let RunState::Finished { statements, .. } = state.run else { return None };
-        let error = statements.iter().find_map(|s| match &s.status {
-            StmtStatus::Failed { error } => Some(error.clone()),
-            _ => None,
-        })?;
-        let mut text = error.message.clone();
+        let error = {
+            let latest = console.latest.lock().unwrap();
+            let RunState::Finished { statements, .. } = &latest.run else { return None };
+            statements.iter().find_map(|s| match &s.status {
+                StmtStatus::Failed { error } => Some(error.clone()),
+                _ => None,
+            })?
+        };
+        let mut text = error.message;
         if let Some(detail) = &error.detail {
             text.push_str(&format!(" DETAIL: {detail}"));
         }
@@ -365,9 +364,7 @@ impl Turn {
             AgentEvent::TurnStarted { session_id } => self.set_session(session_id),
             AgentEvent::Text { block, delta } => self.text_delta(block, &delta),
             AgentEvent::TextDone { block } => self.text_done(block),
-            AgentEvent::ToolUse { call, name, input } => {
-                self.ensure_tool(&call, &name, &input);
-            }
+            AgentEvent::ToolUse { call, name, input } => self.ensure_tool(&call, &name, &input),
             AgentEvent::Permission { reply, call, name, input } => self.on_gate(agent, Site::Permission(reply), call, &name, input, waits, execs).await,
             AgentEvent::ToolCall { reply, call, name, input } => self.on_gate(agent, Site::Call(reply), call, &name, input, waits, execs).await,
             AgentEvent::ToolCancelled { call } => {
@@ -388,7 +385,7 @@ impl Turn {
         let cfg = self.provider_config();
         let changed = {
             let mut inner = self.chat.inner.lock().unwrap();
-            let next = ProviderSession { provider: self.options.provider, id: session_id.clone(), config_dir: cfg.config_dir.clone() };
+            let next = ProviderSession { provider: self.options.provider, id: session_id.clone(), config_dir: cfg.config_dir };
             let changed = inner.record.session.as_ref() != Some(&next);
             if changed {
                 inner.record.session = Some(next);
@@ -456,16 +453,13 @@ impl Turn {
     /// Creates the card, or refreshes it when the provider's ask carries other arguments than its
     /// `tool_use` block did, so the card, the ledger, and `updatedInput` hold what the user sees.
     fn ensure_tool(&mut self, call: &ToolCallId, name: &str, input: &Value) {
-        let refreshed = match self.tools.iter_mut().find(|t| t.call == *call) {
-            Some(state) if state.input != *input => {
-                state.input = input.clone();
-                state.tool = tools::describe(name, input, self.catalog.as_deref());
-                Some(state.status.clone())
+        if let Some(state) = self.tools.iter_mut().find(|t| t.call == *call) {
+            if state.input == *input {
+                return;
             }
-            Some(_) => return,
-            None => None,
-        };
-        if let Some(status) = refreshed {
+            state.input = input.clone();
+            state.tool = tools::describe(name, input, self.catalog.as_deref());
+            let status = state.status.clone();
             return self.set_tool_status(call, status);
         }
         let seq = self.next_seq();
@@ -532,7 +526,7 @@ impl Turn {
     async fn settle(&mut self, agent: &mut Agent, site: Site, call: ToolCallId, parsed: ParsedCall, verdict: Result<(), Refusal>, execs: &mut Execs) {
         match (site, verdict) {
             (Site::Permission(reply), Ok(())) => {
-                let input = self.tool_mut(&call).map(|t| t.input.clone()).unwrap_or(Value::Null);
+                let input = self.tool_mut(&call).expect("on_gate made the card").input.clone();
                 let lines = agent.codec.permission(&reply, Decision::Run, &input, "");
                 agent.write(lines).await.ok();
                 if matches!(self.tool_mut(&call).map(|t| &t.status), Some(ToolStatus::AwaitingApproval { .. })) {

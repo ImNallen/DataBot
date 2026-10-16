@@ -459,8 +459,7 @@ async fn auto_runs_a_read_query_without_asking() {
     let entries = h.entries(chat).await;
     assert!(matches!(&entries[1], Entry::Tool { status: ToolStatus::Failed { message }, .. } if message.starts_with("No database is selected")), "{:?}", entries[1]);
     assert!(h.stdin_lines().iter().any(|l| l.contains("\"behavior\":\"allow\"")));
-    let states: Vec<Entry> = entries;
-    assert!(!states.iter().any(|e| matches!(e, Entry::Tool { status: ToolStatus::AwaitingApproval { .. }, .. })));
+    assert!(!entries.iter().any(|e| matches!(e, Entry::Tool { status: ToolStatus::AwaitingApproval { .. }, .. })));
 }
 
 #[tokio::test]
@@ -697,7 +696,6 @@ async fn chats_persist_across_open_and_a_mid_turn_row_recovers_as_lost() {
         assert!(matches!(&entries[0], Entry::User { text, .. } if text == "persist me"));
         assert!(matches!(&entries[1], Entry::Text { done: true, .. }));
         assert!(matches!(&entries[2], Entry::End { outcome: TurnOutcome::Completed, .. }));
-        drop(h2);
     }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_owned();

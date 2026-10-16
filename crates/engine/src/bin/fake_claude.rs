@@ -115,14 +115,9 @@ fn stdin_lines() -> mpsc::Receiver<Stdin> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
-        for line in stdin.lock().lines() {
-            match line {
-                Ok(line) => {
-                    if tx.send(Stdin::Line(line)).is_err() {
-                        return;
-                    }
-                }
-                Err(_) => break,
+        for line in stdin.lock().lines().map_while(Result::ok) {
+            if tx.send(Stdin::Line(line)).is_err() {
+                return;
             }
         }
         let _ = tx.send(Stdin::Eof);
@@ -191,7 +186,6 @@ impl Cli {
         }
     }
 
-    /// The next stdin line as JSON.
     fn read_line(&mut self) -> Value {
         match self.stdin.recv() {
             Ok(Stdin::Line(line)) => self.parse(line),
@@ -235,8 +229,7 @@ impl Cli {
             let user = self.expect("a user message", |v| v["type"] == "user");
             let prompt = user["message"]["content"][0]["text"].as_str().unwrap_or_default().to_owned();
             if scenario == "resume-lost-late" && self.resumed {
-                let id = self.session_id.clone();
-                session_lost(&id);
+                session_lost(&self.session_id);
             }
             self.turn_start();
             match scenario {
@@ -280,10 +273,9 @@ impl Cli {
     }
 
     fn turn_start(&mut self) {
-        let session = self.session_id.clone();
-        self.send(json!({ "type": "system", "subtype": "session_state_changed", "state": "running", "session_id": session }));
-        self.send(json!({ "type": "system", "subtype": "init", "cwd": std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default(), "session_id": session, "tools": ["mcp__l1__describe_tables", "mcp__l1__search_catalog", "mcp__l1__run_query"], "mcp_servers": [{ "name": "l1", "status": "connected", "source": "sdk" }], "model": self.model, "permissionMode": "default", "claude_code_version": "2.1.301" }));
-        self.send(json!({ "type": "system", "subtype": "status", "status": "requesting", "session_id": session }));
+        self.send(json!({ "type": "system", "subtype": "session_state_changed", "state": "running", "session_id": self.session_id }));
+        self.send(json!({ "type": "system", "subtype": "init", "cwd": std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default(), "session_id": self.session_id, "tools": ["mcp__l1__describe_tables", "mcp__l1__search_catalog", "mcp__l1__run_query"], "mcp_servers": [{ "name": "l1", "status": "connected", "source": "sdk" }], "model": self.model, "permissionMode": "default", "claude_code_version": "2.1.301" }));
+        self.send(json!({ "type": "system", "subtype": "status", "status": "requesting", "session_id": self.session_id }));
     }
 
     fn message_start(&mut self) {

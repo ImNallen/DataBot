@@ -1,7 +1,7 @@
 //! The `<l1_context>` block that precedes the user's text in every message: a pure function from
 //! structured state to a string within budgets.
 
-use crate::model::{Attachment, Catalog, DatabaseRef, RelKind};
+use crate::model::{Attachment, Catalog, DatabaseRef, RelKind, Relation};
 use crate::results::ResultSet;
 
 pub(crate) const CONTEXT_MAX: usize = 28_000;
@@ -74,10 +74,7 @@ pub(crate) fn build(input: &ContextInput<'_>) -> String {
                 out.push('\n');
             }
         }
-        if let Some((from, to)) = tab.picked
-            && from < to
-            && to <= tab.text.len()
-        {
+        if let Some((from, to)) = tab.picked {
             out.push_str(if tab.selected { "Selected statement:\n" } else { "Statement at the cursor:\n" });
             out.push_str(&cut(&tab.text[from..to], STATEMENT_MAX));
             out.push('\n');
@@ -114,7 +111,7 @@ fn tab_sql(text: &str, picked: Option<(usize, usize)>) -> (String, bool) {
     if text.chars().count() <= TAB_SQL_MAX {
         return (text.to_owned(), false);
     }
-    let (from, to) = picked.filter(|(f, t)| f <= t && *t <= text.len()).unwrap_or((0, 0));
+    let (from, to) = picked.unwrap_or((0, 0));
     let start = text[..from].char_indices().rev().nth(TAB_SQL_WINDOW - 1).map_or(0, |(i, _)| i);
     let end = text[to..].char_indices().nth(TAB_SQL_WINDOW).map_or(text.len(), |(i, _)| to + i);
     let mut out = String::new();
@@ -143,10 +140,10 @@ fn attachment_text(a: &Attachment) -> String {
     out
 }
 
-/// The rows the model and the chip see: at most 100 rows, cells cut at 200 chars, 8 KB.
+/// The rows the model and the chip see.
 pub(crate) fn attachment(set: &ResultSet, tab_title: &str) -> Attachment {
     let meta = set.meta();
-    let page = set.page(0, ATTACHMENT_ROWS).map(|p| p.rows).unwrap_or_default();
+    let page = set.page(0, ATTACHMENT_ROWS).expect("a result always has a first page").rows;
     let mut rows = Vec::new();
     let mut chars = 0;
     for row in page {
@@ -181,7 +178,7 @@ enum Detail {
     Counts,
 }
 
-fn outline_line(schema: &str, r: &crate::model::Relation, detail: Detail) -> String {
+fn outline_line(schema: &str, r: &Relation, detail: Detail) -> String {
     let kind = match r.kind {
         RelKind::Table | RelKind::PartitionedTable => "",
         RelKind::View => " view",
@@ -205,7 +202,7 @@ fn outline_line(schema: &str, r: &crate::model::Relation, detail: Detail) -> Str
             })
             .collect::<Vec<_>>()
             .join(", "),
-        Detail::Names => r.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", "),
+        Detail::Names => r.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "),
         Detail::Counts => format!("{} columns", r.columns.len()),
     };
     format!("{schema}.{}{kind}{rows}: {columns}", r.name)

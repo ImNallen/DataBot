@@ -101,13 +101,11 @@ export function Switch({
   onCheckedChange,
   label,
   testId,
-  disabled,
 }: {
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   label: string;
   testId?: string;
-  disabled?: boolean;
 }) {
   return (
     <button
@@ -116,10 +114,9 @@ export function Switch({
       aria-checked={checked}
       aria-label={label}
       data-testid={testId}
-      disabled={disabled}
       onClick={() => onCheckedChange(!checked)}
       className={cx(
-        "inline-flex h-[18px] w-[30px] shrink-0 items-center rounded-full px-[2px] transition-colors disabled:pointer-events-none disabled:opacity-40",
+        "inline-flex h-[18px] w-[30px] shrink-0 items-center rounded-full px-[2px] transition-colors",
         checked ? "bg-run hover:bg-run-hover" : "bg-control hover:bg-handle-hover",
       )}
     >

@@ -166,8 +166,8 @@ async fn quick_probe(cfg: &ProviderConfig, host: &HostEnv) -> Result<Quick, Prob
     // Signed out, the CLI still prints its JSON and exits 1, so the exit code is not read.
     let auth_out = run(&["auth", "status"], AUTH_TIMEOUT).await.map_err(|m| broken(Some(version.clone()), m))?;
     let auth_text = String::from_utf8_lossy(&auth_out.stdout);
-    let auth = parse_auth_status(&auth_text).ok_or_else(|| broken(Some(version.clone()), format!("auth status printed {:?}", auth_text.trim())))?;
-    Ok(Quick { version, signed_in: auth.0, plan: auth.1 })
+    let (signed_in, plan) = parse_auth_status(&auth_text).ok_or_else(|| broken(Some(version.clone()), format!("auth status printed {:?}", auth_text.trim())))?;
+    Ok(Quick { version, signed_in, plan })
 }
 
 /// `2.1.301 (Claude Code)`.
@@ -197,7 +197,7 @@ pub(crate) fn plan_label(subscription: Option<&str>, api_provider: Option<&str>,
         _ => {}
     }
     if let Some(raw) = subscription.map(str::trim).filter(|s| !s.is_empty()) {
-        let key: String = raw.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        let key = raw.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
         let key = key.strip_prefix("claude").unwrap_or(&key);
         let key = key.strip_suffix("subscription").unwrap_or(key);
         return Some(match key {
@@ -338,10 +338,10 @@ fn split_args(text: &str) -> Vec<String> {
     tokens
 }
 
-/// FINDINGS point 1 plus the session flags. `--setting-sources=` drops hooks, plugins, and user
-/// settings; `--strict-mcp-config` drops account connectors; `--tools=` removes every built-in tool;
-/// `--permission-prompt-tool=stdio` makes permission asks reach the host. The passthrough
-/// arguments go first: when the CLI reads a flag from both, the engine's later one wins.
+/// `--setting-sources=` drops hooks, plugins, and user settings; `--strict-mcp-config` drops
+/// account connectors; `--tools=` removes every built-in tool; `--permission-prompt-tool=stdio`
+/// makes permission asks reach the host. The passthrough arguments go first: when the CLI reads a
+/// flag from both, the engine's later one wins.
 pub(crate) fn argv(start: &SessionStart, args: &LaunchArgs) -> Vec<String> {
     let mut argv: Vec<String> = args.passthrough.clone();
     argv.extend(["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--setting-sources=", "--strict-mcp-config", "--tools=", "--permission-prompt-tool=stdio", "--permission-mode=default"].map(str::to_owned));
@@ -463,7 +463,7 @@ impl ClaudeCodec {
         }
     }
 
-    fn result(&mut self, v: &Value) -> TurnOutcome {
+    fn result(&self, v: &Value) -> TurnOutcome {
         if self.interrupted {
             return TurnOutcome::Stopped;
         }
@@ -498,8 +498,7 @@ fn tool_name(name: &str) -> String {
 
 impl Codec for ClaudeCodec {
     fn open(&mut self) -> Vec<String> {
-        let prompt = self.open.system_prompt;
-        vec![self.request(HostRequest::Initialize, json!({ "subtype": "initialize", "systemPrompt": prompt, "sdkMcpServers": [SERVER] }))]
+        vec![self.request(HostRequest::Initialize, json!({ "subtype": "initialize", "systemPrompt": self.open.system_prompt, "sdkMcpServers": [SERVER] }))]
     }
 
     fn user_turn(&mut self, text: &str) -> Vec<String> {
@@ -531,10 +530,7 @@ impl Codec for ClaudeCodec {
     }
 
     fn read(&mut self, line: &str) -> Step {
-        let v: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => return Step::default(),
-        };
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return Step::default() };
         let event = |event: AgentEvent| Step { replies: Vec::new(), events: vec![event] };
         match v["type"].as_str() {
             Some("control_response") => {
@@ -617,7 +613,7 @@ mod tests {
         fixture.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}"))).collect()
     }
 
-    fn frame<'a>(fixture: &'a str, pick: impl Fn(&Value) -> bool) -> &'a str {
+    fn frame(fixture: &str, pick: impl Fn(&Value) -> bool) -> &str {
         fixture.lines().find(|l| !l.trim().is_empty() && pick(&serde_json::from_str::<Value>(l).unwrap())).expect("a frame matching the predicate")
     }
 

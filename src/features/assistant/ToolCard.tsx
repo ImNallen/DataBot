@@ -1,6 +1,6 @@
 import { IconChevronRight, IconCircleOff, IconDatabaseSearch, IconPlayerPlay, IconTable, IconTool } from "@tabler/icons-react";
 import { memo, useState, type ReactNode } from "react";
-import type { ApprovalId, ApprovalReason, ChatId, DatabaseRef, ToolResult, ToolStatus, ToolUse } from "../../ipc/bindings";
+import type { ApprovalId, ApprovalReason, ChatId, DatabaseRef, Decision, ToolResult, ToolStatus, ToolUse } from "../../ipc/bindings";
 import { toolLine } from "../../state/transcript";
 import { Button, cx, Spinner } from "../../ui/primitives";
 import { answerApproval, openInNewTab } from "./assistantActions";
@@ -57,7 +57,7 @@ function RowsPreview({ rows, sql, db }: { rows: RowsResult; sql: string | null; 
 
 function ApprovalCard({ chatId, testId, tool, approval, reason }: { chatId: ChatId; testId: string; tool: ToolUse; approval: ApprovalId; reason: ApprovalReason }) {
   const [answered, setAnswered] = useState(false);
-  const answer = (decision: "Run" | "Deny") => {
+  const answer = (decision: Decision) => {
     setAnswered(true);
     void answerApproval(chatId, approval, decision);
   };

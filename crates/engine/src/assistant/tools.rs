@@ -1,7 +1,7 @@
 //! The three tools the model may call, the policy that decides whether a call needs the user,
 //! and the execution of an approved call. The only file under `assistant/` that reaches a
-//! session's client: every query runs on its own short-lived session inside a READ ONLY
-//! transaction, with Postgres's own parser refusing a second statement.
+//! session's client: every query the model writes runs on its own short-lived session inside a
+//! READ ONLY transaction, with Postgres's own parser refusing a second statement.
 
 use std::pin::pin;
 use std::sync::Arc;
@@ -10,11 +10,10 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio_postgres::SimpleQueryMessage;
-use tokio_postgres::error::DbError;
 
 use super::reply;
 use crate::connection::{ConnectParams, connect_error_text, error_text};
-use crate::model::{ApprovalReason, Catalog, ConnStatus, DatabaseRef, KeyKind, Permission, RelKind, Relation, ToolResult, ToolStatus, ToolUse};
+use crate::model::{ApprovalReason, Catalog, ConnStatus, DatabaseRef, KeyKind, Permission, RelKind, Relation, SchemaInfo, ToolResult, ToolStatus, ToolUse};
 use crate::provider::{ModelResult, ToolSpec};
 use crate::session::{CancelHandle, Session};
 use crate::{Shared, detail, sql};
@@ -187,7 +186,7 @@ fn search_catalog(catalog: &Catalog, query: &str) -> Executed {
         }
     }
     let matches = lines.len();
-    let mut text = if matches == 0 { format!("Nothing in the catalog contains {query:?}.") } else { lines.iter().take(MAX_MATCHES).cloned().collect::<Vec<_>>().join("\n") };
+    let mut text = if matches == 0 { format!("Nothing in the catalog contains {query:?}.") } else { lines[..matches.min(MAX_MATCHES)].join("\n") };
     if matches > MAX_MATCHES {
         text.push_str(&format!("\n…{} more; narrow the query.", matches - MAX_MATCHES));
     }
@@ -277,7 +276,7 @@ fn find_relation<'a>(catalog: &'a Catalog, name: &str) -> Option<(&'a str, &'a R
         Some((s, t)) => (Some(unquote(s)), unquote(t)),
         None => (None, unquote(name)),
     };
-    let in_schema = |s: &'a crate::model::SchemaInfo| s.relations.iter().find(|r| r.name == table).map(|r| (s.name.as_str(), r));
+    let in_schema = |s: &'a SchemaInfo| s.relations.iter().find(|r| r.name == table).map(|r| (s.name.as_str(), r));
     match schema {
         Some(schema) => catalog.schemas.iter().find(|s| s.name == schema).and_then(in_schema),
         None => {
@@ -349,10 +348,6 @@ impl Drop for CancelOnDrop<'_> {
 
 fn query_error_text(e: &tokio_postgres::Error) -> String {
     let Some(db) = e.as_db_error() else { return error_text(e) };
-    db_error_text(db)
-}
-
-fn db_error_text(db: &DbError) -> String {
     let mut text = db.message().to_owned();
     if let Some(detail) = db.detail() {
         text.push_str(&format!("\nDETAIL: {detail}"));

@@ -310,7 +310,6 @@ impl Shared {
             .collect()
     }
 
-    /// Probes every enabled provider.
     pub(crate) fn probe_all(self: &Arc<Self>, depth: ProbeDepth) {
         for cfg in self.settings().providers {
             if cfg.enabled {
@@ -342,21 +341,13 @@ impl Shared {
                     e.checked_at_ms = Some(now_ms());
                     e.outcome = Some(outcome);
                 });
-                let again = {
-                    let mut entries = shared.providers.entries.lock().unwrap();
-                    let entry = entries.entry(kind).or_default();
-                    match entry.owed.take() {
-                        Some(next) => Some(next),
-                        None => {
-                            entry.running = false;
-                            None
-                        }
-                    }
+                let mut entries = shared.providers.entries.lock().unwrap();
+                let entry = entries.entry(kind).or_default();
+                let Some(next) = entry.owed.take() else {
+                    entry.running = false;
+                    return;
                 };
-                match again {
-                    Some(next) => depth = next,
-                    None => return,
-                }
+                depth = next;
             }
         });
     }

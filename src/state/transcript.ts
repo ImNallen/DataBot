@@ -31,8 +31,8 @@ export function groupTurns(entries: Record<number, EntrySnapshot> | undefined): 
 }
 
 /** An idle chat that reports more entries than the panel holds lost a broadcast, so it needs reopening. */
-export function needsResync(chat: ChatState, held: Record<number, EntrySnapshot> | undefined): boolean {
-  return chat.status.kind === "Idle" && held !== undefined && chat.entryCount > Object.keys(held).length;
+export function needsResync(chat: ChatState, held: Record<number, EntrySnapshot>): boolean {
+  return chat.status.kind === "Idle" && chat.entryCount > Object.keys(held).length;
 }
 
 export function awaitsApproval(chat: ChatState): boolean {

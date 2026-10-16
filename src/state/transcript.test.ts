@@ -85,14 +85,13 @@ const chat = (status: ChatState["status"], entryCount: number): ChatState => ({
   entryCount,
 });
 
-it("asks for a reopen only when an opened, idle chat reports more entries than the panel holds", () => {
+it("asks for a reopen only when an idle chat reports more entries than the panel holds", () => {
   const two = held(snap(0, 0, ask("hi")), snap(1, 0, say("hello")));
   expect([
     needsResync(chat({ kind: "Idle" }, 3), two),
     needsResync(chat({ kind: "Idle" }, 2), two),
     needsResync(chat({ kind: "Running", turn: 0, startedAtMs: 1, phase: "Working" }, 3), two),
-    needsResync(chat({ kind: "Idle" }, 3), undefined),
-  ]).toEqual([true, false, false, false]);
+  ]).toEqual([true, false, false]);
 });
 
 it("notes a running chat for the history list, and says when it waits for approval", () => {

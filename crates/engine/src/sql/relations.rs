@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cases_the_reviewers_raised_each_ask_and_name_what_they_use() {
+    fn escapes_side_effects_and_select_into_each_ask_and_name_what_they_use() {
         assert_eq!(vet(r#"select U&"pg\005fcancel_backend"(0)"#), unvetted(&["U& escape", r"pg\005fcancel_backend"]));
         assert_eq!(vet(r#"select U&"\0064ate_trunc"('day', now())"#), unvetted(&["U& escape", r"\0064ate_trunc"]));
         assert_eq!(vet(r"select u&'\0041'"), unvetted(&["U& escape"]));

@@ -146,7 +146,7 @@ export function Composer({ chat }: { chat: ChatState | undefined }) {
   }, [text]);
 
   const send = async () => {
-    if (!chat || !canSend) return;
+    if (!canSend) return;
     setSending(true);
     const ok = await sendMessage(chat.id, text.trim(), attaching);
     setSending(false);
@@ -201,7 +201,7 @@ export function Composer({ chat }: { chat: ChatState | undefined }) {
           >
             <IconPaperclip size={15} />
           </IconButton>
-          {running && chat ? (
+          {running ? (
             <button
               type="button"
               data-testid="assistant-stop"

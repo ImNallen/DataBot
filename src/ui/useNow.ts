@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 
-/** `Date.now()`, re-read every `everyMs` while `active`. */
 export function useNow(active: boolean, everyMs: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

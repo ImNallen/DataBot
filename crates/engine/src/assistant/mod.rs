@@ -96,10 +96,15 @@ impl Shared {
                 }
                 (record, true, next_seq)
             }
-            None => (ChatRecord { title: String::new(), created_at_ms: now_ms(), updated_at_ms: now_ms(), options: self.default_options(), session: None, entry_count: 0 }, false, 0),
+            None => (self.draft_record(), false, 0),
         };
         let chat = self.assistant.chats.write().unwrap().entry(id).or_insert_with(|| Arc::new(Chat::new(id, record, stored, next_seq))).clone();
         Ok(chat)
+    }
+
+    fn draft_record(&self) -> ChatRecord {
+        let now = now_ms();
+        ChatRecord { title: String::new(), created_at_ms: now, updated_at_ms: now, options: self.default_options(), session: None, entry_count: 0 }
     }
 
     /// Ask first, always. The model and effort come from the newest stored chat when the
@@ -190,8 +195,8 @@ impl Shared {
         {
             return Err(SendError::UnknownModel { model: options.model });
         }
-        let attachment = match request.tab.as_ref().and_then(|t| t.attach.map(|r| (r, t.title.clone()))) {
-            Some((result, title)) => Some(context::attachment(&*self.result_set(result).ok_or(SendError::AttachmentGone)?, &title)),
+        let attachment = match request.tab.as_ref().and_then(|t| t.attach.map(|r| (r, &t.title))) {
+            Some((result, title)) => Some(context::attachment(&*self.result_set(result).ok_or(SendError::AttachmentGone)?, title)),
             None => None,
         };
         let connection_name = request.tab.as_ref().and_then(|t| t.db.as_ref()).and_then(|db| self.config(db.connection_id)).map(|c| c.name);
@@ -214,7 +219,7 @@ impl Shared {
             (seq, control_rx, inner.closing.clone())
         };
         chat.store_record(self);
-        let context = request.tab.as_ref().map(|t| SentContext { db: t.db.clone(), connection_name: connection_name.clone(), tab_title: t.title.clone() });
+        let context = request.tab.as_ref().map(|t| SentContext { db: t.db.clone(), connection_name, tab_title: t.title.clone() });
         let entry = Entry::User { at_ms: now_ms(), text: text.clone(), context, attachment };
         chat.store_entry(self, seq, seq, &entry);
         chat.publish_entry(self, seq, seq, entry);
@@ -277,8 +282,7 @@ impl Shared {
             eprintln!("chat {} delete failed: {e}", id.0);
         }
         self.assistant.chats.write().unwrap().remove(&id);
-        let now = now_ms();
-        let record = record.unwrap_or_else(|| ChatRecord { title: String::new(), created_at_ms: now, updated_at_ms: now, options: self.default_options(), session: None, entry_count: 0 });
+        let record = record.unwrap_or_else(|| self.draft_record());
         self.emit(AppEvent::ChatChanged(ChatState { id, rev: self.next_chat_rev(), title: record.title, updated_at_ms: record.updated_at_ms, options: record.options, status: ChatStatus::Deleted, entry_count: record.entry_count }));
     }
 

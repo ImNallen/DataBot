@@ -120,7 +120,7 @@ impl Agent {
             std::io::ErrorKind::NotFound => StartError::NotFound { binary: spec.program.display().to_string() },
             _ => StartError::Exited { code: None, detail: e.to_string() },
         })?;
-        let pgid = child.id().map_or(0, |pid| pid as i32);
+        let pgid = child.id().expect("a child not yet waited on has a pid") as i32;
         shared.process_groups.insert(pgid);
         let stdout = child.stdout.take().expect("piped");
         let stderr_pipe = child.stderr.take().expect("piped");
@@ -202,7 +202,6 @@ impl Agent {
         }
     }
 
-    /// The stderr tail when there is one, else `fallback`.
     fn failure_detail(&self, fallback: &str) -> String {
         let tail = self.stderr_tail();
         if tail.trim().is_empty() { fallback.to_owned() } else { tail }
@@ -244,7 +243,7 @@ impl Agent {
         if self.outbox.is_empty() {
             return Ok(());
         }
-        let Some(stdin) = self.stdin.as_mut() else { return Err(std::io::Error::other("stdin closed")) };
+        let stdin = self.stdin.as_mut().expect("only `close` takes stdin, and it consumes the agent");
         for line in self.outbox.drain(..) {
             stdin.write_all(line.as_bytes()).await?;
             stdin.write_all(b"\n").await?;
