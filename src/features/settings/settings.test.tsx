@@ -447,6 +447,7 @@ const CLAUDE: ProviderState = {
     signInCommand: "claude auth login",
     ownedFlags: ["--model", "--resume"],
   },
+  ignoredFlags: ["--verbose"],
   checking: false,
   checkedAtMs: Date.UTC(2026, 9, 16, 11, 57, 30),
   outcome: { kind: "Ready", version: "2.1.301", plan: "Claude Max", models: [] },
@@ -472,7 +473,7 @@ it("shows each provider's version, sign-in, and switch, and the picked provider'
   expect(text(html)).toContain("Path to the claude binary L1 Data starts.");
   expect(text(html)).toContain("Where Claude keeps its login and settings. Sets CLAUDE_CONFIG_DIR.");
   expect(text(html)).toContain("Extra command-line arguments passed to claude when a chat starts.");
-  expect(byTestId(html, "provider-launch-args-ignored")).toBe("Ignored: --model");
+  expect(byTestId(html, "provider-launch-args-ignored")).toBe("Ignored: --verbose");
   expect(["provider-display-name", "provider-binary-path", "provider-config-dir", "provider-launch-args"].map((id) => [attr(inputTag(html, id), "value"), attr(inputTag(html, id), "placeholder")])).toEqual([
     ["Claude", "Claude"],
     ["", "claude"],

@@ -76,17 +76,22 @@ pub(crate) enum Next {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StartError {
     NotFound { binary: String },
-    /// The process ended before it answered `open`. `detail` is its stderr tail, or the error it reported.
+    /// The process ended before it answered `open`. `detail` is its stderr tail.
     Exited { code: Option<i32>, detail: String },
+    /// The CLI answered with an error instead of the handshake: signed out, a lost session, an
+    /// API failure.
+    Reported(AgentError),
     Timeout,
 }
 
 impl std::fmt::Display for StartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StartError::NotFound { binary } => write!(f, "{binary} not found"),
+            StartError::NotFound { binary } | StartError::Reported(AgentError::NotFound { binary }) => write!(f, "{binary} not found"),
             StartError::Exited { code: Some(code), detail } => write!(f, "exited with code {code}: {}", detail.trim()),
-            StartError::Exited { code: None, detail } => write!(f, "exited: {}", detail.trim()),
+            StartError::Exited { code: None, detail } | StartError::Reported(AgentError::Exited { detail, .. }) => write!(f, "exited: {}", detail.trim()),
+            StartError::Reported(AgentError::SignedOut) => write!(f, "signed out"),
+            StartError::Reported(AgentError::Provider { message }) => write!(f, "{message}"),
             StartError::Timeout => write!(f, "no answer to the handshake within {} s", READY_TIMEOUT.as_secs()),
         }
     }
@@ -97,6 +102,10 @@ impl Agent {
     /// before it go through the codec like any other; the CLI sent its first MCP message 4 ms
     /// before answering `initialize`, so the reader never waits on a request the host has in flight.
     pub(crate) async fn start(shared: &Shared, spec: LaunchSpec, codec: Box<dyn Codec>) -> Result<(Agent, Handshake), StartError> {
+        // Spawning into a missing directory fails with the same NotFound as a missing binary.
+        if !spec.cwd.is_dir() {
+            return Err(StartError::Exited { code: None, detail: format!("the assistant's working directory {} is missing", spec.cwd.display()) });
+        }
         let mut command = Command::new(&spec.program);
         command.args(&spec.args).current_dir(&spec.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         for key in &spec.env_remove {
@@ -166,13 +175,10 @@ impl Agent {
                 match agent.next().await {
                     Next::Event(AgentEvent::Ready(handshake)) => return Ok(handshake),
                     Next::Event(AgentEvent::TurnEnded(TurnOutcome::Failed { error })) => {
-                        let detail = match error {
-                            AgentError::Provider { message } | AgentError::Exited { detail: message, .. } => message,
-                            AgentError::SignedOut => "signed out".to_owned(),
-                            AgentError::NotFound { binary } => binary,
-                        };
-                        let code = agent.exit_code().await;
-                        return Err(StartError::Exited { code, detail: agent.failure_detail(&detail) });
+                        // The CLI exits on its own after such a result; reaping it here spares
+                        // the drop a signal.
+                        let _ = agent.exit_code().await;
+                        return Err(StartError::Reported(error));
                     }
                     Next::Event(other) => early.push_back(other),
                     Next::Flush => {}

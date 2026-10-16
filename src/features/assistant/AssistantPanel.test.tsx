@@ -21,6 +21,7 @@ const CLAUDE: ProviderState = {
   provider: "Claude",
   rev: 2,
   info: { defaultName: "Claude", defaultBinary: "claude", configEnv: "CLAUDE_CONFIG_DIR", configDirDefault: "~/.claude", signInCommand: "claude auth login", ownedFlags: [] },
+  ignoredFlags: [],
   checking: false,
   checkedAtMs: 1,
   outcome: {

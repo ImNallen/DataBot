@@ -46,12 +46,6 @@ export function outcomeVersion(outcome: ProbeOutcome | null | undefined): string
   return outcome.version;
 }
 
-/** The engine-owned flags in typed launch arguments, as `--model` or `--model=opus`, in the order the engine lists them. */
-export function ignoredFlags(launchArgs: string, ownedFlags: readonly string[]): string[] {
-  const words = launchArgs.split(/\s+/).filter(Boolean);
-  return ownedFlags.filter((flag) => words.some((w) => w === flag || w.startsWith(`${flag}=`)));
-}
-
 /** How the transcript names a provider: its display name and the command that signs it in. */
 export type ProviderVoice = { name: string; signInCommand: string };
 

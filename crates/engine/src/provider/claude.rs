@@ -30,6 +30,9 @@ const ENGINE_FLAGS: &[&str] = &[
     "--settings",
     "--strict-mcp-config",
     "--mcp-config",
+    "--plugin-dir",
+    "--agents",
+    "--no-session-persistence",
     "--tools",
     "--allowedTools",
     "--allowed-tools",
@@ -47,8 +50,13 @@ const ENGINE_FLAGS: &[&str] = &[
     "--system-prompt",
     "--system-prompt-file",
     "--append-system-prompt",
+    "--append-system-prompt-file",
     "--bare",
 ];
+
+/// What `claude --resume <id>` says, in its `result` frame or on stderr, when it has no
+/// transcript for the id.
+const SESSION_LOST: &str = "No conversation found";
 
 impl Provider for Claude {
     fn info(&self) -> ProviderInfo {
@@ -66,8 +74,20 @@ impl Provider for Claude {
         (ModelId("opus".into()), Some(EffortId("high".into())))
     }
 
-    fn launch_effort(&self, cfg: &ProviderConfig) -> Option<EffortId> {
-        parse_launch_args(&cfg.launch_args).effort.map(EffortId)
+    fn launch_choice(&self, cfg: &ProviderConfig) -> (Option<ModelId>, Option<EffortId>) {
+        let args = parse_launch_args(&cfg.launch_args);
+        (args.model.map(ModelId), args.effort.map(EffortId))
+    }
+
+    fn ignored_flags(&self, cfg: &ProviderConfig) -> Vec<String> {
+        parse_launch_args(&cfg.launch_args).ignored
+    }
+
+    fn session_lost(&self, error: &AgentError) -> bool {
+        match error {
+            AgentError::Provider { message } | AgentError::Exited { detail: message, .. } => message.contains(SESSION_LOST),
+            AgentError::NotFound { .. } | AgentError::SignedOut => false,
+        }
     }
 
     fn quick_probe<'a>(&'a self, cfg: &'a ProviderConfig, host: &'a HostEnv) -> BoxFuture<'a, Result<Quick, ProbeOutcome>> {
@@ -85,13 +105,16 @@ impl Provider for Claude {
     }
 }
 
-/// The binary the config names, or `claude` on the host PATH. The error text says what was looked
-/// up and where, because "not found" is the first thing a new user hits.
+/// The binary the config names, or `claude` on the host PATH, as an absolute path: the process
+/// starts in the assistant directory, so a relative path is taken against the engine's own
+/// working directory here, where the user typed it. The error text says what was looked up and
+/// where, because "not found" is the first thing a new user hits.
 fn resolve_binary(cfg: &ProviderConfig, host: &HostEnv) -> Result<PathBuf, String> {
     let name = cfg.binary_path.trim();
     let name = if name.is_empty() { "claude" } else { name };
     if name.contains('/') || name.starts_with('~') {
         let path = host.expand_home(name);
+        let path = if path.is_absolute() { path } else { std::env::current_dir().map(|cwd| cwd.join(&path)).unwrap_or(path) };
         return if is_executable(&path) { Ok(path) } else { Err(path.display().to_string()) };
     }
     let dirs = host.dirs();
@@ -239,12 +262,14 @@ pub(crate) fn models(raw: &[Value], prefer: Option<&str>) -> Vec<ModelOption> {
 }
 
 /// `--model` and `--effort` choose a new chat's model and effort, and the probe runs with them; a
-/// chat's own options decide its argv, so they never pass through.
+/// chat's own options decide its argv, so they never pass through. `ignored` lists the engine's
+/// own flags found in the text, as typed, each once.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct LaunchArgs {
     pub passthrough: Vec<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub ignored: Vec<String>,
 }
 
 /// Whitespace-separated with single or double quotes grouping. `--flag value`, `--flag=value`, and
@@ -271,7 +296,11 @@ pub(crate) fn parse_launch_args(raw: &str) -> LaunchArgs {
         match flag.as_str() {
             "--model" => out.model = value.filter(|v| !v.is_empty()),
             "--effort" => out.effort = value.filter(|v| !v.is_empty()),
-            owned if ENGINE_FLAGS.contains(&owned) => {}
+            owned if ENGINE_FLAGS.contains(&owned) => {
+                if !out.ignored.contains(&flag) {
+                    out.ignored.push(flag);
+                }
+            }
             _ => {
                 out.passthrough.push(flag);
                 out.passthrough.extend(value);
@@ -311,11 +340,11 @@ fn split_args(text: &str) -> Vec<String> {
 
 /// FINDINGS point 1 plus the session flags. `--setting-sources=` drops hooks, plugins, and user
 /// settings; `--strict-mcp-config` drops account connectors; `--tools=` removes every built-in tool;
-/// `--permission-prompt-tool=stdio` makes permission asks reach the host.
+/// `--permission-prompt-tool=stdio` makes permission asks reach the host. The passthrough
+/// arguments go first: when the CLI reads a flag from both, the engine's later one wins.
 pub(crate) fn argv(start: &SessionStart, args: &LaunchArgs) -> Vec<String> {
-    let mut argv: Vec<String> = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--setting-sources=", "--strict-mcp-config", "--tools=", "--permission-prompt-tool=stdio", "--permission-mode=default"]
-        .map(str::to_owned)
-        .to_vec();
+    let mut argv: Vec<String> = args.passthrough.clone();
+    argv.extend(["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--setting-sources=", "--strict-mcp-config", "--tools=", "--permission-prompt-tool=stdio", "--permission-mode=default"].map(str::to_owned));
     if let Some(model) = start.model.as_ref().map(|m| m.0.clone()).or_else(|| args.model.clone()) {
         argv.extend(["--model".into(), model]);
     }
@@ -326,7 +355,6 @@ pub(crate) fn argv(start: &SessionStart, args: &LaunchArgs) -> Vec<String> {
     if let Some(id) = &start.resume {
         argv.extend(["--resume".into(), id.clone()]);
     }
-    argv.extend(args.passthrough.iter().cloned());
     argv
 }
 
@@ -338,7 +366,7 @@ pub(crate) fn env(cfg: &ProviderConfig, host: &HostEnv, parent: impl Iterator<It
         .map(|(k, _)| k)
         .filter(|k| {
             let k = k.to_string_lossy();
-            k == "CLAUDECODE" || k.starts_with("CLAUDE_CODE_") || ["CLAUDE_EFFORT", "CLAUDE_AGENT_SDK_VERSION", "NODE_OPTIONS", "ANTHROPIC_API_KEY"].contains(&k.as_ref())
+            k == "CLAUDECODE" || k.starts_with("CLAUDE_CODE_") || ["CLAUDE_EFFORT", "CLAUDE_AGENT_SDK_VERSION", "NODE_OPTIONS", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"].contains(&k.as_ref())
         })
         .collect();
     let mut set: Vec<(OsString, OsString)> = vec![("PATH".into(), host.path.clone())];
@@ -655,13 +683,28 @@ mod tests {
     }
 
     #[test]
-    fn owned_flags_are_the_launch_arguments_that_change_nothing() {
+    fn owned_flags_are_the_launch_arguments_that_change_nothing_and_are_reported_ignored() {
         let owned = Claude.info().owned_flags;
         for flag in &owned {
-            assert_eq!(parse_launch_args(&format!("{flag} x")), LaunchArgs::default(), "{flag} changed the launch");
+            let args = parse_launch_args(&format!("{flag} x"));
+            assert_eq!((args.passthrough, args.model, args.effort, args.ignored), (vec![], None, None, vec![flag.clone()]), "{flag}");
         }
-        assert!(owned.contains(&"--permission-mode".to_owned()), "{owned:?}");
+        for flag in ["--permission-mode", "--plugin-dir", "--agents", "--append-system-prompt-file", "--no-session-persistence", "--mcp-config", "--settings"] {
+            assert!(owned.contains(&flag.to_owned()), "{flag} is not owned");
+        }
         assert!(!owned.iter().any(|f| f == "--model" || f == "--effort"), "{owned:?}");
+        let cfg = ProviderConfig { launch_args: "--verbose --verbose --betas x --settings=/s".into(), ..crate::model::default_config(crate::model::ProviderKind::Claude) };
+        assert_eq!(Claude.ignored_flags(&cfg), ["--verbose", "--settings"], "as typed, each once, in order");
+    }
+
+    #[test]
+    fn a_lost_session_is_the_no_conversation_found_text_in_the_result_or_on_stderr() {
+        let lost = "No conversation found with session ID: 11111111-2222-4333-8444-555555555555";
+        assert!(Claude.session_lost(&AgentError::Provider { message: lost.into() }));
+        assert!(Claude.session_lost(&AgentError::Exited { code: Some(1), detail: format!("warn: something\n{lost}\n") }));
+        assert!(!Claude.session_lost(&AgentError::Provider { message: "Overloaded".into() }));
+        assert!(!Claude.session_lost(&AgentError::Exited { code: Some(1), detail: "killed".into() }));
+        assert!(!Claude.session_lost(&AgentError::SignedOut));
     }
 
     #[test]
@@ -859,6 +902,7 @@ mod tests {
         let args = parse_launch_args("--model claude-opus-5-5 --effort=low --debug-file '/tmp/my log' --permission-mode=plan --verbose -p hello --betas x --dangerously-skip-permissions");
         assert_eq!(args.passthrough, ["--debug-file", "/tmp/my log", "--betas", "x"]);
         assert_eq!((args.model.as_deref(), args.effort.as_deref()), (Some("claude-opus-5-5"), Some("low")));
+        assert_eq!(args.ignored, ["--permission-mode", "--verbose", "--dangerously-skip-permissions"]);
         assert_eq!(parse_launch_args("  hello -x "), LaunchArgs::default());
         assert_eq!(parse_launch_args("--betas=x --debug").passthrough, ["--betas", "x", "--debug"]);
     }
@@ -869,7 +913,8 @@ mod tests {
         let argv = argv(&start, &parse_launch_args("--model x --debug-file /tmp/l"));
         assert_eq!(
             argv.join(" "),
-            "--output-format stream-json --verbose --input-format stream-json --setting-sources= --strict-mcp-config --tools= --permission-prompt-tool=stdio --permission-mode=default --model opus --effort high --include-partial-messages --resume abc --debug-file /tmp/l"
+            "--debug-file /tmp/l --output-format stream-json --verbose --input-format stream-json --setting-sources= --strict-mcp-config --tools= --permission-prompt-tool=stdio --permission-mode=default --model opus --effort high --include-partial-messages --resume abc",
+            "the passthrough goes first, so the engine's flags win"
         );
         let probe = argv_for(&SessionStart { model: None, effort: None, resume: None }, "");
         assert!(!probe.iter().any(|a| a == "--model" || a == "--effort" || a == "--resume"), "{probe:?}");
@@ -884,12 +929,12 @@ mod tests {
     #[test]
     fn the_child_env_drops_what_leaks_in_and_sets_what_the_sdk_sets() {
         let host = HostEnv { path: "/usr/bin:/opt/homebrew/bin".into(), home: "/Users/a".into(), cwd: "/data/assistant".into() };
-        let parent = [("HOME", "/Users/a"), ("CLAUDECODE", "1"), ("CLAUDE_CODE_ENTRYPOINT", "cli"), ("CLAUDE_EFFORT", "max"), ("ANTHROPIC_API_KEY", "sk"), ("NODE_OPTIONS", "--inspect"), ("LANG", "C")]
+        let parent = [("HOME", "/Users/a"), ("CLAUDECODE", "1"), ("CLAUDE_CODE_ENTRYPOINT", "cli"), ("CLAUDE_EFFORT", "max"), ("ANTHROPIC_API_KEY", "sk"), ("ANTHROPIC_AUTH_TOKEN", "t"), ("NODE_OPTIONS", "--inspect"), ("LANG", "C")]
             .map(|(k, v)| (OsString::from(k), OsString::from(v)));
         let cfg = ProviderConfig { provider: crate::model::ProviderKind::Claude, enabled: true, display_name: "Claude".into(), binary_path: String::new(), config_dir: "~/.claude-work".into(), launch_args: String::new() };
         let (set, remove) = env(&cfg, &host, parent.into_iter());
         let removed: Vec<String> = remove.iter().map(|k| k.to_string_lossy().into_owned()).collect();
-        assert_eq!(removed, ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_EFFORT", "ANTHROPIC_API_KEY", "NODE_OPTIONS"]);
+        assert_eq!(removed, ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_EFFORT", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "NODE_OPTIONS"]);
         let get = |k: &str| set.iter().find(|(n, _)| n == k).map(|(_, v)| v.to_string_lossy().into_owned());
         assert_eq!(get("PATH").as_deref(), Some("/usr/bin:/opt/homebrew/bin"));
         assert_eq!(get("CLAUDE_CONFIG_DIR").as_deref(), Some("/Users/a/.claude-work"));
@@ -916,5 +961,7 @@ mod tests {
         assert_eq!(resolve_binary(&cfg("~/bin/claude"), &host).unwrap(), claude);
         assert_eq!(resolve_binary(&cfg("/nope"), &host).unwrap_err(), "/nope");
         assert_eq!(resolve_binary(&cfg("missing"), &host).unwrap_err(), format!("missing on PATH ({}:/nonexistent)", bin.display()));
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(resolve_binary(&cfg("nope/claude"), &host).unwrap_err(), here.join("nope/claude").display().to_string(), "a relative path is taken against the engine's own directory");
     }
 }

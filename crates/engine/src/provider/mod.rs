@@ -28,8 +28,12 @@ pub(crate) trait Provider: Send + Sync {
     fn info(&self) -> ProviderInfo;
     /// What a chat starts on before any probe has answered.
     fn fallback_model(&self) -> (ModelId, Option<EffortId>);
-    /// The effort the launch arguments ask a new chat to start at.
-    fn launch_effort(&self, cfg: &ProviderConfig) -> Option<EffortId>;
+    /// The model and effort the launch arguments name for a new chat, as typed.
+    fn launch_choice(&self, cfg: &ProviderConfig) -> (Option<ModelId>, Option<EffortId>);
+    /// The launch-argument flags the engine drops, as typed, for the settings page.
+    fn ignored_flags(&self, cfg: &ProviderConfig) -> Vec<String>;
+    /// Whether a turn failed because the CLI no longer has the session it was asked to resume.
+    fn session_lost(&self, error: &AgentError) -> bool;
     /// Version and sign-in without a model turn.
     fn quick_probe<'a>(&'a self, cfg: &'a ProviderConfig, host: &'a HostEnv) -> BoxFuture<'a, Result<Quick, ProbeOutcome>>;
     /// argv, env, and cwd for one process. Pure.
@@ -233,8 +237,17 @@ struct ProviderEntry {
 }
 
 impl ProviderEntry {
-    fn state(&self, kind: ProviderKind) -> ProviderState {
-        ProviderState { provider: kind, rev: self.rev, info: provider(kind).info(), checking: self.checking, checked_at_ms: self.checked_at_ms, outcome: self.outcome.clone() }
+    fn state(&self, kind: ProviderKind, cfg: Option<&ProviderConfig>) -> ProviderState {
+        let p = provider(kind);
+        ProviderState {
+            provider: kind,
+            rev: self.rev,
+            info: p.info(),
+            ignored_flags: cfg.map(|c| p.ignored_flags(c)).unwrap_or_default(),
+            checking: self.checking,
+            checked_at_ms: self.checked_at_ms,
+            outcome: self.outcome.clone(),
+        }
     }
 
     fn version(&self) -> Option<&str> {
@@ -256,11 +269,6 @@ impl ProviderEntry {
 impl Providers {
     pub(crate) fn new(agent_path: AgentPath) -> Self {
         Self { entries: Mutex::new(HashMap::new()), agent_path, host: tokio::sync::OnceCell::new() }
-    }
-
-    pub(crate) fn states(&self) -> Vec<ProviderState> {
-        let entries = self.entries.lock().unwrap();
-        ProviderKind::ALL.iter().map(|&kind| entries.get(&kind).map_or_else(|| ProviderEntry::default().state(kind), |e| e.state(kind))).collect()
     }
 
     /// The last Ready probe's models, which `assistant_configure` and `assistant_send` validate against.
@@ -286,6 +294,20 @@ impl Shared {
 
     fn provider_config(&self, kind: ProviderKind) -> Option<ProviderConfig> {
         self.settings().providers.into_iter().find(|c| c.provider == kind)
+    }
+
+    /// Every provider's state, in `ProviderKind::ALL` order, with the ignored flags of its saved
+    /// launch arguments.
+    pub(crate) fn provider_states(&self) -> Vec<ProviderState> {
+        let settings = self.settings();
+        let entries = self.providers.entries.lock().unwrap();
+        ProviderKind::ALL
+            .iter()
+            .map(|&kind| {
+                let cfg = settings.providers.iter().find(|c| c.provider == kind);
+                entries.get(&kind).map_or_else(|| ProviderEntry::default().state(kind, cfg), |e| e.state(kind, cfg))
+            })
+            .collect()
     }
 
     /// Probes every enabled provider.
@@ -340,12 +362,13 @@ impl Shared {
     }
 
     fn publish_provider(&self, kind: ProviderKind, edit: impl FnOnce(&mut ProviderEntry)) {
+        let cfg = self.provider_config(kind);
         let state = {
             let mut entries = self.providers.entries.lock().unwrap();
             let entry = entries.entry(kind).or_default();
             edit(entry);
             entry.rev += 1;
-            entry.state(kind)
+            entry.state(kind, cfg.as_ref())
         };
         self.emit(AppEvent::ProviderChanged(state));
     }
@@ -387,12 +410,19 @@ impl Shared {
         }
     }
 
-    /// Re-probes each provider whose `enabled` or runtime fields changed.
+    /// Publishes each provider whose `enabled` or runtime fields changed, so the state's ignored
+    /// flags follow the saved launch arguments, and re-probes it when enabled.
     pub(crate) fn reprobe_changed(self: &Arc<Self>, before: &[ProviderConfig], after: &[ProviderConfig]) {
         for cfg in after {
             let was = before.iter().find(|c| c.provider == cfg.provider);
             let changed = was.is_none_or(|w| w.enabled != cfg.enabled || w.binary_path != cfg.binary_path || w.config_dir != cfg.config_dir || w.launch_args != cfg.launch_args);
-            if changed && cfg.enabled {
+            if !changed {
+                continue;
+            }
+            // Published as checking when a probe follows, so no one reads the old outcome as
+            // the answer for the new configuration before the probe task even starts.
+            self.publish_provider(cfg.provider, |e| e.checking |= cfg.enabled);
+            if cfg.enabled {
                 self.probe(cfg.provider, ProbeDepth::Full);
             }
         }

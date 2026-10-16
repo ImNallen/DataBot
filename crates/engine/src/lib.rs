@@ -651,7 +651,7 @@ impl Engine {
             .into_iter()
             .map(|(id, r)| live_chats.get(&id).cloned().unwrap_or(ChatState { id, rev: 0, title: r.title, updated_at_ms: r.updated_at_ms, options: r.options, status: ChatStatus::Idle, entry_count: r.entry_count }))
             .collect();
-        BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings(), providers: s.providers.states(), chats }
+        BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings(), providers: s.provider_states(), chats }
     }
 
     pub async fn save_connection(&self, d: ConnectionDraft) -> Result<ConnectionConfig, SaveError> {

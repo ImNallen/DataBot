@@ -6,7 +6,7 @@ import { useLive } from "../../state/live";
 import { useWorkspace } from "../../state/workspace";
 import { cx, IconButton, inputClass, MenuContent, MenuItem, MenuLabel, Switch } from "../../ui/primitives";
 import { useNow } from "../../ui/useNow";
-import { checkedAgo, ignoredFlags, outcomeVersion, providerStatus, type StatusTone } from "../assistant/assistantText";
+import { checkedAgo, outcomeVersion, providerStatus, type StatusTone } from "../assistant/assistantText";
 import { PROVIDER_ICONS } from "../assistant/providerIcons";
 import { saveSettings } from "../editor/runActions";
 import { Row, SettingLabel } from "./SettingLayout";
@@ -63,7 +63,7 @@ function TextField({
   value: string;
   placeholder: string;
   onCommit: (next: string) => void;
-  below?: (draft: string) => ReactNode;
+  below?: ReactNode;
 }) {
   const [draft, setDraft] = useState(value);
   return (
@@ -90,7 +90,7 @@ function TextField({
           }
         }}
       />
-      {below?.(draft)}
+      {below}
     </div>
   );
 }
@@ -203,16 +203,13 @@ function ProviderDetail({ config, state }: { config: ProviderConfig; state: Prov
           value={config.launchArgs}
           placeholder="--model claude-opus-5-5"
           onCommit={(next) => saveProvider(kind, { launchArgs: next.trim() })}
-          below={(draft) => {
-            const ignored = ignoredFlags(draft, info.ownedFlags);
-            return (
-              ignored.length > 0 && (
-                <p data-testid="provider-launch-args-ignored" className="mt-1.5 text-ui-12 text-amber">
-                  Ignored: {ignored.join(", ")}
-                </p>
-              )
-            );
-          }}
+          below={
+            state.ignoredFlags.length > 0 && (
+              <p data-testid="provider-launch-args-ignored" className="mt-1.5 text-ui-12 text-amber">
+                Ignored: {state.ignoredFlags.join(", ")}
+              </p>
+            )
+          }
         />
       </div>
     </div>

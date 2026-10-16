@@ -32,7 +32,7 @@ function entryAt(seq: number, rev: number, text: string, chatId = CHAT): EntrySn
 
 function providerAt(rev: number, checking: boolean): ProviderState {
   const info = { defaultName: "Claude", defaultBinary: "claude", configEnv: "CLAUDE_CONFIG_DIR", configDirDefault: "~/.claude", signInCommand: "claude auth login", ownedFlags: [] };
-  return { provider: "Claude", rev, info, checking, checkedAtMs: null, outcome: null };
+  return { provider: "Claude", rev, info, ignoredFlags: [], checking, checkedAtMs: null, outcome: null };
 }
 
 const applyAll = (s: LiveData, events: AppEvent[]) => events.reduce(applyEvent, s);

@@ -101,26 +101,34 @@ impl Shared {
         Ok(chat)
     }
 
-    /// The newest stored chat's options, else the first enabled provider's recommended model and Ask
-    /// first. The effort is the launch arguments' one when the model lists it, else `high` when it
-    /// lists that, else its last level.
+    /// Ask first, always. The model and effort come from the newest stored chat when the
+    /// provider's last Ready probe still lists them and the launch arguments name neither. Else
+    /// the recommended model, with the launch arguments' effort when the model lists it, else
+    /// `high` when it lists that, else its last level; with no Ready probe, the provider's
+    /// fallback.
     fn default_options(&self) -> ChatOptions {
-        if let Ok(chats) = self.store.chats(1)
-            && let Some((_, record)) = chats.into_iter().next()
-        {
-            return record.options;
-        }
         let settings = self.settings();
         let cfg = settings.providers.iter().find(|c| c.enabled);
         let kind = cfg.map_or(ProviderKind::ALL[0], |c| c.provider);
-        let (model, effort) = match self.providers.models(kind).and_then(|models| models.into_iter().find(|m| m.recommended)) {
+        let p = provider(kind);
+        let (asked_model, asked_effort) = cfg.map(|c| p.launch_choice(c)).unwrap_or_default();
+        let models = self.providers.models(kind);
+        let newest = self.store.chats(1).ok().and_then(|chats| chats.into_iter().next()).map(|(_, record)| record.options).filter(|o| o.provider == kind);
+        if asked_model.is_none()
+            && asked_effort.is_none()
+            && let (Some(prev), Some(models)) = (newest, models.as_deref())
+            && let Some(model) = models.iter().find(|m| m.id == prev.model)
+            && prev.effort.as_ref().is_none_or(|e| model.efforts.iter().any(|x| x.id == *e))
+        {
+            return ChatOptions { permission: Permission::AskFirst, ..prev };
+        }
+        let (model, effort) = match models.and_then(|models| models.into_iter().find(|m| m.recommended)) {
             Some(model) => {
-                let asked = cfg.and_then(|c| provider(kind).launch_effort(c));
                 let listed = |id: &str| model.efforts.iter().find(|e| e.id.0 == id);
-                let effort = asked.and_then(|a| listed(&a.0)).or_else(|| listed("high")).or(model.efforts.last()).map(|e| e.id.clone());
+                let effort = asked_effort.as_ref().and_then(|a| listed(&a.0)).or_else(|| listed("high")).or(model.efforts.last()).map(|e| e.id.clone());
                 (model.id, effort)
             }
-            None => provider(kind).fallback_model(),
+            None => p.fallback_model(),
         };
         ChatOptions { provider: kind, model, effort, permission: Permission::AskFirst }
     }

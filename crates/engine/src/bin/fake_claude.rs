@@ -17,7 +17,11 @@
 //! - `wedged`: streams forever and never reads stdin, so an `interrupt` and EOF change nothing.
 //!   Only a signal ends it.
 //! - `crash`: two deltas, then stderr text and exit 1.
-//! - `resume-lost`: exits with an error before the handshake when argv has `--resume`.
+//! - `resume-lost`: exits with the captured "No conversation found" result before the handshake
+//!   when argv has `--resume`. `resume-lost-late` does the same after the handshake, on the first
+//!   user message. `resume-lost-twice` also exits with an unrelated error when argv has no
+//!   `--resume`. `resume-crash` exits with an unrelated error when argv has `--resume`.
+//! - `signed-out-start`: exits with the "Not logged in" result before the handshake.
 //! - `echo`: answers with the whole prompt it received.
 //! - anything else: answers "ok".
 
@@ -53,20 +57,37 @@ fn main() {
     let value_of = |flag: &str| args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone());
     let scenario = value_of("--fake-scenario").unwrap_or_default();
     let resume = value_of("--resume");
-    if scenario == "resume-lost"
-        && let Some(id) = resume
-    {
-        println!("{}", json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 0, "session_id": id, "errors": [format!("No conversation found with session ID: {id}")], "result_index": 0 }));
-        eprintln!("No conversation found with session ID: {id}");
-        std::process::exit(1);
+    match (scenario.as_str(), &resume) {
+        ("resume-lost" | "resume-lost-twice", Some(id)) => session_lost(id),
+        ("resume-crash", Some(_)) => {
+            eprintln!("fake-claude: boom");
+            std::process::exit(1);
+        }
+        ("resume-lost-twice", None) => {
+            eprintln!("fake-claude: no session store");
+            std::process::exit(1);
+        }
+        ("signed-out-start", _) => {
+            println!("{}", json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 0, "session_id": "", "errors": [], "result": "Not logged in · Please run /login", "result_index": 0 }));
+            std::process::exit(1);
+        }
+        _ => {}
     }
+    let resumed = resume.is_some();
     let session_id = resume.unwrap_or_else(|| format!("fake-session-{}", std::process::id()));
     let model = value_of("--model").unwrap_or_else(|| "claude-opus-5-5".into());
     let sql = value_of("--fake-sql").unwrap_or_else(|| "select count(*) from orders".into());
     let linger = Duration::from_millis(value_of("--fake-linger-ms").and_then(|v| v.parse().ok()).unwrap_or(0));
-    let mut cli = Cli { stdin: stdin_lines(), backlog: VecDeque::new(), log, session_id, model, sql, linger, next_id: 0 };
+    let mut cli = Cli { stdin: stdin_lines(), backlog: VecDeque::new(), log, session_id, resumed, model, sql, linger, next_id: 0 };
     cli.handshake();
     cli.run(&scenario);
+}
+
+/// The captured answer to `--resume` with an id the CLI has no transcript for, then exit 1.
+fn session_lost(id: &str) -> ! {
+    println!("{}", json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 0, "session_id": id, "errors": [format!("No conversation found with session ID: {id}")], "result_index": 0 }));
+    eprintln!("No conversation found with session ID: {id}");
+    std::process::exit(1)
 }
 
 struct Log(Option<std::fs::File>);
@@ -116,6 +137,7 @@ struct Cli {
     backlog: VecDeque<Value>,
     log: Log,
     session_id: String,
+    resumed: bool,
     model: String,
     /// What the `query` scenarios ask to run.
     sql: String,
@@ -212,6 +234,10 @@ impl Cli {
         loop {
             let user = self.expect("a user message", |v| v["type"] == "user");
             let prompt = user["message"]["content"][0]["text"].as_str().unwrap_or_default().to_owned();
+            if scenario == "resume-lost-late" && self.resumed {
+                let id = self.session_id.clone();
+                session_lost(&id);
+            }
             self.turn_start();
             match scenario {
                 "card" => {

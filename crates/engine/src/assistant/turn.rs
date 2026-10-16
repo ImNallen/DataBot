@@ -122,6 +122,14 @@ enum Started {
     Stopped,
 }
 
+/// What one process made of the turn.
+enum Attempt {
+    Done(TurnOutcome),
+    /// A resumed session the provider no longer has, found at start or at the first result
+    /// before any text or tool use. The turn retries once as a new session.
+    Lost,
+}
+
 impl Turn {
     async fn run(&mut self) -> TurnOutcome {
         let mut control = self.control.take().expect("taken once");
@@ -137,44 +145,63 @@ impl Turn {
         }
         let cfg = self.provider_config();
         let stored = self.chat.inner.lock().unwrap().record.session.clone();
-        let resume = stored.as_ref().filter(|s| s.provider == self.options.provider && s.config_dir == cfg.config_dir).map(|s| s.id.clone());
+        let mut resume = stored.as_ref().filter(|s| s.provider == self.options.provider && s.config_dir == cfg.config_dir).map(|s| s.id.clone());
         // The provider keeps its transcript under the config dir the session was made in, so a
-        // changed one cannot resume and goes straight to the recap.
-        let mut recap = if stored.is_some() && resume.is_none() { Some(self.recap_notice(&cfg)) } else { None };
-        let agent = match self.start_agent(&mut control, &cfg, resume.clone()).await {
-            Ok(Started::Agent(agent)) => agent,
-            Ok(Started::Stopped) => return TurnOutcome::Stopped,
-            Err(StartError::NotFound { binary }) => return TurnOutcome::Failed { error: AgentError::NotFound { binary } },
-            Err(e) if resume.is_some() => {
-                eprintln!("chat {} could not resume its session: {e}", self.chat.id.0);
-                recap = Some(self.recap_notice(&cfg));
-                match self.start_agent(&mut control, &cfg, None).await {
-                    Ok(Started::Agent(agent)) => agent,
-                    Ok(Started::Stopped) => return TurnOutcome::Stopped,
-                    Err(e) => return TurnOutcome::Failed { error: start_failure(e) },
+        // changed one cannot resume and the chat restarts with a recap.
+        let mut recap = if stored.is_some() && resume.is_none() { Some(self.recap()) } else { None };
+        loop {
+            match self.attempt(&mut control, &cfg, resume.take(), recap.as_deref()).await {
+                Attempt::Done(outcome) => return outcome,
+                Attempt::Lost => {
+                    eprintln!("chat {} could not resume its session; restarting it with a recap", self.chat.id.0);
+                    self.forget_session();
+                    recap = Some(self.recap());
                 }
             }
-            Err(e) => return TurnOutcome::Failed { error: start_failure(e) },
+        }
+    }
+
+    /// One process: start it, resuming when asked, send the prompt, and run the event loop until
+    /// the turn ends or the resumed session proves lost. Any other failure keeps the session.
+    async fn attempt(&mut self, control: &mut mpsc::Receiver<TurnControl>, cfg: &ProviderConfig, resume: Option<String>, recap: Option<&str>) -> Attempt {
+        let resumed = resume.is_some();
+        let p = provider(self.options.provider);
+        let mut agent = match self.start_agent(control, cfg, resume).await {
+            Ok(Started::Agent(agent)) => agent,
+            Ok(Started::Stopped) => return Attempt::Done(TurnOutcome::Stopped),
+            Err(e) => {
+                let error = start_failure(e);
+                return if resumed && p.session_lost(&error) { Attempt::Lost } else { Attempt::Done(TurnOutcome::Failed { error }) };
+            }
         };
-        let mut agent = agent;
-        let fresh_session = recap.is_some() || resume.is_none();
-        let prompt = self.prompt(fresh_session, recap.as_deref());
+        if recap.is_some() {
+            self.notice(format!("{} could not resume this chat, so it was restarted with a summary of the conversation.", cfg.display_name));
+        }
+        let prompt = self.prompt(!resumed, recap);
         self.set_phase(TurnPhase::Working);
         let lines = agent.codec.user_turn(&prompt);
         if let Err(e) = agent.write(lines).await {
             self.agent = Some(agent);
-            return TurnOutcome::Failed { error: AgentError::Exited { code: None, detail: e.to_string() } };
+            return Attempt::Done(TurnOutcome::Failed { error: AgentError::Exited { code: None, detail: e.to_string() } });
         }
         let mut waits: Waits = FuturesUnordered::new();
         let mut execs: Execs = FuturesUnordered::new();
         let mut tick = tokio::time::interval(TEXT_PUBLISH_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut streamed = false;
         let outcome = loop {
             let deadline = self.stopping.unwrap_or_else(|| Instant::now() + FAR_FUTURE);
             let ended = tokio::select! {
                 next = agent.next() => match next {
-                    Next::Eof { code } => Some(TurnOutcome::Failed { error: AgentError::Exited { code, detail: agent.stderr_tail() } }),
-                    Next::Event(event) => self.on_event(&mut agent, event, &mut waits, &mut execs).await,
+                    Next::Eof { code } => Some(Attempt::Done(TurnOutcome::Failed { error: AgentError::Exited { code, detail: agent.stderr_tail() } })),
+                    Next::Event(event) => {
+                        streamed |= matches!(event, AgentEvent::Text { .. } | AgentEvent::ToolUse { .. } | AgentEvent::Permission { .. } | AgentEvent::ToolCall { .. });
+                        match self.on_event(&mut agent, event, &mut waits, &mut execs).await {
+                            Some(TurnOutcome::Failed { error }) if resumed && !streamed && p.session_lost(&error) => Some(Attempt::Lost),
+                            Some(outcome) => Some(Attempt::Done(outcome)),
+                            None => None,
+                        }
+                    }
                     Next::Flush => None,
                 },
                 Some(work) = waits.next(), if !waits.is_empty() => {
@@ -195,7 +222,7 @@ impl Turn {
                     self.publish_texts(false);
                     None
                 }
-                _ = tokio::time::sleep_until(deadline.into()), if self.stopping.is_some() => Some(TurnOutcome::Stopped),
+                _ = tokio::time::sleep_until(deadline.into()), if self.stopping.is_some() => Some(Attempt::Done(TurnOutcome::Stopped)),
             };
             if let Err(e) = agent.flush().await {
                 eprintln!("chat {} write failed: {e}", self.chat.id.0);
@@ -204,8 +231,17 @@ impl Turn {
                 break outcome;
             }
         };
-        self.agent = Some(agent);
+        match &outcome {
+            Attempt::Lost => agent.close().await,
+            Attempt::Done(_) => self.agent = Some(agent),
+        }
         outcome
+    }
+
+    /// The provider no longer has the stored session, so no later turn should try it.
+    fn forget_session(&mut self) {
+        self.chat.inner.lock().unwrap().record.session = None;
+        self.chat.store_record(&self.shared);
     }
 
     fn provider_config(&self) -> ProviderConfig {
@@ -218,9 +254,7 @@ impl Turn {
         let start = SessionStart { model: Some(self.options.model.clone()), effort: self.options.effort.clone(), resume };
         let spec = p.launch(cfg, host, &start).map_err(|e| match e {
             AgentError::NotFound { binary } => StartError::NotFound { binary },
-            AgentError::Exited { code, detail } => StartError::Exited { code, detail },
-            AgentError::Provider { message } => StartError::Exited { code: None, detail: message },
-            AgentError::SignedOut => StartError::Exited { code: None, detail: "signed out".into() },
+            other => StartError::Reported(other),
         })?;
         let codec = p.codec(cfg, Open { system_prompt: SYSTEM_PROMPT, tools: &tools::TOOLS });
         let shared = self.shared.clone();
@@ -562,11 +596,11 @@ impl Turn {
         self.refresh_phase();
     }
 
-    /// The stored conversation for a session that cannot continue, and the Notice that says so.
-    fn recap_notice(&mut self, cfg: &ProviderConfig) -> String {
-        let entries = self.shared.store.chat_entries(self.chat.id).unwrap_or_default();
-        self.notice(format!("{} could not resume this chat, so it was restarted with a summary of the conversation.", cfg.display_name));
-        reply::recap(&entries, super::RECAP_MAX_CHARS)
+    /// The stored conversation before this turn, as plain text, for a session that cannot
+    /// continue.
+    fn recap(&self) -> String {
+        let earlier: Vec<(u32, u32, Entry)> = self.shared.store.chat_entries(self.chat.id).unwrap_or_default().into_iter().filter(|(_, turn, _)| *turn != self.seq).collect();
+        reply::recap(&earlier, super::RECAP_MAX_CHARS)
     }
 
     fn notice(&mut self, text: String) {
@@ -653,6 +687,7 @@ fn start_failure(e: StartError) -> AgentError {
     match e {
         StartError::NotFound { binary } => AgentError::NotFound { binary },
         StartError::Exited { code, detail } => AgentError::Exited { code, detail },
+        StartError::Reported(error) => error,
         StartError::Timeout => AgentError::Exited { code: None, detail: e.to_string() },
     }
 }

@@ -529,6 +529,117 @@ async fn a_lost_session_falls_back_to_a_new_one_with_a_notice_and_a_recap() {
 }
 
 #[tokio::test]
+async fn a_session_lost_at_the_first_result_is_restarted_with_a_recap_that_leaves_out_this_turn() {
+    let mut h = Harness::open().await;
+    h.use_fake("resume-lost-late");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "first").await;
+    assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+    h.wait_idle(chat).await;
+    let first_session = format!("fake-session-{}", h.turn_pids()[0]);
+    h.send(chat, "second").await;
+    assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+    let argvs = h.turn_argvs();
+    assert_eq!(argvs.len(), 3, "first turn, the failed resume, the retry: {argvs:?}");
+    assert_eq!(argvs[1].iter().position(|a| a == "--resume").map(|i| argvs[1][i + 1].as_str()), Some(first_session.as_str()));
+    assert!(!argvs[2].iter().any(|a| a == "--resume"));
+    let entries = h.entries(chat).await;
+    assert!(matches!(&entries[4], Entry::Notice { .. }), "the notice follows the second turn's user entry: {entries:?}");
+    let recaps: Vec<String> = h.stdin_lines().into_iter().filter(|l| l.contains("Earlier in this conversation, restored after the session was lost")).collect();
+    assert_eq!(recaps.len(), 1);
+    assert!(recaps[0].contains("User: first") && !recaps[0].contains("User: second"), "the recap stops before the current turn: {}", recaps[0]);
+}
+
+#[tokio::test]
+async fn a_resume_that_fails_for_another_reason_keeps_the_session_and_fails_the_turn() {
+    let mut h = Harness::open().await;
+    h.use_fake("card");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "first").await;
+    h.wait_end(chat).await;
+    h.wait_idle(chat).await;
+    let session = format!("fake-session-{}", h.turn_pids()[0]);
+    h.use_fake("resume-crash");
+    h.send(chat, "second").await;
+    let (outcome, _) = h.wait_end(chat).await;
+    assert!(matches!(&outcome, TurnOutcome::Failed { error: AgentError::Exited { code: Some(1), detail } } if detail.contains("fake-claude: boom")), "{outcome:?}");
+    h.wait_idle(chat).await;
+    assert_eq!(h.turn_argvs().len(), 2, "no retry");
+    assert!(!h.entries(chat).await.iter().any(|e| matches!(e, Entry::Notice { .. })));
+    h.use_fake("card");
+    h.send(chat, "third").await;
+    h.wait_end(chat).await;
+    let third = h.turn_argvs()[2].clone();
+    assert_eq!(third.iter().position(|a| a == "--resume").map(|i| third[i + 1].clone()), Some(session), "the session was kept");
+}
+
+#[tokio::test]
+async fn the_notice_appears_only_once_the_replacement_session_has_started() {
+    let mut h = Harness::open().await;
+    h.use_fake("card");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "first").await;
+    h.wait_end(chat).await;
+    h.wait_idle(chat).await;
+    h.use_fake("resume-lost-twice");
+    h.send(chat, "second").await;
+    let (outcome, _) = h.wait_end(chat).await;
+    assert!(matches!(&outcome, TurnOutcome::Failed { error: AgentError::Exited { code: Some(1), detail } } if detail.contains("fake-claude: no session store")), "{outcome:?}");
+    h.wait_idle(chat).await;
+    assert_eq!(h.turn_argvs().len(), 3, "the resume, then one fresh start");
+    assert!(!h.entries(chat).await.iter().any(|e| matches!(e, Entry::Notice { .. })), "no notice for a restart that never started");
+    h.use_fake("card");
+    h.send(chat, "third").await;
+    h.wait_end(chat).await;
+    assert!(!h.turn_argvs()[3].iter().any(|a| a == "--resume"), "the lost session is forgotten");
+}
+
+#[tokio::test]
+async fn a_sign_in_failure_at_start_ends_the_turn_signed_out() {
+    let mut h = Harness::open().await;
+    h.use_fake("signed-out-start");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "go").await;
+    assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Failed { error: AgentError::SignedOut });
+}
+
+#[tokio::test]
+async fn a_missing_assistant_directory_is_reported_as_such() {
+    let mut h = Harness::open().await;
+    h.use_fake("card");
+    h.wait_outcome(ready).await;
+    let dir = h.engine.data_dir().join("assistant");
+    std::fs::remove_dir_all(&dir).unwrap();
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "go").await;
+    assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Failed { error: AgentError::Exited { code: None, detail: format!("the assistant's working directory {} is missing", dir.display()) } });
+}
+
+async fn draft_options(h: &Harness) -> ChatOptions {
+    h.engine.assistant_open(ChatId(uuid::Uuid::new_v4())).await.unwrap().state.options
+}
+
+#[tokio::test]
+async fn a_new_chat_starts_in_ask_first_and_inherits_a_model_only_while_the_probe_lists_it() {
+    let mut h = Harness::open().await;
+    h.use_fake("card");
+    h.wait_outcome(ready).await;
+    let options = |model: &str, effort: &str, permission: Permission| ChatOptions { provider: ProviderKind::Claude, model: ModelId(model.into()), effort: Some(EffortId(effort.into())), permission };
+    let chat = ChatId(uuid::Uuid::new_v4());
+    h.engine.assistant_configure(chat, options("haiku", "low", Permission::Auto)).unwrap();
+    h.send(chat, "store me").await;
+    h.wait_end(chat).await;
+    h.wait_idle(chat).await;
+    assert_eq!(draft_options(&h).await, options("haiku", "low", Permission::AskFirst), "the newest chat's model and effort, never its permission");
+    h.use_fake_with("card", "--model sonnet");
+    h.wait_outcome(ready).await;
+    assert_eq!(draft_options(&h).await, options("sonnet", "high", Permission::AskFirst), "launch arguments that name a model win");
+    h.configure_provider(|p| p.binary_path = "/nope".into());
+    h.wait_outcome(|o| matches!(o, ProbeOutcome::NotFound { .. })).await;
+    assert_eq!(draft_options(&h).await, options("opus", "high", Permission::AskFirst), "with no Ready probe, the fallback rather than an unverified stored choice");
+}
+
+#[tokio::test]
 async fn a_changed_config_dir_restarts_the_session_with_a_recap() {
     let mut h = Harness::open().await;
     h.use_fake("card");

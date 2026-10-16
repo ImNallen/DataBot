@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { AgentError, ProbeOutcome, ProviderState } from "../../ipc/bindings";
 import type { UserEntry } from "../../state/transcript";
-import { agentErrorText, checkedAgo, contextChip, ignoredFlags, providerBanner, providerStatus } from "./assistantText";
+import { agentErrorText, checkedAgo, contextChip, providerBanner, providerStatus } from "./assistantText";
 
 const NOW = Date.UTC(2026, 9, 16, 12, 0, 0);
 const SEC = 1000;
@@ -18,7 +18,7 @@ const INFO = {
 };
 
 function provider(outcome: ProbeOutcome | null, extra: Partial<ProviderState> = {}): ProviderState {
-  return { provider: "Claude", rev: 1, info: INFO, checking: false, checkedAtMs: NOW - 90 * SEC, outcome, ...extra };
+  return { provider: "Claude", rev: 1, info: INFO, ignoredFlags: [], checking: false, checkedAtMs: NOW - 90 * SEC, outcome, ...extra };
 }
 
 it("says how long ago the newest check finished, in whole minutes, hours, or days", () => {
@@ -69,11 +69,6 @@ it("states each probe outcome under the provider's name, and keeps it on screen 
     { text: "Signed in · Claude Max", tone: "ok" },
     { text: "Not checked yet", tone: "muted" },
   ]);
-});
-
-it("lists the engine-owned flags typed into launch arguments, bare or with =, and nothing else", () => {
-  expect(ignoredFlags("--resume abc --verbose --model=opus --modelx", INFO.ownedFlags)).toEqual(["--model", "--resume"]);
-  expect(ignoredFlags("  --verbose --debug api ", INFO.ownedFlags)).toEqual([]);
 });
 
 const VOICE = { name: "Claude", signInCommand: "claude auth login" };

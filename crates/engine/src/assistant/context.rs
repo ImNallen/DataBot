@@ -7,6 +7,7 @@ use crate::results::ResultSet;
 pub(crate) const CONTEXT_MAX: usize = 28_000;
 const TAB_SQL_MAX: usize = 8_000;
 const TAB_SQL_WINDOW: usize = 2_000;
+const STATEMENT_MAX: usize = 4_000;
 const ERROR_MAX: usize = 1_000;
 const ATTACHMENT_MAX: usize = 8_000;
 const OUTLINE_MAX: usize = 12_000;
@@ -78,7 +79,7 @@ pub(crate) fn build(input: &ContextInput<'_>) -> String {
             && to <= tab.text.len()
         {
             out.push_str(if tab.selected { "Selected statement:\n" } else { "Statement at the cursor:\n" });
-            out.push_str(&tab.text[from..to]);
+            out.push_str(&cut(&tab.text[from..to], STATEMENT_MAX));
             out.push('\n');
         }
         if let Some(error) = tab.last_error {
@@ -305,6 +306,19 @@ mod tests {
         assert!(built.contains("select 'here';") && built.contains("\n…\nSelected statement:\nselect 'here';\n"));
         let sql_part = built.split("Tab SQL (the part around the cursor):\n").nth(1).unwrap().split("\nSelected statement").next().unwrap();
         assert!(sql_part.chars().count() <= 2 * TAB_SQL_WINDOW + 14 + 6, "{}", sql_part.chars().count());
+    }
+
+    #[test]
+    fn the_cursor_statement_has_its_own_budget() {
+        let text = format!("select '{}'", "y".repeat(5_000));
+        let c = catalog(1);
+        let db = c.db.clone();
+        let tab = TabFacts { title: "t.sql", text: &text, picked: Some((0, text.len())), selected: false, last_error: None };
+        let built = build(&input(&c, &db, Some(tab), None));
+        let statement = built.split("Statement at the cursor:\n").nth(1).unwrap().lines().next().unwrap();
+        assert_eq!(statement.chars().count(), STATEMENT_MAX + 1);
+        assert!(statement.ends_with('…'));
+        assert!(built.contains(&format!("Tab SQL:\n{text}\n")), "the tab SQL keeps its own budget");
     }
 
     #[test]

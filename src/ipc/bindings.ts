@@ -712,6 +712,8 @@ export type ProviderState = {
 	provider: ProviderKind,
 	rev: number,
 	info: ProviderInfo,
+	/**  The engine-owned flags in the saved launch arguments, as typed, which it drops. */
+	ignoredFlags: string[],
 	/**  A probe runs. `outcome` stays on screen meanwhile. */
 	checking: boolean,
 	/**  When the last probe finished. */

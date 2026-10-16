@@ -1483,6 +1483,8 @@ pub struct ProviderState {
     pub provider: ProviderKind,
     pub rev: u64,
     pub info: ProviderInfo,
+    /// The engine-owned flags in the saved launch arguments, as typed, which it drops.
+    pub ignored_flags: Vec<String>,
     /// A probe runs. `outcome` stays on screen meanwhile.
     pub checking: bool,
     /// When the last probe finished.
@@ -2030,6 +2032,7 @@ mod tests {
                 sign_in_command: "claude auth login".into(),
                 owned_flags: vec!["--verbose".into()],
             },
+            ignored_flags: vec!["--verbose".into()],
             checking: true,
             checked_at_ms: Some(1700),
             outcome: Some(ProbeOutcome::SignedOut { version: "2.1.301".into() }),
@@ -2042,6 +2045,7 @@ mod tests {
                     "defaultName": "Claude", "defaultBinary": "claude", "configEnv": "CLAUDE_CONFIG_DIR",
                     "configDirDefault": "~/.claude", "signInCommand": "claude auth login", "ownedFlags": ["--verbose"]
                 },
+                "ignoredFlags": ["--verbose"],
                 "checking": true, "checkedAtMs": 1700, "outcome": { "kind": "SignedOut", "version": "2.1.301" }
             })
         );
