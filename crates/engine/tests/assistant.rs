@@ -93,16 +93,22 @@ impl Harness {
         self.log().lines().filter(|l| l.starts_with("argv\t")).count()
     }
 
-    /// The argv of each turn process, in order. A probe's handshake carries no `--model`.
-    fn turn_argvs(&self) -> Vec<Vec<String>> {
-        self.log().lines().filter_map(|l| l.strip_prefix("argv\t")).map(|a| serde_json::from_str::<Vec<String>>(a).unwrap()).filter(|a| a.iter().any(|x| x == "--model")).collect()
+    /// The pid and argv of each turn process, in order. A probe's handshake carries no `--model`.
+    fn turns(&self) -> Vec<(u32, Vec<String>)> {
+        self.log()
+            .lines()
+            .filter_map(|l| l.strip_prefix("argv\t")?.split_once('\t'))
+            .map(|(pid, argv)| (pid.parse().unwrap(), serde_json::from_str::<Vec<String>>(argv).unwrap()))
+            .filter(|(_, argv)| argv.iter().any(|x| x == "--model"))
+            .collect()
     }
 
-    /// The pid logged right after each turn argv.
+    fn turn_argvs(&self) -> Vec<Vec<String>> {
+        self.turns().into_iter().map(|(_, argv)| argv).collect()
+    }
+
     fn turn_pids(&self) -> Vec<u32> {
-        let log = self.log();
-        let lines: Vec<&str> = log.lines().collect();
-        lines.windows(2).filter(|w| w[0].starts_with("argv\t") && w[0].contains("--model") && w[1].starts_with("pid\t")).map(|w| w[1]["pid\t".len()..].parse().unwrap()).collect()
+        self.turns().into_iter().map(|(pid, _)| pid).collect()
     }
 
     fn stdin_lines(&self) -> Vec<String> {

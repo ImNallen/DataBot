@@ -1,6 +1,7 @@
 //! A stand-in for the `claude` CLI that speaks the frames captured from 2.1.301. The engine tests
 //! point `binaryPath` at it and pick a scenario with `launchArgs = --fake-scenario <name>`. Every
-//! stdin line and the argv go to `--fake-log <path>` or `$L1_FAKE_CLAUDE_LOG`. Not shipped.
+//! stdin line and the pid with the argv go to `--fake-log <path>` or `$L1_FAKE_CLAUDE_LOG`. Not
+//! shipped.
 //!
 //! Scenarios, each one turn per user message:
 //! - `card`: streams prose, a `sql` fence, inline code, and a trailing `followups` fence in small
@@ -28,8 +29,7 @@ const DELTA_CHARS: usize = 12;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut log = Log::open(&args);
-    log.write("argv", &json!(args).to_string());
-    log.write("pid", &std::process::id().to_string());
+    log.write("argv", &format!("{}\t{}", std::process::id(), json!(args)));
     if args == ["--version"] {
         println!("{VERSION}");
         return;
