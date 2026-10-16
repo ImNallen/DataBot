@@ -142,7 +142,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use engine::{EngineConfig, MemoryKeyStore};
+    use engine::{AgentPath, EngineConfig, MemoryKeyStore};
     use serde_json::json;
 
     use super::*;
@@ -182,6 +182,7 @@ mod tests {
         let engine = Engine::open(EngineConfig {
             data_dir: dir.path().to_owned(),
             keys: Arc::new(MemoryKeyStore::default()),
+            agent_path: AgentPath::Fixed("".into()),
         })
         .await
         .unwrap();

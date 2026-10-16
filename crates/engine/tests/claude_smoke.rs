@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use engine::model::*;
-use engine::{Engine, EngineConfig, MemoryKeyStore, draft_from_url};
+use engine::{AgentPath, Engine, EngineConfig, MemoryKeyStore, draft_from_url};
 use tokio::sync::broadcast;
 
 const DEFAULT_URL: &str = "postgres://l1data:l1data@localhost:5433/shop";
@@ -84,7 +84,7 @@ fn remove_transcript_dirs(marker: &str) {
 async fn haiku_answers_resumes_and_waits_for_an_approval() {
     let dir = tempfile::Builder::new().prefix("l1-smoke-").tempdir().unwrap();
     let marker = dir.path().file_name().unwrap().to_string_lossy().into_owned();
-    let engine = Engine::open(EngineConfig { data_dir: dir.path().join("data"), keys: Arc::new(MemoryKeyStore::default()) }).await.unwrap();
+    let engine = Engine::open(EngineConfig { data_dir: dir.path().join("data"), keys: Arc::new(MemoryKeyStore::default()), agent_path: AgentPath::LoginShell }).await.unwrap();
     let mut smoke = Smoke { events: engine.subscribe(), engine };
 
     let started = Instant::now();

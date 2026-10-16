@@ -34,12 +34,14 @@ use store::{HistoryInsert, Store};
 use view::{ConnectionView, Known, Selection};
 
 pub use connection::draft_from_url;
+pub use provider::AgentPath;
 pub use secrets::{KeyStore, KeyringKeyStore, MemoryKeyStore, SecretError};
 pub use store::StoreError;
 
 pub struct EngineConfig {
     pub data_dir: PathBuf,
     pub keys: Arc<dyn KeyStore>,
+    pub agent_path: AgentPath,
 }
 
 pub struct Engine {
@@ -601,7 +603,7 @@ impl Engine {
             view_edits: tokio::sync::Mutex::new(()),
             timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
             runtime: tokio::runtime::Handle::current(),
-            providers: provider::Providers::new(),
+            providers: provider::Providers::new(cfg.agent_path),
             assistant: assistant::Assistant::new(),
             next_chat_rev: AtomicU64::new(1),
         });
@@ -1293,6 +1295,7 @@ mod tests {
         let engine = Engine::open(EngineConfig {
             data_dir: dir.path().join("nested"),
             keys: Arc::new(MemoryKeyStore::default()),
+            agent_path: AgentPath::Fixed("".into()),
         })
         .await
         .unwrap();
@@ -1361,7 +1364,7 @@ mod tests {
     #[tokio::test]
     async fn passwordless_save_clear_and_delete_never_touch_the_keychain() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(NoKeychain) }).await.unwrap();
+        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(NoKeychain), agent_path: AgentPath::Fixed("".into()) }).await.unwrap();
         let saved = engine.save_connection(ConnectionDraft { password: PasswordInput::Clear, ..draft("dev") }).await.unwrap();
         let kept = engine
             .save_connection(ConnectionDraft { id: Some(saved.id), password: PasswordInput::Keep, ..draft("dev") })
@@ -1377,7 +1380,7 @@ mod tests {
     async fn connections_settings_and_workspace_persist_across_open() {
         let dir = tempfile::tempdir().unwrap();
         let keys = Arc::new(MemoryKeyStore::default());
-        let cfg = || EngineConfig { data_dir: dir.path().to_owned(), keys: keys.clone() };
+        let cfg = || EngineConfig { data_dir: dir.path().to_owned(), keys: keys.clone(), agent_path: AgentPath::Fixed("".into()) };
         let password = |engine: &Engine, id| engine.shared.saved_password(id).unwrap();
         let saved = {
             let engine = Engine::open(cfg()).await.unwrap();

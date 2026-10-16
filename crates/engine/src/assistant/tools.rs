@@ -445,13 +445,13 @@ mod tests {
 mod pg_tests {
     use super::*;
     use crate::model::PasswordInput;
-    use crate::{Engine, EngineConfig, MemoryKeyStore, draft_from_url};
+    use crate::{AgentPath, Engine, EngineConfig, MemoryKeyStore, draft_from_url};
 
     const DEFAULT_URL: &str = "postgres://l1data:l1data@localhost:5433/shop";
 
     async fn engine() -> (Arc<Engine>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(MemoryKeyStore::default()) }).await.unwrap();
+        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(MemoryKeyStore::default()), agent_path: AgentPath::Fixed("".into()) }).await.unwrap();
         (engine, dir)
     }
 

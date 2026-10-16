@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use engine::model::*;
-use engine::{Engine, EngineConfig, MemoryKeyStore};
+use engine::{AgentPath, Engine, EngineConfig, MemoryKeyStore};
 use tokio::sync::broadcast;
 
 const FAKE: &str = env!("CARGO_BIN_EXE_fake-claude");
@@ -23,7 +23,7 @@ impl Harness {
     }
 
     async fn open_in(dir: tempfile::TempDir) -> Self {
-        let engine = Engine::open(EngineConfig { data_dir: dir.path().join("data"), keys: Arc::new(MemoryKeyStore::default()) }).await.unwrap();
+        let engine = Engine::open(EngineConfig { data_dir: dir.path().join("data"), keys: Arc::new(MemoryKeyStore::default()), agent_path: AgentPath::Fixed("".into()) }).await.unwrap();
         let events = engine.subscribe();
         Self { engine, events, dir }
     }
@@ -67,10 +67,10 @@ impl Harness {
         }
     }
 
-    /// A finished probe whose outcome came from the fake, not from a real CLI on this machine,
-    /// with no further probe running: a settings change that lands while the open-time probe is
-    /// still pending owes one more probe, and the gate runs it right after.
-    async fn wait_fake_outcome(&mut self, done: impl Fn(&ProbeOutcome) -> bool) -> ProbeOutcome {
+    /// A finished probe whose outcome `done` accepts, with no further probe running: a settings
+    /// change that lands while the open-time probe is still pending owes one more probe, and the
+    /// gate runs it right after.
+    async fn wait_outcome(&mut self, done: impl Fn(&ProbeOutcome) -> bool) -> ProbeOutcome {
         self.wait_provider("a probe outcome", |s| !s.checking && s.outcome.as_ref().is_some_and(&done)).await;
         self.settle().await.outcome.unwrap()
     }
@@ -157,8 +157,8 @@ impl Harness {
     }
 }
 
-fn lists_the_fake_model(outcome: &ProbeOutcome) -> bool {
-    matches!(outcome, ProbeOutcome::Ready { models, .. } if models.iter().any(|m| m.id.0 == "fake"))
+fn ready(outcome: &ProbeOutcome) -> bool {
+    matches!(outcome, ProbeOutcome::Ready { .. })
 }
 
 fn alive(pid: u32) -> bool {
@@ -189,7 +189,7 @@ fn text_of(entry: &Entry) -> String {
 async fn the_probe_reads_version_plan_and_models_and_boot_carries_them() {
     let mut h = Harness::open().await;
     h.use_fake("none");
-    let outcome = h.wait_fake_outcome(lists_the_fake_model).await;
+    let outcome = h.wait_outcome(ready).await;
     let ProbeOutcome::Ready { version, plan, models } = outcome else { panic!("{outcome:?}") };
     assert_eq!((version.as_str(), plan.as_deref()), ("2.1.301", Some("Claude Max")));
     assert_eq!(models.iter().map(|m| m.id.0.as_str()).collect::<Vec<_>>(), ["opus", "fable", "sonnet", "haiku", "fake"], "the default alias is hidden");
@@ -207,29 +207,35 @@ async fn the_probe_reads_version_plan_and_models_and_boot_carries_them() {
 }
 
 #[tokio::test]
+async fn an_empty_agent_path_finds_no_claude() {
+    let mut h = Harness::open().await;
+    assert_eq!(h.wait_outcome(|_| true).await, ProbeOutcome::NotFound { binary: "claude on PATH ()".into() });
+}
+
+#[tokio::test]
 async fn a_missing_binary_probes_not_found_and_a_signed_out_config_dir_probes_signed_out() {
     let mut h = Harness::open().await;
     h.configure_provider(|p| p.binary_path = "/nope".into());
-    assert_eq!(h.wait_fake_outcome(|o| matches!(o, ProbeOutcome::NotFound { .. })).await, ProbeOutcome::NotFound { binary: "/nope".into() });
+    assert_eq!(h.wait_outcome(|o| matches!(o, ProbeOutcome::NotFound { .. })).await, ProbeOutcome::NotFound { binary: "/nope".into() });
     let signed_out = h.dir.path().join("signed-out");
     std::fs::create_dir_all(&signed_out).unwrap();
     h.configure_provider(|p| {
         p.binary_path = FAKE.into();
         p.config_dir = signed_out.display().to_string();
     });
-    assert_eq!(h.wait_fake_outcome(|o| matches!(o, ProbeOutcome::SignedOut { .. })).await, ProbeOutcome::SignedOut { version: "2.1.301".into() });
+    assert_eq!(h.wait_outcome(|o| matches!(o, ProbeOutcome::SignedOut { .. })).await, ProbeOutcome::SignedOut { version: "2.1.301".into() });
 }
 
 #[tokio::test]
 async fn provider_refresh_works_from_a_thread_without_a_runtime_and_reprobes() {
     let mut h = Harness::open().await;
     h.use_fake("none");
-    h.wait_fake_outcome(lists_the_fake_model).await;
+    h.wait_outcome(ready).await;
     let (before, handshakes) = (h.settle().await, h.handshakes());
     let caller = h.engine.clone();
     std::thread::spawn(move || caller.provider_refresh()).join().expect("provider_refresh panicked off the runtime");
     let after = h.wait_provider("the refresh's outcome", |s| !s.checking && s.checked_at_ms > before.checked_at_ms).await;
-    assert!(lists_the_fake_model(after.outcome.as_ref().unwrap()));
+    assert_eq!(after.outcome, before.outcome);
     assert_eq!(h.handshakes(), handshakes + 1, "a refresh is a full probe, so it ran the handshake once more");
 }
 
@@ -237,13 +243,13 @@ async fn provider_refresh_works_from_a_thread_without_a_runtime_and_reprobes() {
 async fn an_unchanged_setting_does_not_reprobe_but_the_health_loop_does() {
     let mut h = Harness::open().await;
     h.use_fake("none");
-    h.wait_fake_outcome(lists_the_fake_model).await;
+    h.wait_outcome(ready).await;
     let (before, handshakes) = (h.settle().await, h.handshakes());
     let mut settings = h.engine.settings();
     settings.provider_health_check_secs = 1;
     h.engine.set_settings(settings);
     let after = h.wait_provider("the health loop's probe", |s| !s.checking && s.checked_at_ms > before.checked_at_ms).await;
-    assert!(lists_the_fake_model(after.outcome.as_ref().unwrap()), "a quick probe keeps the models of the last full one");
+    assert_eq!(after.outcome, before.outcome, "a quick probe keeps the models of the last full one");
     assert_eq!(h.handshakes(), handshakes, "the interval change alone re-probed nothing, and the quick probe ran no handshake");
 }
 
@@ -512,7 +518,7 @@ async fn chats_persist_across_open_and_a_mid_turn_row_recovers_as_lost() {
     .join()
     .unwrap();
     let data_dir = std::fs::read_to_string(dir.path().join("data-dir")).unwrap();
-    let engine = Engine::open(EngineConfig { data_dir: data_dir.into(), keys: Arc::new(MemoryKeyStore::default()) }).await.unwrap();
+    let engine = Engine::open(EngineConfig { data_dir: data_dir.into(), keys: Arc::new(MemoryKeyStore::default()), agent_path: AgentPath::Fixed("".into()) }).await.unwrap();
     let listed = engine.boot().chats;
     assert_eq!(listed.iter().map(|c| (c.id, c.status.clone())).collect::<Vec<_>>(), [(lost, ChatStatus::Idle)]);
     let view = engine.assistant_open(lost).await.unwrap();
@@ -583,7 +589,7 @@ async fn an_empty_message_a_disabled_provider_and_a_gone_attachment_are_refused(
 async fn a_draft_opens_with_default_options_and_configure_validates_against_the_probe() {
     let mut h = Harness::open().await;
     h.use_fake("none");
-    h.wait_fake_outcome(lists_the_fake_model).await;
+    h.wait_outcome(ready).await;
     let chat = ChatId(uuid::Uuid::new_v4());
     let view = h.engine.assistant_open(chat).await.unwrap();
     assert_eq!((view.state.status, view.state.title.as_str(), view.state.entry_count, view.entries.len()), (ChatStatus::Draft, "", 0, 0));

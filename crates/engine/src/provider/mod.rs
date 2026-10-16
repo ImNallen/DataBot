@@ -148,9 +148,19 @@ pub(crate) struct LaunchSpec {
     pub cwd: PathBuf,
 }
 
-/// Captured once per engine. A Finder-launched app gets launchd's PATH, which misses where
-/// `claude` and `node` live, so the login shell's PATH is read once and the usual install
-/// directories are appended.
+/// The PATH an agent binary named without a directory is looked up on, and the PATH the agent
+/// runs with. `LoginShell` is the app's: a Finder-launched app gets launchd's PATH, which misses
+/// where `claude` and `node` live, so the login shell's PATH comes first, then the inherited one,
+/// then the usual install directories. `Fixed` is exactly the given PATH, with no shell and nothing
+/// added; tests pass an empty one, so a bare `claude` probes `NotFound` and nothing installed on
+/// the machine runs.
+#[derive(Debug, Clone)]
+pub enum AgentPath {
+    LoginShell,
+    Fixed(OsString),
+}
+
+/// Captured once per engine, on first use.
 pub(crate) struct HostEnv {
     pub path: OsString,
     pub home: PathBuf,
@@ -159,22 +169,28 @@ pub(crate) struct HostEnv {
 }
 
 impl HostEnv {
-    pub(crate) async fn capture(cwd: PathBuf) -> Self {
+    pub(crate) async fn capture(agent_path: &AgentPath, cwd: PathBuf) -> Self {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        let inherited = std::env::var_os("PATH").unwrap_or_default();
-        let shell_path = login_shell_path().await.unwrap_or_default();
-        let mut dirs: Vec<PathBuf> = std::env::split_paths(&shell_path).chain(std::env::split_paths(&inherited)).filter(|p| !p.as_os_str().is_empty()).collect();
-        for extra in [home.join(".local/bin"), home.join(".claude/local"), PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")] {
-            if !dirs.contains(&extra) {
-                dirs.push(extra);
+        let path = match agent_path {
+            AgentPath::Fixed(path) => path.clone(),
+            AgentPath::LoginShell => {
+                let inherited = std::env::var_os("PATH").unwrap_or_default();
+                let shell_path = login_shell_path().await.unwrap_or_default();
+                let mut dirs: Vec<PathBuf> = std::env::split_paths(&shell_path).chain(std::env::split_paths(&inherited)).filter(|p| !p.as_os_str().is_empty()).collect();
+                for extra in [home.join(".local/bin"), home.join(".claude/local"), PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")] {
+                    if !dirs.contains(&extra) {
+                        dirs.push(extra);
+                    }
+                }
+                std::env::join_paths(&dirs).unwrap_or(inherited)
             }
-        }
-        let path = std::env::join_paths(&dirs).unwrap_or(inherited);
+        };
         Self { path, home, cwd }
     }
 
+    /// An empty entry would mean the current directory to a shell; here it means nothing.
     pub(crate) fn dirs(&self) -> Vec<PathBuf> {
-        std::env::split_paths(&self.path).collect()
+        std::env::split_paths(&self.path).filter(|p| !p.as_os_str().is_empty()).collect()
     }
 
     pub(crate) fn expand_home(&self, path: &str) -> PathBuf {
@@ -199,6 +215,7 @@ async fn login_shell_path() -> Option<OsString> {
 
 pub(crate) struct Providers {
     entries: Mutex<HashMap<ProviderKind, ProviderEntry>>,
+    agent_path: AgentPath,
     host: tokio::sync::OnceCell<HostEnv>,
 }
 
@@ -235,8 +252,8 @@ impl ProviderEntry {
 }
 
 impl Providers {
-    pub(crate) fn new() -> Self {
-        Self { entries: Mutex::new(HashMap::new()), host: tokio::sync::OnceCell::new() }
+    pub(crate) fn new(agent_path: AgentPath) -> Self {
+        Self { entries: Mutex::new(HashMap::new()), agent_path, host: tokio::sync::OnceCell::new() }
     }
 
     pub(crate) fn states(&self) -> Vec<ProviderState> {
@@ -258,7 +275,7 @@ impl Providers {
 
 impl Shared {
     pub(crate) async fn host_env(&self) -> &HostEnv {
-        self.providers.host.get_or_init(|| HostEnv::capture(self.assistant_dir())).await
+        self.providers.host.get_or_init(|| HostEnv::capture(&self.providers.agent_path, self.assistant_dir())).await
     }
 
     pub(crate) fn assistant_dir(&self) -> PathBuf {

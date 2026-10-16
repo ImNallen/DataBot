@@ -601,7 +601,9 @@ Writing uses one command, `table_apply(tab, TableChanges)`. It borrows the tab's
 pub struct Engine { shared: Arc<Shared> }
 pub(crate) struct Shared { /* data_dir, vault, store, settings, connections, consoles, events, next_run, timezone */ }
 
-pub struct EngineConfig { pub data_dir: PathBuf, pub keys: Arc<dyn KeyStore> }
+pub struct EngineConfig { pub data_dir: PathBuf, pub keys: Arc<dyn KeyStore>, pub agent_path: AgentPath }
+// AgentPath::LoginShell (the app and the dev-bridge) or AgentPath::Fixed(path) (tests pass an empty one,
+// so no installed agent CLI ever runs under `cargo test`)
 
 impl Engine {
     pub async fn open(cfg: EngineConfig) -> Result<Arc<Self>, StoreError>;   // opens SQLite, runs migrations

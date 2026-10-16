@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use engine::model::{AppEvent, ColorScheme};
-use engine::{Engine, EngineConfig, KeyStore, KeyringKeyStore, MemoryKeyStore};
+use engine::{AgentPath, Engine, EngineConfig, KeyStore, KeyringKeyStore, MemoryKeyStore};
 use specta_typescript::Typescript;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -78,7 +78,7 @@ fn engine_config(app: &tauri::App) -> Result<EngineConfig, Box<dyn Error>> {
         Some("memory") => Arc::new(MemoryKeyStore::default()),
         _ => Arc::new(KeyringKeyStore),
     };
-    Ok(EngineConfig { data_dir, keys })
+    Ok(EngineConfig { data_dir, keys, agent_path: AgentPath::LoginShell })
 }
 
 // Tauri's default macOS menu binds Cmd+W to Close Window, which would swallow the key before the webview's
