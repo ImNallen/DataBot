@@ -40,7 +40,7 @@ export function SqlCard({ sql, relations, vetted, complete, db }: { sql: string;
       <SqlHighlight sql={sql} className="px-3 py-2.5" />
       <div className="flex flex-wrap items-center gap-1 border-t border-border px-2 py-1.5">
         {complete && !vetted ? (
-          <Button data-testid="sql-open-new-tab" title="Writes data, so it opens without running" className={ACTION} disabled={!complete} onClick={() => openInNewTab(sql, db)}>
+          <Button data-testid="sql-open-new-tab" title="L1 Data cannot verify this as read-only, so it opens without running" className={ACTION} disabled={!complete} onClick={() => openInNewTab(sql, db)}>
             Open in new tab
           </Button>
         ) : (
