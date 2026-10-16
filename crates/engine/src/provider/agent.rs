@@ -48,7 +48,7 @@ pub(crate) struct Agent {
     groups: Arc<ProcessGroups>,
     stdin: Option<ChildStdin>,
     lines: mpsc::Receiver<Line>,
-    outbox: Vec<String>,
+    outbox: Vec<u8>,
     pending: VecDeque<AgentEvent>,
     stderr: Arc<Mutex<String>>,
     eof: bool,
@@ -204,7 +204,7 @@ impl Agent {
                 Some(Line::Out(line)) => {
                     let step = self.codec.read(&line);
                     let answered = !step.replies.is_empty();
-                    self.outbox.extend(step.replies);
+                    self.queue(step.replies);
                     self.pending.extend(step.events);
                     if answered && self.pending.is_empty() {
                         return Next::Flush;
@@ -216,8 +216,15 @@ impl Agent {
     }
 
     pub(crate) async fn write(&mut self, lines: Vec<String>) -> std::io::Result<()> {
-        self.outbox.extend(lines);
+        self.queue(lines);
         self.flush().await
+    }
+
+    fn queue(&mut self, lines: Vec<String>) {
+        for line in lines {
+            self.outbox.extend_from_slice(line.as_bytes());
+            self.outbox.push(b'\n');
+        }
     }
 
     pub(crate) async fn flush(&mut self) -> std::io::Result<()> {
@@ -225,9 +232,12 @@ impl Agent {
             return Ok(());
         }
         let stdin = self.stdin.as_mut().expect("only `close` takes stdin, and it consumes the agent");
-        for line in self.outbox.drain(..) {
-            stdin.write_all(line.as_bytes()).await?;
-            stdin.write_all(b"\n").await?;
+        while !self.outbox.is_empty() {
+            let written = stdin.write(&self.outbox).await?;
+            if written == 0 {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            self.outbox.drain(..written);
         }
         stdin.flush().await
     }
@@ -274,3 +284,106 @@ fn kill_group(pgid: i32) {
 
 #[cfg(not(unix))]
 fn kill_group(_pgid: i32) {}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    use serde_json::Value;
+
+    use super::*;
+    use crate::model::Decision;
+    use crate::provider::{BlockKey, ModelResult, ReplyTo, Step};
+    use crate::{AgentPath, Engine, EngineConfig, MemoryKeyStore};
+
+    struct LineCodec;
+
+    impl Codec for LineCodec {
+        fn open(&mut self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn user_turn(&mut self, text: &str) -> Vec<String> {
+            vec![text.to_owned()]
+        }
+
+        fn interrupt(&mut self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn permission(&mut self, _: &ReplyTo, _: Decision, _: &Value, _: &str) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn tool_result(&mut self, _: &ReplyTo, _: &ModelResult) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn read(&mut self, line: &str) -> Step {
+            let event = match line {
+                "ready" => AgentEvent::Ready(Handshake { version: None, plan: None, models: Vec::new() }),
+                _ => AgentEvent::Text { block: BlockKey { message: 0, index: 0 }, delta: line.to_owned() },
+            };
+            Step { replies: Vec::new(), events: vec![event] }
+        }
+    }
+
+    fn poll_once<F: Future + Unpin>(fut: &mut F) -> Poll<F::Output> {
+        Pin::new(fut).poll(&mut Context::from_waker(Waker::noop()))
+    }
+
+    /// Polls a fresh `next` once per step and drops it while it is pending, so every value
+    /// arrives through a future whose predecessors were cancelled mid-await.
+    async fn next_cancelling(agent: &mut Agent, cancelled: &mut usize) -> Next {
+        loop {
+            let mut fut = Box::pin(agent.next());
+            if let Poll::Ready(next) = poll_once(&mut fut) {
+                return next;
+            }
+            drop(fut);
+            *cancelled += 1;
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+
+    async fn texts_until(agent: &mut Agent, cancelled: &mut usize, count: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        while out.len() < count {
+            match next_cancelling(agent, cancelled).await {
+                Next::Event(AgentEvent::Text { delta, .. }) => out.push(delta),
+                Next::Event(_) | Next::Flush => {}
+                Next::Eof { code } => panic!("eof with code {code:?} after {} of {count} lines", out.len()),
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_next_or_flush_loses_no_line_no_eof_and_no_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(MemoryKeyStore::default()), agent_path: AgentPath::Fixed("".into()) }).await.unwrap();
+        let script = "echo ready; echo one; sleep 0.2; echo two; sleep 0.5; cat";
+        let spec = LaunchSpec { program: "sh".into(), args: vec!["-c".into(), script.into()], env_set: Vec::new(), env_remove: Vec::new(), cwd: std::env::temp_dir() };
+        let (mut agent, _) = Agent::start(&engine.shared, spec, Box::new(LineCodec)).await.unwrap();
+        let mut cancelled = 0;
+        assert_eq!(texts_until(&mut agent, &mut cancelled, 2).await, ["one", "two"]);
+        assert!(cancelled > 0, "no next was pending, so none was cancelled");
+
+        let payload: Vec<String> = (0..100).map(|i| format!("{i:03}{}", "x".repeat(4096))).collect();
+        agent.queue(payload.clone());
+        let mut flush = Box::pin(agent.flush());
+        assert!(poll_once(&mut flush).is_pending(), "the pipe took 400 KB at once, so no write was cancelled");
+        drop(flush);
+        agent.flush().await.unwrap();
+        drop(agent.stdin.take());
+        let echoed = tokio::time::timeout(Duration::from_secs(10), texts_until(&mut agent, &mut cancelled, payload.len())).await.expect("cat echoed every line");
+        assert_eq!(echoed, payload);
+
+        let mut eof = 0;
+        let first = next_cancelling(&mut agent, &mut eof).await;
+        let again = next_cancelling(&mut agent, &mut eof).await;
+        assert!(matches!((&first, &again), (Next::Eof { code: Some(0) }, Next::Eof { code: Some(0) })), "the end of stream is reported on every call after it");
+    }
+}
