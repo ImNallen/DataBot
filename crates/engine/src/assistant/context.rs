@@ -99,7 +99,7 @@ pub(crate) fn build(input: &ContextInput<'_>) -> String {
     }
     let close = "</l1_context>";
     if out.chars().count() + close.len() > CONTEXT_MAX {
-        out = cut(&out, CONTEXT_MAX - close.len() - 1);
+        out = cut(&out, CONTEXT_MAX - close.len() - "…\n".chars().count());
         out.push('\n');
     }
     out.push_str(close);
@@ -316,6 +316,17 @@ mod tests {
         assert_eq!(statement.chars().count(), STATEMENT_MAX + 1);
         assert!(statement.ends_with('…'));
         assert!(built.contains(&format!("Tab SQL:\n{text}\n")), "the tab SQL keeps its own budget");
+    }
+
+    #[test]
+    fn a_block_over_budget_is_cut_to_exactly_the_budget() {
+        let text = format!("select '{}'", "z".repeat(CONTEXT_MAX));
+        let c = catalog(1);
+        let db = c.db.clone();
+        let tab = TabFacts { title: "t.sql", text: &text, picked: Some((0, text.len())), selected: false, last_error: None };
+        let built = build(&input(&c, &db, Some(tab), None));
+        assert_eq!(built.chars().count(), CONTEXT_MAX);
+        assert!(built.ends_with("z…\n</l1_context>"), "{}", &built[built.len() - 40..]);
     }
 
     #[test]
