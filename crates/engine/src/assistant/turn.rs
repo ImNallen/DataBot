@@ -384,10 +384,7 @@ impl Turn {
     }
 
     fn next_seq(&self) -> u32 {
-        let mut inner = self.chat.inner.lock().unwrap();
-        let seq = inner.next_seq;
-        inner.next_seq += 1;
-        seq
+        self.chat.inner.lock().unwrap().next_seq()
     }
 
     fn text_delta(&mut self, key: BlockKey, delta: &str) {
@@ -604,7 +601,6 @@ impl Turn {
         let closing = self.agent.take().map(|agent| Closing::start(&self.shared, agent));
         {
             let mut inner = self.chat.inner.lock().unwrap();
-            inner.record.entry_count = inner.next_seq;
             inner.record.updated_at_ms = now_ms();
             inner.ledger = Default::default();
             inner.turn = None;

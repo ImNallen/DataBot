@@ -1,6 +1,7 @@
 pub(crate) mod chat;
 mod context;
 mod reply;
+mod supervisor;
 pub(crate) mod tools;
 mod turn;
 
@@ -15,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use chat::{ActiveTurn, Chat, Closing, TurnControl};
+use supervisor::supervise;
 use turn::TurnPlan;
 
 use crate::Shared;
@@ -72,23 +74,23 @@ impl Shared {
         if let Some(chat) = self.assistant.get(id) {
             return Ok(chat);
         }
-        let (record, stored, next_seq) = match self.store.chat(id)? {
+        let (record, status) = match self.store.chat(id)? {
             Some(mut record) => {
                 let entries = self.store.chat_entries(id)?;
                 let fixes = reply::recover(&entries, now_ms());
                 if !fixes.is_empty() {
                     self.store.put_entries(id, &fixes)?;
                 }
-                let next_seq = entries.iter().chain(fixes.iter()).map(|(seq, _, _)| seq + 1).max().unwrap_or(0).max(record.entry_count);
-                if next_seq != record.entry_count {
-                    record.entry_count = next_seq;
+                let entry_count = entries.iter().chain(fixes.iter()).map(|(seq, _, _)| seq + 1).max().unwrap_or(0).max(record.entry_count);
+                if entry_count != record.entry_count {
+                    record.entry_count = entry_count;
                     self.store.put_chat(id, &record)?;
                 }
-                (record, true, next_seq)
+                (record, ChatStatus::Idle)
             }
-            None => (self.draft_record(), false, 0),
+            None => (self.draft_record(), ChatStatus::Draft),
         };
-        let chat = self.assistant.chats.write().unwrap().entry(id).or_insert_with(|| Arc::new(Chat::new(id, record, stored, next_seq))).clone();
+        let chat = self.assistant.chats.write().unwrap().entry(id).or_insert_with(|| Arc::new(Chat::new(id, record, status))).clone();
         Ok(chat)
     }
 
@@ -139,7 +141,7 @@ impl Shared {
         let store_error = |e: StoreError| ChatError::Store { message: e.to_string() };
         let chat = self.chat(id).map_err(store_error)?;
         let inner = chat.inner.lock().unwrap();
-        let stored = if inner.stored { self.store.chat_entries(id).map_err(store_error)? } else { Vec::new() };
+        let stored = if inner.stored() { self.store.chat_entries(id).map_err(store_error)? } else { Vec::new() };
         let mut entries: Vec<EntrySnapshot> = stored.into_iter().map(|(seq, turn, entry)| EntrySnapshot { chat_id: id, seq, rev: inner.rev, turn, entry }).collect();
         for (seq, live) in &inner.live {
             match entries.iter_mut().find(|e| e.seq == *seq) {
@@ -181,20 +183,18 @@ impl Shared {
         };
         let connection_name = request.tab.as_ref().and_then(|t| t.db.as_ref()).and_then(|db| self.config(db.connection_id)).map(|c| c.name);
         let (seq, control_rx, closing) = {
-            let mut inner = chat.inner.lock().unwrap();
-            if inner.turn.is_some() || inner.deleted() {
+            let Some(mut inner) = chat.unless_deleted() else { return Err(SendError::Busy) };
+            if inner.turn.is_some() {
                 return Err(SendError::Busy);
             }
-            let seq = inner.next_seq;
-            inner.next_seq += 1;
-            let (control, control_rx) = mpsc::channel(4);
-            inner.turn = Some(ActiveTurn { db: request.tab.as_ref().and_then(|t| t.db.clone()), control, supervisor: None, abort: None });
-            inner.status = ChatStatus::Running { turn: seq, started_at_ms: now_ms(), phase: TurnPhase::Starting };
-            if !inner.stored {
-                inner.stored = true;
+            if inner.status == ChatStatus::Draft {
                 inner.record.title = text.lines().next().unwrap_or_default().chars().take(TITLE_CHARS).collect();
                 inner.record.created_at_ms = now_ms();
             }
+            let seq = inner.next_seq();
+            let (control, control_rx) = mpsc::channel(4);
+            inner.turn = Some(ActiveTurn { db: request.tab.as_ref().and_then(|t| t.db.clone()), control, supervisor: None, abort: None });
+            inner.status = ChatStatus::Running { turn: seq, started_at_ms: now_ms(), phase: TurnPhase::Starting };
             inner.record.updated_at_ms = now_ms();
             (seq, control_rx, inner.closing.clone())
         };
@@ -284,18 +284,6 @@ impl Shared {
 
 async fn drain(tasks: &mut FuturesUnordered<JoinHandle<()>>) {
     while tasks.next().await.is_some() {}
-}
-
-async fn supervise(shared: Arc<Shared>, chat: Arc<Chat>, turn: JoinHandle<()>) {
-    let Err(e) = turn.await else { return };
-    let outcome = match e.try_into_panic() {
-        Ok(panic) => {
-            let text = panic.downcast_ref::<&str>().map(|s| (*s).to_owned()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
-            TurnOutcome::Failed { error: AgentError::Provider { message: format!("The turn failed inside L1 Data: {text}") } }
-        }
-        Err(_) => TurnOutcome::Lost,
-    };
-    chat.end_abruptly(&shared, outcome);
 }
 
 #[cfg(test)]

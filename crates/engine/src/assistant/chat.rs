@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -7,11 +7,9 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 
 use super::Assistant;
-use super::reply;
 use super::tools::Ask;
 use crate::Shared;
-use crate::console::now_ms;
-use crate::model::{AppEvent, ApprovalId, ApproveError, ChatId, ChatState, ChatStatus, DatabaseRef, Decision, Entry, EntrySnapshot, Permission, ToolCallId, TurnOutcome};
+use crate::model::{AppEvent, ApprovalId, ApproveError, ChatId, ChatState, ChatStatus, DatabaseRef, Decision, Entry, EntrySnapshot, Permission, ToolCallId};
 use crate::provider::agent::{Agent, CLOSE_GRACE};
 use crate::store::ChatRecord;
 
@@ -24,12 +22,10 @@ pub(crate) struct Chat {
 
 pub(crate) struct ChatInner {
     pub record: ChatRecord,
-    pub stored: bool,
     pub status: ChatStatus,
     pub rev: u64,
     pub turn: Option<ActiveTurn>,
     pub closing: Option<Closing>,
-    pub next_seq: u32,
     pub live: BTreeMap<u32, EntrySnapshot>,
     pub ledger: Ledger,
     pub last_context: Option<LastContext>,
@@ -38,6 +34,16 @@ pub(crate) struct ChatInner {
 impl ChatInner {
     pub(super) fn deleted(&self) -> bool {
         self.status == ChatStatus::Deleted
+    }
+
+    pub(super) fn stored(&self) -> bool {
+        self.status != ChatStatus::Draft
+    }
+
+    pub(super) fn next_seq(&mut self) -> u32 {
+        let seq = self.record.entry_count;
+        self.record.entry_count += 1;
+        seq
     }
 }
 
@@ -128,9 +134,19 @@ pub(crate) enum Gated {
 }
 
 impl Chat {
-    pub(crate) fn new(id: ChatId, record: ChatRecord, stored: bool, next_seq: u32) -> Self {
-        let status = if stored { ChatStatus::Idle } else { ChatStatus::Draft };
-        Self { id, inner: Mutex::new(ChatInner { record, stored, status, rev: 0, turn: None, closing: None, next_seq, live: BTreeMap::new(), ledger: Ledger::default(), last_context: None }) }
+    pub(crate) fn new(id: ChatId, record: ChatRecord, status: ChatStatus) -> Self {
+        Self { id, inner: Mutex::new(ChatInner { record, status, rev: 0, turn: None, closing: None, live: BTreeMap::new(), ledger: Ledger::default(), last_context: None }) }
+    }
+
+    /// The lock, or `None` once the chat is deleted. Every store and publish path takes it
+    /// here, so a deleted chat is inert without each caller remembering to check.
+    pub(super) fn unless_deleted(&self) -> Option<MutexGuard<'_, ChatInner>> {
+        let inner = self.inner.lock().unwrap();
+        (!inner.deleted()).then_some(inner)
+    }
+
+    fn persists(&self) -> bool {
+        self.unless_deleted().is_some_and(|inner| inner.stored())
     }
 
     pub(crate) fn permission(&self) -> Permission {
@@ -195,95 +211,48 @@ impl Chat {
         self.inner.lock().unwrap().ledger.calls.values().any(|g| matches!(g, Gate::Pending { .. }))
     }
 
-    pub(crate) fn end_abruptly(&self, shared: &Shared, outcome: TurnOutcome) {
-        let rows = {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.deleted() || inner.turn.take().is_none() {
-                return;
-            }
-            inner.ledger = Ledger::default();
-            let mut rows = shared.store.chat_entries(self.id).unwrap_or_default();
-            for (seq, live) in &inner.live {
-                let row = (*seq, live.turn, live.entry.clone());
-                match rows.iter_mut().find(|(s, _, _)| s == seq) {
-                    Some(stored) => *stored = row,
-                    None => rows.push(row),
-                }
-            }
-            rows.sort_by_key(|(seq, _, _)| *seq);
-            rows
-        };
-        let mut fixes = reply::recover(&rows, now_ms());
-        for (_, _, entry) in &mut fixes {
-            if let Entry::End { outcome: o, .. } = entry {
-                *o = outcome.clone();
-            }
-        }
-        let next_seq = fixes.iter().map(|(seq, _, _)| seq + 1).max().unwrap_or(0);
-        if let Err(e) = shared.store.put_entries(self.id, &fixes) {
-            eprintln!("chat {} recovery failed: {e}", self.id.0);
-        }
-        for (seq, turn, entry) in fixes {
-            self.publish_entry(shared, seq, turn, entry);
-        }
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner.next_seq = inner.next_seq.max(next_seq);
-            inner.record.entry_count = inner.next_seq;
-            inner.record.updated_at_ms = now_ms();
-            inner.status = ChatStatus::Idle;
-            inner.live.clear();
-        }
-        self.store_record(shared);
-        self.publish_state(shared);
-    }
-
     pub(crate) fn publish_entry(&self, shared: &Shared, seq: u32, turn: u32, entry: Entry) {
         let snapshot = EntrySnapshot { chat_id: self.id, seq, rev: shared.next_chat_rev(), turn, entry };
         {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.deleted() {
-                return;
-            }
+            let Some(mut inner) = self.unless_deleted() else { return };
             inner.live.insert(seq, snapshot.clone());
         }
         shared.emit(AppEvent::ChatEntryChanged(snapshot));
     }
 
     pub(crate) fn store_entry(&self, shared: &Shared, seq: u32, turn: u32, entry: &Entry) {
+        if self.persists()
+            && let Err(e) = shared.store.put_entry(self.id, seq, turn, entry)
         {
-            let inner = self.inner.lock().unwrap();
-            if !inner.stored || inner.deleted() {
-                return;
-            }
-        }
-        if let Err(e) = shared.store.put_entry(self.id, seq, turn, entry) {
             eprintln!("chat {} entry {seq} save failed: {e}", self.id.0);
         }
     }
 
+    pub(super) fn store_entries(&self, shared: &Shared, rows: &[(u32, u32, Entry)]) {
+        if self.persists()
+            && let Err(e) = shared.store.put_entries(self.id, rows)
+        {
+            eprintln!("chat {} recovery failed: {e}", self.id.0);
+        }
+    }
+
     pub(crate) fn store_record(&self, shared: &Shared) {
-        let (stored, record) = {
-            let inner = self.inner.lock().unwrap();
-            (inner.stored && !inner.deleted(), inner.record.clone())
+        let record = match self.unless_deleted() {
+            Some(inner) if inner.stored() => inner.record.clone(),
+            _ => return,
         };
-        if stored && let Err(e) = shared.store.put_chat(self.id, &record) {
+        if let Err(e) = shared.store.put_chat(self.id, &record) {
             eprintln!("chat {} save failed: {e}", self.id.0);
         }
     }
 
     pub(crate) fn publish_state(&self, shared: &Shared) -> ChatState {
-        let (state, emit) = {
-            let mut inner = self.inner.lock().unwrap();
-            let emit = !inner.deleted();
-            if emit {
-                inner.rev = shared.next_chat_rev();
-            }
-            (Self::state_of(self.id, &inner), emit)
+        let state = {
+            let Some(mut inner) = self.unless_deleted() else { return self.state() };
+            inner.rev = shared.next_chat_rev();
+            Self::state_of(self.id, &inner)
         };
-        if emit {
-            shared.emit(AppEvent::ChatChanged(state.clone()));
-        }
+        shared.emit(AppEvent::ChatChanged(state.clone()));
         state
     }
 
@@ -292,7 +261,7 @@ impl Chat {
     }
 
     pub(crate) fn state_of(id: ChatId, inner: &ChatInner) -> ChatState {
-        ChatState { id, rev: inner.rev, title: inner.record.title.clone(), updated_at_ms: inner.record.updated_at_ms, options: inner.record.options.clone(), status: inner.status.clone(), entry_count: inner.next_seq }
+        ChatState { id, rev: inner.rev, title: inner.record.title.clone(), updated_at_ms: inner.record.updated_at_ms, options: inner.record.options.clone(), status: inner.status.clone(), entry_count: inner.record.entry_count }
     }
 }
 
