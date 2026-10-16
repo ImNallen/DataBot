@@ -306,9 +306,9 @@ async fn a_turn_streams_the_reply_into_blocks_and_ends_with_suggestions() {
     let Entry::Text { blocks, done: true } = &entries[1] else { panic!("{:?}", entries[1]) };
     assert_eq!(blocks.len(), 3, "{blocks:?}");
     assert_eq!(blocks[0], ReplyBlock::Markdown { text: "This compares paid revenue in the last 90 days with the 90 days before that, per region:".into() });
-    let ReplyBlock::Sql { sql, relations, writes, complete } = &blocks[1] else { panic!("{:?}", blocks[1]) };
+    let ReplyBlock::Sql { sql, relations, vetted, complete } = &blocks[1] else { panic!("{:?}", blocks[1]) };
     assert!(sql.starts_with("SELECT c.region") && sql.ends_with("ORDER BY growth DESC;"), "{sql}");
-    assert_eq!((relations.clone(), *writes, *complete), (vec!["orders".to_owned(), "customers".to_owned()], false, true));
+    assert_eq!((relations.clone(), *vetted, *complete), (vec!["orders".to_owned(), "customers".to_owned()], true, true));
     assert_eq!(blocks[2], ReplyBlock::Markdown { text: "`FILTER` keeps both periods in one scan of `orders`, which already has an index on `created_at`.".into() });
     let idle = h.wait_chat(chat, "the idle state", |s| s.status == ChatStatus::Idle).await;
     assert_eq!(idle.entry_count, 3);

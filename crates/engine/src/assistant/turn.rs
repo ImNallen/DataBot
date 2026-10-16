@@ -662,8 +662,8 @@ fn resolve_blocks(blocks: Vec<ReplyBlock>, catalog: Option<&Catalog>) -> Vec<Rep
         .into_iter()
         .map(|block| match block {
             ReplyBlock::Sql { sql, complete: true, .. } => {
-                let (relations, writes) = (reply::uses(&sql, catalog), reply::writes(&sql));
-                ReplyBlock::Sql { sql, relations, writes, complete: true }
+                let (relations, vetted) = (reply::uses(&sql, catalog), reply::vetted(&sql));
+                ReplyBlock::Sql { sql, relations, vetted, complete: true }
             }
             other => other,
         })

@@ -63,7 +63,7 @@ const FIRST_TURN = [
     done: true,
     blocks: [
       { kind: "Markdown", text: REPLY },
-      { kind: "Sql", sql: "SELECT c.region FROM orders o JOIN customers c ON c.id = o.customer_id;", relations: ["orders", "customers"], writes: false, complete: true },
+      { kind: "Sql", sql: "SELECT c.region FROM orders o JOIN customers c ON c.id = o.customer_id;", relations: ["orders", "customers"], vetted: true, complete: true },
     ],
   }),
   snap(3, 0, { kind: "End", atMs: 2, outcome: { kind: "Completed" }, suggestions: ["Show growth as a percentage", "Only EU regions"] }),

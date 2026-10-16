@@ -8,7 +8,7 @@ import { SqlHighlight } from "./SqlHighlight";
 
 const ACTION = "h-7 px-2.5 text-ui-12.5";
 
-export function SqlCard({ sql, relations, writes, complete, db }: { sql: string; relations: string[]; writes: boolean; complete: boolean; db: DatabaseRef | null }) {
+export function SqlCard({ sql, relations, vetted, complete, db }: { sql: string; relations: string[]; vetted: boolean; complete: boolean; db: DatabaseRef | null }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -39,7 +39,7 @@ export function SqlCard({ sql, relations, writes, complete, db }: { sql: string;
       </div>
       <SqlHighlight sql={sql} className="px-3 py-2.5" />
       <div className="flex flex-wrap items-center gap-1 border-t border-border px-2 py-1.5">
-        {writes ? (
+        {complete && !vetted ? (
           <Button data-testid="sql-open-new-tab" title="Writes data, so it opens without running" className={ACTION} disabled={!complete} onClick={() => openInNewTab(sql, db)}>
             Open in new tab
           </Button>

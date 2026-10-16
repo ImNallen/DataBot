@@ -60,7 +60,7 @@ export function ReplyText({ blocks, db, testId }: { blocks: ReplyBlock[]; db: Da
   return (
     <div data-testid={testId} className="flex flex-col gap-3">
       {blocks.map((b, i) =>
-        b.kind === "Markdown" ? <MarkdownBlock key={i} text={b.text} /> : <SqlCard key={i} sql={b.sql} relations={b.relations} writes={b.writes} complete={b.complete} db={db} />,
+        b.kind === "Markdown" ? <MarkdownBlock key={i} text={b.text} /> : <SqlCard key={i} sql={b.sql} relations={b.relations} vetted={b.vetted} complete={b.complete} db={db} />,
       )}
     </div>
   );

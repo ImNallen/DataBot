@@ -6,8 +6,8 @@ import { sqlSpans } from "./SqlHighlight";
 const SQL = "SELECT c.region, count(*) AS orders\nFROM orders o JOIN customers c ON c.id = o.customer_id\nWHERE o.status = 'paid'\nGROUP BY c.region;";
 const DB = { connectionId: "c1", database: "shop" };
 
-const card = (props: { writes?: boolean; complete: boolean }) =>
-  renderToStaticMarkup(<SqlCard sql={SQL} relations={["orders", "customers"]} writes={props.writes ?? false} complete={props.complete} db={DB} />);
+const card = (props: { vetted?: boolean; complete: boolean }) =>
+  renderToStaticMarkup(<SqlCard sql={SQL} relations={["orders", "customers"]} vetted={props.vetted ?? true} complete={props.complete} db={DB} />);
 const button = (html: string, id: string) => new RegExp(`<button[^>]*data-testid="${id}"[^>]*>`).exec(html)?.[0] ?? null;
 const disabled = (html: string, ids: string[]) => ids.map((id) => button(html, id)?.includes('disabled=""') ?? null);
 const ACTIONS = ["sql-run-new-tab", "sql-insert", "sql-replace", "sql-card-copy"];
@@ -19,8 +19,8 @@ it("names the relations the SQL uses and holds every action until the block is c
   expect(disabled(card({ complete: true }), ACTIONS)).toEqual([false, false, false, false]);
 });
 
-it("offers Open in new tab instead of Run when the engine marked the SQL as a write", () => {
-  const html = card({ writes: true, complete: true });
+it("offers Open in new tab instead of Run when the engine did not vet the SQL", () => {
+  const html = card({ vetted: false, complete: true });
   expect([button(html, "sql-run-new-tab"), disabled(html, ["sql-open-new-tab"])]).toEqual([null, [false]]);
   expect(html).toContain(">Open in new tab</button>");
 });

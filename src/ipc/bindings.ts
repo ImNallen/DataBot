@@ -756,8 +756,8 @@ export type RelationDetail = {
 };
 
 export type ReplyBlock = { kind: "Markdown"; text: string } | 
-/**  A fenced SQL block. `relations` and `writes` are filled when the fence closes. */
-{ kind: "Sql"; sql: string; relations: string[]; writes: boolean; complete: boolean };
+/**  A fenced SQL block. `relations` and `vetted` are filled when the fence closes. */
+{ kind: "Sql"; sql: string; relations: string[]; vetted: boolean; complete: boolean };
 
 export type ResultError = { kind: "Gone" } | { kind: "OutOfRange" };
 

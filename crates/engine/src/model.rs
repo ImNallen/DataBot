@@ -1625,8 +1625,8 @@ pub struct Attachment {
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum ReplyBlock {
     Markdown { text: String },
-    /// A fenced SQL block. `relations` and `writes` are filled when the fence closes.
-    Sql { sql: String, relations: Vec<String>, writes: bool, complete: bool },
+    /// A fenced SQL block. `relations` and `vetted` are filled when the fence closes.
+    Sql { sql: String, relations: Vec<String>, vetted: bool, complete: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

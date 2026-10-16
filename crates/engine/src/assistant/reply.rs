@@ -50,7 +50,7 @@ pub(crate) fn parse_text(text: &str, done: bool) -> Parsed {
         let info = info.to_ascii_lowercase();
         if SQL_INFOS.contains(&info.as_str()) {
             flush(&mut markdown, &mut parsed.blocks);
-            parsed.blocks.push(ReplyBlock::Sql { sql: body.trim_matches(['\n', '\r']).to_owned(), relations: Vec::new(), writes: false, complete: closed || done });
+            parsed.blocks.push(ReplyBlock::Sql { sql: body.trim_matches(['\n', '\r']).to_owned(), relations: Vec::new(), vetted: false, complete: closed || done });
         } else if info == FOLLOWUPS_INFO {
             if closed || done {
                 parsed.followups = body.lines().map(str::trim).filter(|l| !l.is_empty()).take(MAX_FOLLOWUPS).map(cut_followup).collect();
@@ -117,8 +117,8 @@ fn display(schema: Option<&str>, name: &str, default: Option<&str>) -> String {
     }
 }
 
-pub(crate) fn writes(sql: &str) -> bool {
-    sql::split_statements(sql).iter().any(|span| sql::vet(span.text(sql)) != sql::Vet::Clear)
+pub(crate) fn vetted(sql: &str) -> bool {
+    sql::split_statements(sql).iter().all(|span| sql::vet(span.text(sql)) == sql::Vet::Clear)
 }
 
 pub(crate) fn recover(entries: &[(u32, u32, Entry)], at_ms: i64) -> Vec<(u32, u32, Entry)> {
@@ -217,7 +217,7 @@ mod tests {
     }
 
     fn sql(text: &str, complete: bool) -> ReplyBlock {
-        ReplyBlock::Sql { sql: text.into(), relations: Vec::new(), writes: false, complete }
+        ReplyBlock::Sql { sql: text.into(), relations: Vec::new(), vetted: false, complete }
     }
 
     #[test]
@@ -289,14 +289,14 @@ mod tests {
     }
 
     #[test]
-    fn writes_marks_any_statement_that_may_not_run_unattended() {
-        assert!(!writes("select 1;\nselect 2"));
-        assert!(writes("select 1; delete from orders"));
-        assert!(writes("with x as (delete from t returning *) select * from x"));
-        assert!(writes("select pg_terminate_backend(1)"), "a read calling an unvetted function gets no one-click Run");
-        assert!(writes("select * into backup from orders"));
-        assert!(writes(r#"select U&"pg\005fcancel_backend"(0)"#));
-        assert!(!writes(""));
+    fn vetted_is_false_for_any_statement_that_may_not_run_unattended() {
+        assert!(vetted("select 1;\nselect 2"));
+        assert!(!vetted("select 1; delete from orders"));
+        assert!(!vetted("with x as (delete from t returning *) select * from x"));
+        assert!(!vetted("select pg_terminate_backend(1)"), "a read calling an unvetted function gets no one-click Run");
+        assert!(!vetted("select * into backup from orders"));
+        assert!(!vetted(r#"select U&"pg\005fcancel_backend"(0)"#));
+        assert!(vetted(""));
     }
 
     fn text(done: bool) -> Entry {
