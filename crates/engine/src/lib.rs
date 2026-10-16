@@ -69,6 +69,8 @@ pub(crate) struct Shared {
     runtime: tokio::runtime::Handle,
     providers: provider::Providers,
     assistant: assistant::Assistant,
+    /// Every live agent process, for the kill sweep at quit.
+    process_groups: Arc<provider::agent::ProcessGroups>,
     /// One counter for every chat and entry snapshot, so a chat recreated after a delete never
     /// reissues a rev the webview holds.
     next_chat_rev: AtomicU64,
@@ -605,6 +607,7 @@ impl Engine {
             runtime: tokio::runtime::Handle::current(),
             providers: provider::Providers::new(cfg.agent_path),
             assistant: assistant::Assistant::new(),
+            process_groups: Arc::new(provider::agent::ProcessGroups::default()),
             next_chat_rev: AtomicU64::new(1),
         });
         tokio::fs::create_dir_all(shared.assistant_dir()).await?;
@@ -1280,7 +1283,8 @@ impl Engine {
         self.shared.probe_all(ProbeDepth::Full);
     }
 
-    /// Stops every assistant turn and its process. The shell calls it on quit; bounded at 3 s.
+    /// Stops every assistant turn, then kills any agent process still alive. The shell calls it
+    /// on quit. It returns within about 4 s, so the shell's own bound must be larger.
     pub async fn shutdown(&self) {
         self.shared.shutdown().await
     }

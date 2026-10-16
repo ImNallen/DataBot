@@ -6,12 +6,14 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use super::Assistant;
+use super::reply;
 use super::tools::Ask;
 use crate::Shared;
-use crate::model::{AppEvent, ApprovalId, ApproveError, ChatId, ChatState, ChatStatus, DatabaseRef, Decision, Entry, EntrySnapshot, Permission, ToolCallId};
+use crate::console::now_ms;
+use crate::model::{AppEvent, ApprovalId, ApproveError, ChatId, ChatState, ChatStatus, DatabaseRef, Decision, Entry, EntrySnapshot, Permission, ToolCallId, TurnOutcome};
 use crate::store::ChatRecord;
 
 pub(crate) struct Chat {
@@ -42,7 +44,11 @@ pub(crate) struct ChatInner {
 pub(crate) struct ActiveTurn {
     pub db: Option<DatabaseRef>,
     pub control: mpsc::Sender<TurnControl>,
+    /// The supervisor, done once the turn task is: it gives a turn that panicked or was aborted
+    /// before `finish` its End.
     pub task: Option<JoinHandle<()>>,
+    /// Aborts the turn task itself, whose drop kills its process.
+    pub abort: Option<AbortHandle>,
 }
 
 pub(crate) enum TurnControl {
@@ -187,6 +193,51 @@ impl Chat {
 
     pub(crate) fn has_pending(&self) -> bool {
         self.inner.lock().unwrap().ledger.calls.values().any(|g| matches!(g, Gate::Pending { .. }))
+    }
+
+    /// Closes what a turn task that died before `finish` left open, as `recover` does at open:
+    /// open text is done, waiting tools expire, and the turn gets an End with `outcome`. Then the
+    /// chat is Idle. Only the supervisor calls this, once the task is gone, so nothing else writes.
+    pub(crate) fn end_abruptly(&self, shared: &Shared, outcome: TurnOutcome) {
+        let rows = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.turn.take().is_none() {
+                return;
+            }
+            inner.ledger = Ledger::default();
+            let mut rows = shared.store.chat_entries(self.id).unwrap_or_default();
+            for (seq, live) in &inner.live {
+                let row = (*seq, live.turn, live.entry.clone());
+                match rows.iter_mut().find(|(s, _, _)| s == seq) {
+                    Some(stored) => *stored = row,
+                    None => rows.push(row),
+                }
+            }
+            rows.sort_by_key(|(seq, _, _)| *seq);
+            rows
+        };
+        let mut fixes = reply::recover(&rows, now_ms());
+        for (_, _, entry) in &mut fixes {
+            if let Entry::End { outcome: o, .. } = entry {
+                *o = outcome.clone();
+            }
+        }
+        let next_seq = fixes.iter().map(|(seq, _, _)| seq + 1).max().unwrap_or(0);
+        if let Err(e) = shared.store.put_entries(self.id, &fixes) {
+            eprintln!("chat {} recovery failed: {e}", self.id.0);
+        }
+        for (seq, turn, entry) in fixes {
+            self.publish_entry(shared, seq, turn, entry);
+        }
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.next_seq = inner.next_seq.max(next_seq);
+            inner.record.entry_count = inner.next_seq;
+            inner.record.updated_at_ms = now_ms();
+            inner.status = ChatStatus::Idle;
+        }
+        self.store_record(shared);
+        self.publish_state(shared);
     }
 
     /// Bumps the engine-wide rev, keeps the snapshot in `live`, emits `ChatEntryChanged`.

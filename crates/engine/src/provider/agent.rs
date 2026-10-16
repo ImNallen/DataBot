@@ -1,7 +1,7 @@
 //! One provider process: spawned in its own process group, read by an independent task, written
 //! through its codec, and killed as a group so a wrapper script's child dies with it.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -21,17 +21,44 @@ const READY_TIMEOUT: Duration = Duration::from_secs(25);
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const EXIT_CODE_WAIT: Duration = Duration::from_secs(2);
 
+/// The process group of every live child, so quit can kill what no task got to close. A group
+/// leaves when its child is reaped or swept, so a pid the kernel may have reused is never
+/// signalled.
+#[derive(Default)]
+pub(crate) struct ProcessGroups(Mutex<HashSet<i32>>);
+
+impl ProcessGroups {
+    fn insert(&self, pgid: i32) {
+        self.0.lock().unwrap().insert(pgid);
+    }
+
+    /// Whether the group was still registered.
+    fn remove(&self, pgid: i32) -> bool {
+        self.0.lock().unwrap().remove(&pgid)
+    }
+
+    /// SIGKILL to every registered group, on this thread, now.
+    pub(crate) fn kill_all(&self) {
+        for pgid in self.0.lock().unwrap().drain() {
+            kill_group(pgid);
+        }
+    }
+}
+
 pub(crate) struct Agent {
     pub codec: Box<dyn Codec>,
     child: Child,
     /// The child's process group, which equals its pid: `process_group(0)` at spawn.
     pgid: i32,
+    groups: Arc<ProcessGroups>,
     stdin: Option<ChildStdin>,
     lines: mpsc::Receiver<Line>,
     outbox: Vec<String>,
     pending: VecDeque<AgentEvent>,
     stderr: Arc<Mutex<String>>,
-    closed: bool,
+    /// The reader reached the end of stdout. Kept here so a `next` cancelled during the exit
+    /// wait reports it again.
+    eof: bool,
 }
 
 enum Line {
@@ -85,6 +112,7 @@ impl Agent {
             _ => StartError::Exited { code: None, detail: e.to_string() },
         })?;
         let pgid = child.id().map_or(0, |pid| pid as i32);
+        shared.process_groups.insert(pgid);
         let stdout = child.stdout.take().expect("piped");
         let stderr_pipe = child.stderr.take().expect("piped");
         let stdin = child.stdin.take().expect("piped");
@@ -124,7 +152,7 @@ impl Agent {
                 }
             }
         });
-        let mut agent = Agent { codec, child, pgid, stdin: Some(stdin), lines, outbox: Vec::new(), pending: VecDeque::new(), stderr, closed: false };
+        let mut agent = Agent { codec, child, pgid, groups: shared.process_groups.clone(), stdin: Some(stdin), lines, outbox: Vec::new(), pending: VecDeque::new(), stderr, eof: false };
         let open = agent.codec.open();
         if let Err(e) = agent.write(open).await {
             let code = agent.exit_code().await;
@@ -174,12 +202,16 @@ impl Agent {
         if tail.trim().is_empty() { fallback.to_owned() } else { tail }
     }
 
-    /// The next event. Cancel-safe: the only await is the line read, and the codec's replies wait in
-    /// the outbox until `flush`.
+    /// The next event. Cancel-safe: a cancelled line read loses nothing, the codec's replies wait
+    /// in the outbox until `flush`, and the end of stream is remembered, so a cancelled exit wait
+    /// starts again on the next call.
     pub(crate) async fn next(&mut self) -> Next {
         loop {
             if let Some(event) = self.pending.pop_front() {
                 return Next::Event(event);
+            }
+            if self.eof {
+                return Next::Eof { code: self.exit_code().await };
             }
             match self.lines.recv().await {
                 Some(Line::Out(line)) => {
@@ -191,7 +223,7 @@ impl Agent {
                         return Next::Flush;
                     }
                 }
-                Some(Line::Eof) | None => return Next::Eof { code: self.exit_code().await },
+                Some(Line::Eof) | None => self.eof = true,
             }
         }
     }
@@ -218,25 +250,32 @@ impl Agent {
         self.stderr.lock().unwrap().clone()
     }
 
+    /// The exit code once the child is reaped, which takes its group out of the registry.
     async fn exit_code(&mut self) -> Option<i32> {
-        tokio::time::timeout(EXIT_CODE_WAIT, self.child.wait()).await.ok().and_then(Result::ok).and_then(|s| s.code())
+        let status = tokio::time::timeout(EXIT_CODE_WAIT, self.child.wait()).await.ok().and_then(Result::ok)?;
+        self.groups.remove(self.pgid);
+        status.code()
     }
 
-    /// Closes stdin, which the CLI takes as its cue to exit, waits 2 s, then kills the group.
+    /// Closes stdin, which the CLI takes as its cue to exit, waits 2 s, then kills the group, and
+    /// returns only once the child is reaped.
     pub(crate) async fn close(mut self) {
         drop(self.stdin.take());
         if tokio::time::timeout(CLOSE_GRACE, self.child.wait()).await.is_err() {
-            kill_group(self.pgid);
+            if self.groups.remove(self.pgid) {
+                kill_group(self.pgid);
+            }
             let _ = self.child.wait().await;
         }
-        self.closed = true;
+        self.groups.remove(self.pgid);
     }
 }
 
 impl Drop for Agent {
-    /// A panic or an early return never orphans a process.
+    /// A panic, an early return, or an aborted task never orphans a process. A group already
+    /// reaped or swept is not signalled: its pid may be someone else's by now.
     fn drop(&mut self) {
-        if !self.closed {
+        if self.groups.remove(self.pgid) {
             kill_group(self.pgid);
         }
     }

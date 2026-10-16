@@ -576,7 +576,8 @@ impl Turn {
         self.chat.publish_entry(&self.shared, seq, self.seq, entry);
     }
 
-    /// In this order, so a crash at any step leaves rows `recover` can close.
+    /// In this order, so a crash at any step leaves rows `recover` can close, and so the chat is
+    /// Idle only once its process is gone: the next turn's process never overlaps this one's.
     async fn finish(&mut self, outcome: TurnOutcome) {
         self.publish_texts(true);
         if outcome == TurnOutcome::Stopped {
@@ -598,6 +599,9 @@ impl Turn {
         let end = Entry::End { at_ms: now_ms(), outcome: outcome.clone(), suggestions };
         self.chat.store_entry(&self.shared, seq, self.seq, &end);
         self.chat.publish_entry(&self.shared, seq, self.seq, end);
+        if let Some(agent) = self.agent.take() {
+            agent.close().await;
+        }
         {
             let mut inner = self.chat.inner.lock().unwrap();
             inner.record.entry_count = inner.next_seq;
@@ -613,9 +617,6 @@ impl Turn {
         }
         self.chat.store_record(&self.shared);
         self.chat.publish_state(&self.shared);
-        if let Some(agent) = self.agent.take() {
-            agent.close().await;
-        }
         if let Some(db) = &self.db {
             self.shared.reconcile(db.connection_id);
         }

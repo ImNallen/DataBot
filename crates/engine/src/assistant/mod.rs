@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use chat::{ActiveTurn, Chat, TurnControl};
 use turn::TurnPlan;
@@ -27,7 +29,11 @@ pub(crate) const RECAP_MAX_CHARS: usize = 16_000;
 const TITLE_CHARS: usize = 60;
 const STOP_GRACE: Duration = Duration::from_secs(5);
 const QUIT_GRACE: Duration = Duration::from_secs(1);
+/// Long enough for a turn to close its process on its own: the quit grace, then the 2 s the
+/// process gets after stdin closes.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
+/// How long `shutdown` waits for the tasks it aborted, after the kill sweep.
+const ABORT_WAIT: Duration = Duration::from_secs(1);
 const DELETE_WAIT: Duration = Duration::from_secs(5);
 
 pub(crate) struct Assistant {
@@ -188,7 +194,7 @@ impl Shared {
             let seq = inner.next_seq;
             inner.next_seq += 1;
             let (control, control_rx) = mpsc::channel(4);
-            inner.turn = Some(ActiveTurn { db: request.tab.as_ref().and_then(|t| t.db.clone()), control, task: None });
+            inner.turn = Some(ActiveTurn { db: request.tab.as_ref().and_then(|t| t.db.clone()), control, task: None, abort: None });
             inner.status = ChatStatus::Running { turn: seq, started_at_ms: now_ms(), phase: TurnPhase::Starting };
             if !inner.stored {
                 inner.stored = true;
@@ -205,9 +211,12 @@ impl Shared {
         chat.publish_entry(self, seq, seq, entry);
         chat.publish_state(self);
         let plan = TurnPlan { chat: chat.clone(), turn: seq, options, user_text: text, tab: request.tab };
-        let task = self.spawn(turn::run_turn(self.clone(), plan, control_rx));
+        let turn = self.spawn(turn::run_turn(self.clone(), plan, control_rx));
+        let abort = turn.abort_handle();
+        let task = self.spawn(supervise(self.clone(), chat.clone(), turn));
         if let Some(active) = chat.inner.lock().unwrap().turn.as_mut() {
             active.task = Some(task);
+            active.abort = Some(abort);
         }
         Ok(TurnAccepted { turn: seq })
     }
@@ -247,26 +256,46 @@ impl Shared {
         }
     }
 
-    /// Stops every running turn and waits for the tasks, bounded. A task past the bound is
-    /// aborted, which kills its process group; its rows recover as Lost at the next open.
+    /// Stops every running turn and waits for the tasks, bounded. Then every agent process group
+    /// still registered gets SIGKILL on this thread, whether a turn's, a probe's, or one a task
+    /// past the bound still holds, and those tasks are aborted and awaited briefly. A turn ended
+    /// that way gets its End from its supervisor.
     pub(crate) async fn shutdown(&self) {
-        let mut tasks = Vec::new();
+        let mut tasks: FuturesUnordered<JoinHandle<()>> = FuturesUnordered::new();
+        let mut aborts = Vec::new();
         for chat in self.assistant.all() {
             if let Some(active) = chat.inner.lock().unwrap().turn.as_mut() {
                 let _ = active.control.try_send(TurnControl::Stop { grace: QUIT_GRACE });
                 tasks.extend(active.task.take());
+                aborts.extend(active.abort.take());
             }
         }
-        if tasks.is_empty() {
-            return;
+        let _ = tokio::time::timeout(SHUTDOWN_WAIT, drain(&mut tasks)).await;
+        for abort in aborts {
+            abort.abort();
         }
-        let aborts: Vec<_> = tasks.iter().map(tokio::task::JoinHandle::abort_handle).collect();
-        if tokio::time::timeout(SHUTDOWN_WAIT, futures_util::future::join_all(tasks)).await.is_err() {
-            for abort in aborts {
-                abort.abort();
-            }
-        }
+        self.process_groups.kill_all();
+        let _ = tokio::time::timeout(ABORT_WAIT, drain(&mut tasks)).await;
     }
+}
+
+/// Awaits every task still in the set; a timeout leaves the unfinished ones in it.
+async fn drain(tasks: &mut FuturesUnordered<JoinHandle<()>>) {
+    while tasks.next().await.is_some() {}
+}
+
+/// Awaits the turn task. A turn that panicked, or was aborted before `finish`, still ends: its
+/// chat gets an End and goes Idle, so the slot frees and nothing waits on a dead turn.
+async fn supervise(shared: Arc<Shared>, chat: Arc<Chat>, turn: JoinHandle<()>) {
+    let Err(e) = turn.await else { return };
+    let outcome = match e.try_into_panic() {
+        Ok(panic) => {
+            let text = panic.downcast_ref::<&str>().map(|s| (*s).to_owned()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
+            TurnOutcome::Failed { error: AgentError::Provider { message: format!("The turn failed inside L1 Data: {text}") } }
+        }
+        Err(_) => TurnOutcome::Lost,
+    };
+    chat.end_abruptly(&shared, outcome);
 }
 
 #[cfg(test)]

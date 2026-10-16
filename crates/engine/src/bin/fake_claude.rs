@@ -1,7 +1,7 @@
 //! A stand-in for the `claude` CLI that speaks the frames captured from 2.1.301. The engine tests
 //! point `binaryPath` at it and pick a scenario with `launchArgs = --fake-scenario <name>`. Every
-//! stdin line and the pid with the argv go to `--fake-log <path>` or `$L1_FAKE_CLAUDE_LOG`. Not
-//! shipped.
+//! stdin line, the pid with the argv at start, and the pid at exit go to `--fake-log <path>` or
+//! `$L1_FAKE_CLAUDE_LOG`. `--fake-linger-ms <n>` delays the exit on stdin EOF. Not shipped.
 //!
 //! Scenarios, each one turn per user message:
 //! - `card`: streams prose, a `sql` fence, inline code, and a trailing `followups` fence in small
@@ -14,6 +14,8 @@
 //! - `slow`: a delta every 100 ms for 60 s; an `interrupt` gets the captured aborted sequence.
 //!   `stop-then-query` answers the interrupt with a `run_query` ask and then calls the tool
 //!   whatever the answer, before the aborted sequence.
+//! - `wedged`: streams forever and never reads stdin, so an `interrupt` and EOF change nothing.
+//!   Only a signal ends it.
 //! - `crash`: two deltas, then stderr text and exit 1.
 //! - `resume-lost`: exits with an error before the handshake when argv has `--resume`.
 //! - `echo`: answers with the whole prompt it received.
@@ -61,7 +63,8 @@ fn main() {
     let session_id = resume.unwrap_or_else(|| format!("fake-session-{}", std::process::id()));
     let model = value_of("--model").unwrap_or_else(|| "claude-opus-5-5".into());
     let sql = value_of("--fake-sql").unwrap_or_else(|| "select count(*) from orders".into());
-    let mut cli = Cli { stdin: stdin_lines(), backlog: VecDeque::new(), log, session_id, model, sql, next_id: 0 };
+    let linger = Duration::from_millis(value_of("--fake-linger-ms").and_then(|v| v.parse().ok()).unwrap_or(0));
+    let mut cli = Cli { stdin: stdin_lines(), backlog: VecDeque::new(), log, session_id, model, sql, linger, next_id: 0 };
     cli.handshake();
     cli.run(&scenario);
 }
@@ -116,6 +119,8 @@ struct Cli {
     model: String,
     /// What the `query` scenarios ask to run.
     sql: String,
+    /// How long the exit on stdin EOF takes.
+    linger: Duration,
     next_id: u64,
 }
 
@@ -138,9 +143,16 @@ impl Cli {
         }
         match self.stdin.recv_timeout(wait) {
             Ok(Stdin::Line(line)) => Some(self.parse(line)),
-            Ok(Stdin::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => std::process::exit(0),
+            Ok(Stdin::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => self.exit_on_eof(),
             Err(mpsc::RecvTimeoutError::Timeout) => None,
         }
+    }
+
+    /// EOF ends the process like the real CLI does, after `linger`, and the log says so.
+    fn exit_on_eof(&mut self) -> ! {
+        std::thread::sleep(self.linger);
+        self.log.write("exit", &std::process::id().to_string());
+        std::process::exit(0)
     }
 
     fn expect(&mut self, what: &str, pick: impl Fn(&Value) -> bool) -> Value {
@@ -157,11 +169,11 @@ impl Cli {
         }
     }
 
-    /// The next stdin line as JSON. EOF ends the process like the real CLI does.
+    /// The next stdin line as JSON.
     fn read_line(&mut self) -> Value {
         match self.stdin.recv() {
             Ok(Stdin::Line(line)) => self.parse(line),
-            Ok(Stdin::Eof) | Err(_) => std::process::exit(0),
+            Ok(Stdin::Eof) | Err(_) => self.exit_on_eof(),
         }
     }
 
@@ -208,6 +220,13 @@ impl Cli {
                 }
                 "slow" => self.slow(false),
                 "stop-then-query" => self.slow(true),
+                "wedged" => {
+                    self.message_start();
+                    loop {
+                        self.delta("tick ");
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
                 "crash" => {
                     self.message_start();
                     self.delta("Working");

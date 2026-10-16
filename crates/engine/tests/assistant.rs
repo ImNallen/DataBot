@@ -120,6 +120,20 @@ impl Harness {
         self.log().lines().filter_map(|l| l.strip_prefix("stdin\t")).map(str::to_owned).collect()
     }
 
+    /// Every process start and exit in log order, as `("argv", pid)` or `("exit", pid)`.
+    fn lifecycle(&self) -> Vec<(String, u32)> {
+        self.log()
+            .lines()
+            .filter_map(|l| {
+                let (kind, rest) = l.split_once('\t')?;
+                if kind != "argv" && kind != "exit" {
+                    return None;
+                }
+                Some((kind.to_owned(), rest.split('\t').next()?.parse().ok()?))
+            })
+            .collect()
+    }
+
     fn chat(&self, permission: Permission) -> ChatId {
         let id = ChatId(uuid::Uuid::new_v4());
         let options = ChatOptions { provider: ProviderKind::Claude, model: ModelId("opus".into()), effort: Some(EffortId("high".into())), permission };
@@ -157,6 +171,11 @@ impl Harness {
         }
     }
 
+    /// Idle follows the End entry only once the turn's process is gone; a send before it is Busy.
+    async fn wait_idle(&mut self, chat: ChatId) -> ChatState {
+        self.wait_chat(chat, "the idle state", |s| s.status == ChatStatus::Idle).await
+    }
+
     async fn entries(&self, chat: ChatId) -> Vec<Entry> {
         self.engine.assistant_open(chat).await.unwrap().entries.into_iter().map(|s| s.entry).collect()
     }
@@ -166,14 +185,22 @@ fn ready(outcome: &ProbeOutcome) -> bool {
     matches!(outcome, ProbeOutcome::Ready { .. })
 }
 
+/// Whether the process still runs. A zombie waiting to be reaped does not.
 fn alive(pid: u32) -> bool {
-    std::process::Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().unwrap().success()
+    let out = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+    let stat = String::from_utf8_lossy(&out.stdout);
+    let stat = stat.trim();
+    !stat.is_empty() && !stat.starts_with('Z')
 }
 
 async fn wait_dead(pid: u32) {
+    dead_within(pid, Duration::from_secs(10)).await;
+}
+
+async fn dead_within(pid: u32, limit: Duration) {
     let started = Instant::now();
     while alive(pid) {
-        assert!(started.elapsed() < Duration::from_secs(10), "process {pid} is still alive");
+        assert!(started.elapsed() < limit, "process {pid} is still alive after {limit:?}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -299,6 +326,7 @@ async fn a_second_send_during_a_turn_is_busy() {
     assert_eq!(h.engine.assistant_send(chat, SendRequest { text: "two".into(), tab: None }).await.unwrap_err(), SendError::Busy);
     h.engine.assistant_stop(chat);
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Stopped);
+    h.wait_idle(chat).await;
     assert_eq!(h.send(chat, "two").await.turn, 3, "a new turn is accepted once the old one ended");
     h.wait_entry(chat, "the second turn's text", |s| s.turn == 3 && matches!(s.entry, Entry::Text { .. })).await;
     h.engine.assistant_stop(chat);
@@ -464,9 +492,11 @@ async fn a_lost_session_falls_back_to_a_new_one_with_a_notice_and_a_recap() {
     let chat = h.chat(Permission::Auto);
     h.send(chat, "first").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+    h.wait_idle(chat).await;
     let first_session = format!("fake-session-{}", h.turn_pids()[0]);
     h.send(chat, "second").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+    h.wait_idle(chat).await;
     let argvs = h.turn_argvs();
     assert_eq!(argvs.len(), 3, "first turn, the failed resume, the retry: {argvs:?}");
     assert_eq!(argvs[1].iter().position(|a| a == "--resume").map(|i| argvs[1][i + 1].as_str()), Some(first_session.as_str()));
@@ -491,11 +521,13 @@ async fn a_changed_config_dir_restarts_the_session_with_a_recap() {
     let chat = h.chat(Permission::Auto);
     h.send(chat, "first").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+    h.wait_idle(chat).await;
     let other = h.dir.path().join("other-config");
     std::fs::create_dir_all(&other).unwrap();
     h.configure_provider(|p| p.config_dir = other.display().to_string());
     h.send(chat, "second").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+    h.wait_idle(chat).await;
     let argvs = h.turn_argvs();
     assert_eq!(argvs.len(), 2, "no resume was attempted: {argvs:?}");
     assert!(!argvs[1].iter().any(|a| a == "--resume"));
@@ -515,6 +547,7 @@ async fn the_second_turn_resumes_the_session_and_a_changed_model_reaches_argv() 
     let chat = h.chat(Permission::Auto);
     h.send(chat, "one").await;
     assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+    h.wait_idle(chat).await;
     let first = h.turn_argvs()[0].clone();
     assert!(!first.iter().any(|a| a == "--resume"));
     assert_eq!(first.iter().position(|a| a == "--model").map(|i| first[i + 1].as_str()), Some("opus"));
@@ -596,6 +629,55 @@ async fn shutdown_leaves_no_child_pid_alive_and_ends_the_turn_stopped() {
     wait_dead(pid).await;
     let entries = h.entries(chat).await;
     assert!(matches!(entries.last(), Some(Entry::End { outcome: TurnOutcome::Stopped, .. })), "{:?}", entries.last());
+}
+
+#[tokio::test]
+async fn stop_kills_a_process_that_ignores_interrupt_and_eof_before_the_chat_goes_idle() {
+    let mut h = Harness::open().await;
+    h.use_fake("wedged");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "go").await;
+    h.wait_entry(chat, "streaming text", |s| matches!(&s.entry, Entry::Text { done: false, blocks } if !blocks.is_empty())).await;
+    let pid = h.turn_pids()[0];
+    let started = Instant::now();
+    h.engine.assistant_stop(chat);
+    assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Stopped);
+    h.wait_chat(chat, "idle", |s| s.status == ChatStatus::Idle).await;
+    assert!(!alive(pid), "the chat went idle while its process lived");
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+}
+
+#[tokio::test]
+async fn shutdown_kills_a_wedged_process_within_its_bound() {
+    let mut h = Harness::open().await;
+    h.use_fake("wedged");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "go").await;
+    h.wait_entry(chat, "streaming text", |s| matches!(&s.entry, Entry::Text { done: false, blocks } if !blocks.is_empty())).await;
+    let pid = h.turn_pids()[0];
+    let started = Instant::now();
+    h.engine.shutdown().await;
+    assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+    dead_within(pid, Duration::from_secs(1)).await;
+    let entries = h.entries(chat).await;
+    assert!(matches!(entries.last(), Some(Entry::End { outcome: TurnOutcome::Stopped | TurnOutcome::Lost, .. })), "{:?}", entries.last());
+    assert_eq!(h.engine.boot().chats[0].status, ChatStatus::Idle);
+}
+
+#[tokio::test]
+async fn a_quick_follow_up_starts_only_after_the_last_process_exited() {
+    let mut h = Harness::open().await;
+    h.use_fake_with("card", "--fake-linger-ms 500");
+    let chat = h.chat(Permission::Auto);
+    h.send(chat, "one").await;
+    h.wait_end(chat).await;
+    h.wait_chat(chat, "idle", |s| s.status == ChatStatus::Idle).await;
+    h.send(chat, "two").await;
+    h.wait_end(chat).await;
+    let life = h.lifecycle();
+    let [first, second] = h.turn_pids()[..] else { panic!("{life:?}") };
+    let at = |kind: &str, pid: u32| life.iter().position(|(k, p)| k == kind && *p == pid).unwrap_or_else(|| panic!("no {kind} for {pid} in {life:?}"));
+    assert!(at("exit", first) < at("argv", second), "the second process started before the first exited: {life:?}");
 }
 
 #[tokio::test]
@@ -810,12 +892,14 @@ mod pg {
         let chat = h.chat(Permission::Auto);
         send_on(&h, chat, "first", tab(&config, "select * from orders")).await;
         assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+        h.wait_idle(chat).await;
         let first = text_of(&h.entries(chat).await[1]);
         assert!(first.contains("Connection: dev (PostgreSQL ") && first.contains(", database shop, connected."), "{first}");
         assert!(first.contains("Default schema: public. Shown schemas: lab, public.") && first.contains("Schema outline:\nlab.type_zoo, ~") && first.contains("public.orders, ~"), "{first}");
         assert!(first.contains("Tab SQL:\nselect * from orders\nStatement at the cursor:\nselect * from orders\n"), "{first}");
         send_on(&h, chat, "second", tab(&config, "select * from orders")).await;
         assert_eq!(h.wait_end(chat).await.0, TurnOutcome::Completed);
+        h.wait_idle(chat).await;
         let second = text_of(&h.entries(chat).await[4]);
         assert!(second.contains("Tab SQL: unchanged since your last message.") && second.contains("Schema outline: unchanged since earlier in this chat."), "{second}");
         send_on(&h, chat, "third", tab(&config, "select * from customers")).await;
