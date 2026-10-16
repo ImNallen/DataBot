@@ -19,7 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["io-util", "process", "time"] }
 tokio-postgres = "0.7.18"
 uuid.workspace = true
 

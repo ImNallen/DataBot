@@ -69,6 +69,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const DB_FILE: &str = "l1-data.sqlite3";
 const KV_WORKSPACE: &str = "workspace";
 const KV_SETTINGS: &str = "settings";
+const BOOT_CHATS: u32 = 200;
 
 impl Shared {
     pub(crate) fn emit(&self, ev: AppEvent) {
@@ -604,7 +605,15 @@ impl Engine {
             eprintln!("workspace load failed: {e}");
             None
         });
-        BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings() }
+        let chats = s.store.chats(BOOT_CHATS).unwrap_or_else(|e| {
+            eprintln!("chats load failed: {e}");
+            Vec::new()
+        });
+        let chats = chats
+            .into_iter()
+            .map(|(id, r)| ChatState { id, rev: 0, title: r.title, updated_at_ms: r.updated_at_ms, options: r.options, status: ChatStatus::Idle, entry_count: r.entry_count })
+            .collect();
+        BootSnapshot { connections, live, consoles, workspace: workspace.unwrap_or_default(), settings: s.settings(), providers: Vec::new(), chats }
     }
 
     pub async fn save_connection(&self, d: ConnectionDraft) -> Result<ConnectionConfig, SaveError> {
@@ -1204,6 +1213,32 @@ impl Engine {
         }
         *self.shared.settings.write().unwrap() = s;
     }
+
+    pub async fn assistant_open(&self, _chat: ChatId) -> Result<ChatView, ChatError> {
+        todo!("assistant engine")
+    }
+
+    pub fn assistant_configure(&self, _chat: ChatId, _options: ChatOptions) -> Result<ChatState, ChatError> {
+        todo!("assistant engine")
+    }
+
+    pub async fn assistant_send(&self, _chat: ChatId, _request: SendRequest) -> Result<TurnAccepted, SendError> {
+        todo!("assistant engine")
+    }
+
+    pub fn assistant_stop(&self, _chat: ChatId) {}
+
+    pub fn assistant_approve(&self, _chat: ChatId, _approval: ApprovalId, _decision: Decision) -> Result<(), ApproveError> {
+        todo!("assistant engine")
+    }
+
+    pub async fn assistant_delete(&self, _chat: ChatId) {
+        todo!("assistant engine")
+    }
+
+    pub fn provider_refresh(&self) {}
+
+    pub async fn shutdown(&self) {}
 }
 
 #[cfg(test)]
@@ -1243,6 +1278,18 @@ mod tests {
         let boot = engine.boot();
         assert!(boot.connections.is_empty() && boot.consoles.is_empty());
         assert_eq!(boot.settings.max_rows, 200_000);
+    }
+
+    #[tokio::test]
+    async fn boot_lists_stored_chats_newest_first_as_idle() {
+        let (engine, _dir) = engine().await;
+        let options = ChatOptions { provider: ProviderKind::Claude, model: ModelId("opus".into()), effort: None, permission: Permission::Auto };
+        let record = |title: &str, updated_at_ms| store::ChatRecord { title: title.into(), created_at_ms: 1, updated_at_ms, options: options.clone(), session: None, entry_count: 4 };
+        let (old, new) = (ChatId(uuid::Uuid::from_u128(1)), ChatId(uuid::Uuid::from_u128(2)));
+        engine.shared.store.put_chat(old, &record("old", 10)).unwrap();
+        engine.shared.store.put_chat(new, &record("new", 20)).unwrap();
+        let state = |id, title: &str, updated_at_ms| ChatState { id, rev: 0, title: title.into(), updated_at_ms, options: options.clone(), status: ChatStatus::Idle, entry_count: 4 };
+        assert_eq!(engine.boot().chats, vec![state(new, "new", 20), state(old, "old", 10)]);
     }
 
     const PLAINTEXT: &str = "plaintext-hunter2";

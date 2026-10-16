@@ -165,7 +165,7 @@ describe("workspace snapshot", () => {
     tabs: Object.fromEntries(tabs.map((t) => [t.id, t])),
     order: ["b", "a"],
     active: "a",
-    layout: { sidebar: true, results: false, rightPanel: "History" as const, resultsHeight: 280, sidebarWidth: 256, rightPanelWidth: 341 },
+    layout: { sidebar: true, results: false, rightPanel: "History" as const, resultsHeight: 280, sidebarWidth: 256, rightPanelWidth: 341, assistantChat: "c4a70000-0000-4000-8000-000000000001" },
   };
 
   it("round-trips every tab's text and mode, and a table tab's binding", () => {

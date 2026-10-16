@@ -34,9 +34,22 @@ export const commands = {
 	historyClear: () => __TAURI_INVOKE<void>("history_clear"),
 	workspaceSave: (workspace: Workspace) => __TAURI_INVOKE<void>("workspace_save", { workspace }),
 	settingsSet: (settings: Settings) => __TAURI_INVOKE<void>("settings_set", { settings }),
+	assistantOpen: (chatId: ChatId) => typedError<ChatView, ChatError>(__TAURI_INVOKE("assistant_open", { chatId })),
+	assistantConfigure: (chatId: ChatId, options: ChatOptions) => typedError<ChatState, ChatError>(__TAURI_INVOKE("assistant_configure", { chatId, options })),
+	assistantSend: (chatId: ChatId, request: SendRequest) => typedError<TurnAccepted, SendError>(__TAURI_INVOKE("assistant_send", { chatId, request })),
+	assistantStop: (chatId: ChatId) => __TAURI_INVOKE<void>("assistant_stop", { chatId }),
+	assistantApprove: (chatId: ChatId, approval: ApprovalId, decision: Decision) => typedError<null, ApproveError>(__TAURI_INVOKE("assistant_approve", { chatId, approval, decision })),
+	assistantDelete: (chatId: ChatId) => __TAURI_INVOKE<void>("assistant_delete", { chatId }),
+	providerRefresh: () => __TAURI_INVOKE<void>("provider_refresh"),
 };
 
 /* Types */
+export type AgentError = { kind: "NotFound"; binary: string } | { kind: "SignedOut" } | 
+/**  `detail` is the end of its stderr. */
+{ kind: "Exited"; code: number | null; detail: string } | 
+/**  An API failure, a rate limit, an overload. */
+{ kind: "Provider"; message: string };
+
 export type AppEvent = {
 	kind: "ConnectionChanged",
 } & ConnectionState | 
@@ -45,7 +58,15 @@ export type AppEvent = {
 	kind: "ConsoleChanged",
 } & ConsoleState | { kind: "ConsoleOutput"; tabId: TabId; entries: OutputEntry[] } | {
 	kind: "HistoryAppended",
-} & HistoryEntry;
+} & HistoryEntry | {
+	kind: "ProviderChanged",
+} & ProviderState | {
+	kind: "ChatChanged",
+} & ChatState | 
+/**  Coalesced to at most 20/s per chat while a text block streams. */
+{
+	kind: "ChatEntryChanged",
+} & EntrySnapshot;
 
 export type Appearance = "light" | "dark";
 
@@ -65,12 +86,34 @@ export type ApplySummary = {
 	committed: boolean,
 };
 
+/**  Engine-wide monotonic. Lives only while the turn that asked for it runs. */
+export type ApprovalId = number;
+
+export type ApprovalReason = { kind: "AskFirst" } | 
+/**  Auto mode, but the query calls functions that act outside the transaction. */
+{ kind: "SideEffects"; functions: string[] };
+
+export type ApproveError = 
+/**  Answered already, denied by Stop, expired, or another chat's. */
+{ kind: "NotPending" };
+
+export type Attachment = {
+	tabTitle: string,
+	columns: string[],
+	/**  What the model saw: at most 100 rows, cells cut at 200 chars. */
+	rows: ((string | null)[])[],
+	totalRows: number,
+};
+
 export type BootSnapshot = {
 	connections: ConnectionConfig[],
 	live: ConnectionState[],
 	consoles: ConsoleState[],
 	workspace: Workspace,
 	settings: Settings,
+	providers: ProviderState[],
+	/**  Stored chats, newest first, at most 200. */
+	chats: ChatState[],
 };
 
 export type Catalog = {
@@ -129,6 +172,48 @@ export type ChangeKind = "Insert" | "Update" | "Delete";
 export type ChangeRef = {
 	kind: ChangeKind,
 	index: number,
+};
+
+export type ChatError = { kind: "UnknownModel"; model: ModelId } | { kind: "UnsupportedEffort"; effort: EffortId } | { kind: "Store"; message: string };
+
+/**
+ *  Minted by the frontend (`crypto.randomUUID()`), like `TabId`. A chat reaches the store with its
+ *  first message; until then it is a draft held in memory.
+ */
+export type ChatId = string;
+
+export type ChatOptions = {
+	provider: ProviderKind,
+	model: ModelId,
+	effort: EffortId | null,
+	permission: Permission,
+};
+
+export type ChatState = {
+	id: ChatId,
+	/**  From one engine-wide counter that every chat and entry snapshot shares. */
+	rev: number,
+	/**  The first line of the first message, cut at 60 chars. Empty for a draft. */
+	title: string,
+	updatedAtMs: number,
+	options: ChatOptions,
+	status: ChatStatus,
+	/**  Entries are numbered `0..entry_count`. */
+	entryCount: number,
+};
+
+export type ChatStatus = 
+/**  Opened, never sent to. Not stored, not listed. */
+{ kind: "Draft" } | { kind: "Idle" } | 
+/**  `turn` is the seq of the user entry that started it. */
+{ kind: "Running"; turn: number; startedAtMs: number; phase: TurnPhase } | 
+/**  A tombstone, so the live store drops the chat by the same keep-higher rule. */
+{ kind: "Deleted" };
+
+export type ChatView = {
+	state: ChatState,
+	/**  Every entry in seq order, the running turn's as of now. */
+	entries: EntrySnapshot[],
 };
 
 export type ColorScheme = "System" | "Light" | "Dark";
@@ -311,6 +396,8 @@ export type DbAccess = "Ok" |
 /**  `has_database_privilege(datname, 'CONNECT')` is false. */
 "NoPrivilege";
 
+export type Decision = "Run" | "Deny";
+
 export type DefaultValue = 
 /**  `pg_get_expr` of the default, with the cast dropped from a lone literal: `'pending'`, `now()`. */
 { kind: "Expr"; sql: string } | 
@@ -333,6 +420,31 @@ export type DocOffset = number;
 export type DocRange = {
 	from: DocOffset,
 	to: DocOffset,
+};
+
+/**  An effort level as its provider names it (`high`). Valid only for a model that lists it. */
+export type EffortId = string;
+
+export type EffortOption = {
+	id: EffortId,
+	/**  `"High"`, `"Extra high"`. */
+	label: string,
+};
+
+/**  Stored verbatim in `chat_entries.json`. A stored row this build cannot parse loads as `Unreadable`. */
+export type Entry = { kind: "User"; atMs: number; text: string; context: SentContext | null; attachment: Attachment | null } | { kind: "Text"; blocks: ReplyBlock[]; done: boolean } | { kind: "Tool"; call: ToolCallId; tool: ToolUse; status: ToolStatus } | 
+/**  Shown when the engine had to change course, such as a lost provider session. */
+{ kind: "Notice"; text: string } | 
+/**  Closes every turn. */
+{ kind: "End"; atMs: number; outcome: TurnOutcome; suggestions: string[] } | { kind: "Unreadable" };
+
+export type EntrySnapshot = {
+	chatId: ChatId,
+	seq: number,
+	rev: number,
+	/**  The seq of the user entry that opened this entry's turn. A user entry names itself. */
+	turn: number,
+	entry: Entry,
 };
 
 export type ExportError = { kind: "Gone" } | { kind: "Io"; message: string };
@@ -495,6 +607,22 @@ export type Layout = {
 	resultsHeight: number,
 	sidebarWidth: number,
 	rightPanelWidth: number,
+	/**  The chat the assistant panel shows, reopened after a restart. */
+	assistantChat: ChatId | null,
+};
+
+/**  A model as its provider names it on its command line (`opus`). Valid only against the last probe. */
+export type ModelId = string;
+
+export type ModelOption = {
+	id: ModelId,
+	/**  `"Opus 5.5"`. */
+	label: string,
+	description: string,
+	/**  Empty when the model takes no effort setting. */
+	efforts: EffortOption[],
+	/**  New chats start on it. */
+	recommended: boolean,
 };
 
 /**  A console whose transaction would be lost by a disconnect or close. */
@@ -523,6 +651,15 @@ export type OutputEntry = {
 
 export type PasswordInput = "Keep" | { Set: string } | "Clear";
 
+export type Permission = 
+/**  Every `run_query` waits for Run or Deny. */
+"AskFirst" | 
+/**
+ *  Read-only queries run without asking. A query that calls a function acting outside the
+ *  transaction still asks.
+ */
+"Auto";
+
 export type PgTypeRef = {
 	oid: number,
 	/**  `"bigint"`, `"integer[]"`, `"order_status"`. */
@@ -532,6 +669,53 @@ export type PgTypeRef = {
 
 /**  The quick actions of a picker. `None` is an explicit empty selection. */
 export type Preset = "All" | "DefaultOnly" | "None";
+
+export type ProbeOutcome = 
+/**  `plan` reads like `"Claude Max"`. */
+{ kind: "Ready"; version: string; plan: string | null; models: ModelOption[] } | { kind: "SignedOut"; version: string } | 
+/**  `binary` is what was looked up, and where. */
+{ kind: "NotFound"; binary: string } | 
+/**  Found, but the version check, the sign-in check, or the handshake failed or timed out. */
+{ kind: "Broken"; version: string | null; message: string };
+
+export type ProviderConfig = {
+	provider: ProviderKind,
+	enabled: boolean,
+	displayName: string,
+	/**  Empty means the provider's binary name, looked up on the login shell's PATH. `~` expands. */
+	binaryPath: string,
+	/**  Empty means the inherited environment variable, else the provider's default directory. */
+	configDir: string,
+	/**  Extra arguments as typed. The provider drops the flags the engine owns. */
+	launchArgs: string,
+};
+
+/**  What never changes for a kind. The settings page and the composer render from it. */
+export type ProviderInfo = {
+	defaultName: string,
+	defaultBinary: string,
+	/**  The environment variable that names the config directory: `CLAUDE_CONFIG_DIR`. */
+	configEnv: string,
+	configDirDefault: string,
+	signInCommand: string,
+	/**  Launch-argument flags the engine ignores, listed under the field. */
+	ownedFlags: string[],
+};
+
+export type ProviderKind = "Claude";
+
+export type ProviderState = {
+	/**  Not `kind`: `AppEvent` is tagged on `kind`. */
+	provider: ProviderKind,
+	rev: number,
+	info: ProviderInfo,
+	/**  A probe runs. `outcome` stays on screen meanwhile. */
+	checking: boolean,
+	/**  When the last probe finished. */
+	checkedAtMs: number | null,
+	/**  `None` until the first probe finishes. */
+	outcome: ProbeOutcome | null,
+};
 
 export type QueryError = {
 	severity: string,
@@ -573,6 +757,10 @@ export type RelationDetail = {
 	/**  By name. */
 	triggers: TriggerInfo[],
 };
+
+export type ReplyBlock = { kind: "Markdown"; text: string } | 
+/**  A fenced SQL block. `relations` and `writes` are filled when the fence closes. */
+{ kind: "Sql"; sql: string; relations: string[]; writes: boolean; complete: boolean };
 
 export type ResultError = { kind: "Gone" } | { kind: "OutOfRange" };
 
@@ -652,6 +840,24 @@ export type SchemaInfo = {
 	functions: FunctionInfo[],
 };
 
+export type SendError = { kind: "Busy" } | { kind: "EmptyMessage" } | { kind: "ProviderOff"; provider: ProviderKind } | 
+/**  The chat's model left the provider's list since it was picked. */
+{ kind: "UnknownModel"; model: ModelId } | 
+/**  A newer run replaced the attached result. */
+{ kind: "AttachmentGone" } | { kind: "Store"; message: string };
+
+export type SendRequest = {
+	text: string,
+	tab: TabContext | null,
+};
+
+export type SentContext = {
+	db: DatabaseRef | null,
+	/**  As named at send, so the chip reads right after a rename or a delete. */
+	connectionName: string | null,
+	tabTitle: string,
+};
+
 export type ServerInfo = {
 	/**  `"16.4"` */
 	version: string,
@@ -680,6 +886,10 @@ export type Settings = {
 	panelMotionMs: number,
 	/**  Shade each colored connection in the sidebar tree instead of drawing its dot. */
 	tintConnections: boolean,
+	/**  One per `ProviderKind::ALL`, in that order. */
+	providers: ProviderConfig[],
+	/**  Seconds between background provider status checks; 0 turns them off. */
+	providerHealthCheckSecs: number,
 };
 
 export type SslMode = "Disable" | "Prefer" | "Require" | "VerifyCa" | "VerifyFull";
@@ -695,6 +905,18 @@ export type StmtStatus = { kind: "Pending" } | { kind: "Preparing" } | { kind: "
 { kind: "Command"; tag: string; elapsedMs: number } | { kind: "Failed"; error: QueryError } | { kind: "Cancelled" } | 
 /**  An earlier statement failed or was cancelled. */
 { kind: "Skipped" };
+
+/**  The active tab when the user pressed Send. The engine reads SQL out of `text` itself. */
+export type TabContext = {
+	tabId: TabId,
+	title: string,
+	db: DatabaseRef | null,
+	text: string,
+	/**  UTF-16 offsets, as for `RunRequest::Script`. */
+	target: RunTarget,
+	/**  The result the tab shows, when the attach button is on. */
+	attach: ResultRef | null,
+};
 
 /**  Minted by the frontend (`crypto.randomUUID()`). */
 export type TabId = string;
@@ -735,6 +957,25 @@ export type TableSnapshot = {
 	query: TableQuery,
 };
 
+/**  The provider's id for one tool use (`toolu_…` for Claude). Opaque outside the codec. */
+export type ToolCallId = string;
+
+export type ToolResult = { kind: "Described"; found: string[]; missing: string[] } | { kind: "Found"; matches: number } | 
+/**  The preview the model saw. `more` is true when the query had more rows. */
+{ kind: "Rows"; columns: string[]; rows: ((string | null)[])[]; more: boolean; elapsedMs: number };
+
+export type ToolStatus = { kind: "Running" } | { kind: "AwaitingApproval"; approval: ApprovalId; reason: ApprovalReason } | { kind: "Done"; result: ToolResult } | 
+/**  `message` is what the model got. */
+{ kind: "Failed"; message: string } | 
+/**  `stopped` is true when Stop denied it, false when the user pressed Deny. */
+{ kind: "Denied"; stopped: boolean } | 
+/**  The turn ended before an answer. */
+{ kind: "Expired" };
+
+export type ToolUse = { kind: "DescribeTables"; tables: string[] } | { kind: "SearchCatalog"; query: string } | { kind: "RunQuery"; sql: string; purpose: string; relations: string[] } | 
+/**  A tool the engine does not serve. Always refused. */
+{ kind: "Other"; name: string };
+
 export type TriggerEvent = "Insert" | "Update" | "Delete" | "Truncate";
 
 export type TriggerInfo = {
@@ -751,6 +992,17 @@ export type TriggerInfo = {
 export type TriggerTiming = "Before" | "After" | "InsteadOf";
 
 export type TruncateReason = "RowLimit" | "ByteLimit";
+
+export type TurnAccepted = {
+	/**  The seq of the stored user entry. */
+	turn: number,
+};
+
+export type TurnOutcome = { kind: "Completed" } | { kind: "Stopped" } | 
+/**  The app quit or crashed mid-turn. Written when the chat next opens. */
+{ kind: "Lost" } | { kind: "Failed"; error: AgentError };
+
+export type TurnPhase = "Starting" | "Working" | "AwaitingApproval";
 
 export type TxnError = { kind: "Busy" } | { kind: "NoTransaction" } | { kind: "RolledBack" } | {
 	kind: "Query",

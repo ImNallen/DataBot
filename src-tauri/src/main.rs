@@ -47,6 +47,13 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ipc::history_clear,
             ipc::workspace_save,
             ipc::settings_set,
+            ipc::assistant_open,
+            ipc::assistant_configure,
+            ipc::assistant_send,
+            ipc::assistant_stop,
+            ipc::assistant_approve,
+            ipc::assistant_delete,
+            ipc::provider_refresh,
         ])
         .typ::<AppEvent>()
         .dangerously_cast_bigints_to_number()
@@ -350,7 +357,7 @@ mod tests {
             }
             checked += 1;
         }
-        assert_eq!(checked, 11, "the sync commands in ipc.rs");
+        assert_eq!(checked, 15, "the sync commands in ipc.rs");
     }
 
     #[test]
