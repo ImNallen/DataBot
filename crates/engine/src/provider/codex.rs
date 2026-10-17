@@ -11,9 +11,6 @@ const INITIALIZE: u64 = 0;
 const ACCOUNT: u64 = 1;
 const RATE_LIMITS: u64 = 2;
 
-/// `codex app-server` speaks JSON-RPC over JSONL with no `jsonrpc` field. After `initialize`
-/// answers, both reads go out at once, and their replies arrive in either order: signed out, the
-/// rate-limit error came before the account. Notifications interleave and are skipped.
 #[derive(Default)]
 pub(crate) struct CodexLimitsExchange {
     account: Option<CodexAccount>,
@@ -28,7 +25,6 @@ pub(crate) enum CodexAccount {
 }
 
 impl CodexLimitsExchange {
-    /// The account alone decides every case but a ChatGPT sign-in, which needs the rate limits.
     fn decide(&self) -> Option<LimitsOutcome> {
         Some(match (self.account.as_ref()?, &self.rate_limits) {
             (CodexAccount::SignedOut, _) => LimitsOutcome::SignedOut { sign_in_command: SIGN_IN_COMMAND.into() },
@@ -83,7 +79,6 @@ pub(crate) fn parse_account(result: &Value) -> CodexAccount {
 }
 
 /// A window is named by its length: the primary one is not always the five-hour session.
-/// Shortest first, so a session sits above the week whichever slot it came in.
 pub(crate) fn parse_rate_limits(result: &Value) -> Vec<LimitWindow> {
     let limits = &result["rateLimits"];
     let mut windows: Vec<(Option<i64>, LimitWindow)> = ["primary", "secondary"]
@@ -101,7 +96,6 @@ pub(crate) fn parse_rate_limits(result: &Value) -> Vec<LimitWindow> {
     windows.into_iter().map(|(_, window)| window).collect()
 }
 
-/// `codex` on the host PATH. Codex has no provider settings yet, so there is no binary path to honor.
 pub(crate) async fn read_limits(shared: &Shared, host: &HostEnv) -> LimitsOutcome {
     let program = match host.resolve("", BINARY) {
         Ok(program) => program,
@@ -123,7 +117,6 @@ mod tests {
         serde_json::from_str(line).unwrap()
     }
 
-    /// Feeds every captured line in order and returns what each one yielded.
     fn replay(fixture: &str) -> Vec<Exchanged<LimitsOutcome>> {
         let mut exchange = CodexLimitsExchange::default();
         exchange.open();

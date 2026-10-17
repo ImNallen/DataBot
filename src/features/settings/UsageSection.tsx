@@ -27,7 +27,6 @@ const LEVEL_NOTE = {
   ),
 } satisfies Record<LimitLevel, ReactNode>;
 
-/** The settings header's action for the Usage section, beside the breadcrumb. */
 export function UsageRefresh() {
   const { report, loading } = useLimits();
   const now = useNow(report !== null, 30_000);
