@@ -21,7 +21,8 @@ export const editorTheme = EditorView.theme({
   ".cm-line": { padding: "0 16px 0 18px" },
   ".cm-gutters": { backgroundColor: "var(--color-bg)", color: "var(--color-faint)", border: "none" },
   ".cm-lineNumbers .cm-gutterElement": { minWidth: "30px", padding: "0 0 0 8px", textAlign: "right" },
-  ".cm-run-target": { backgroundColor: "var(--code-run-target)", boxShadow: "inset 2px 0 var(--color-run)" },
+  // A gradient layers over the active line's background colour, so the cursor's line keeps the tint.
+  ".cm-run-target": { backgroundImage: "linear-gradient(var(--code-run-target), var(--code-run-target))", boxShadow: "inset 3px 0 var(--color-run)" },
   ".cm-activeLine": { backgroundColor: "var(--color-hover)" },
   ".cm-activeLineGutter": { backgroundColor: "var(--color-hover)", color: "var(--color-muted)" },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--color-fg)", borderLeftWidth: "1.5px" },
