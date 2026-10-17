@@ -60,16 +60,15 @@ const flashField = StateField.define<DecorationSet>({
 });
 
 const previewEffect = StateEffect.define<DocRange[] | null>();
-const previewMark = Decoration.mark({ class: "cm-preview" });
 
-const previewField = StateField.define<DecorationSet>({
-  create: () => Decoration.none,
-  update(deco, tr) {
-    let next = deco.map(tr.changes);
-    for (const e of tr.effects) if (e.is(previewEffect)) next = Decoration.set((e.value ?? []).map((r) => previewMark.range(r.from, r.to)), true);
+// The chooser closes on any edit, so its ranges never need mapping.
+const previewField = StateField.define<readonly DocRange[]>({
+  create: () => [],
+  update(ranges, tr) {
+    let next = tr.docChanged ? [] : ranges;
+    for (const e of tr.effects) if (e.is(previewEffect)) next = (e.value ?? []).filter((r) => r.from < r.to && r.to <= tr.state.doc.length);
     return next;
   },
-  provide: (f) => EditorView.decorations.from(f),
 });
 
 const runTargetEffect = StateEffect.define<DocRange | null>();
@@ -91,7 +90,7 @@ const runTargetField = StateField.define<DocRange | null>({
   },
 });
 
-class RunTargetBox implements LayerMarker {
+class StatementBox implements LayerMarker {
   constructor(
     readonly left: number,
     readonly top: number,
@@ -111,19 +110,17 @@ class RunTargetBox implements LayerMarker {
     el.style.height = `${this.height}px`;
     return true;
   }
-  eq(o: RunTargetBox): boolean {
+  eq(o: StatementBox): boolean {
     return o.left === this.left && o.top === this.top && o.width === this.width && o.height === this.height;
   }
 }
 
 /**
- * One rounded box behind the statement, as wide as its longest line. Width comes from columns, not drawn lines, so it holds
+ * One rounded box behind a statement, as wide as its longest line. Width comes from columns, not drawn lines, so it holds
  * still while lines scroll in and out of the viewport, and it stops at the scroller's right edge so a very long line cannot
  * turn the whole editor into tint.
  */
-function runTargetBox(v: EditorView): readonly LayerMarker[] {
-  const range = v.state.field(runTargetField);
-  if (!range) return [];
+function statementBox(v: EditorView, range: DocRange): StatementBox {
   const { doc, tabSize } = v.state;
   const first = doc.lineAt(range.from);
   const last = doc.lineAt(range.to);
@@ -140,14 +137,22 @@ function runTargetBox(v: EditorView): readonly LayerMarker[] {
   const right = Math.min(textLeft + endCol * v.defaultCharacterWidth + 8, v.scrollDOM.clientWidth - 8);
   const top = docTop + v.lineBlockAt(range.from).top;
   const bottom = docTop + v.lineBlockAt(range.to).bottom;
-  return [new RunTargetBox(left, top, Math.max(right - left, 0), bottom - top)];
+  return new StatementBox(left, top, Math.max(right - left, 0), bottom - top);
+}
+
+// While the chooser previews a row, its statements take the box's place, so only what would run is boxed.
+function statementBoxes(v: EditorView): readonly LayerMarker[] {
+  const preview = v.state.field(previewField);
+  const target = v.state.field(runTargetField);
+  return (preview.length ? preview : target ? [target] : []).map((r) => statementBox(v, r));
 }
 
 const runTargetLayer = layer({
   above: false,
   class: "cm-runTargetLayer",
-  markers: runTargetBox,
-  update: (u) => u.geometryChanged || u.startState.field(runTargetField) !== u.state.field(runTargetField),
+  markers: statementBoxes,
+  update: (u) =>
+    u.geometryChanged || u.startState.field(runTargetField) !== u.state.field(runTargetField) || u.startState.field(previewField) !== u.state.field(previewField),
 });
 
 // The selection layer paints behind the text, so the active line's background would hide it.
@@ -280,7 +285,7 @@ export function flashRanges(id: TabId, ranges: DocRange[]): void {
   setTimeout(() => updateEditor(id, () => ({ effects: clearFlash.of(null) })), 700);
 }
 
-/** Marks the statements a chooser row would run and scrolls the first into view; `null` clears the mark. */
+/** Boxes the statements a chooser row would run in place of the run box, and scrolls the first into view; `null` clears them. */
 export function previewRanges(id: TabId, ranges: DocRange[] | null): void {
   const first = ranges?.[0];
   updateEditor(id, () => ({ effects: first ? [previewEffect.of(ranges), EditorView.scrollIntoView(first.from, { y: "nearest" })] : previewEffect.of(null) }));

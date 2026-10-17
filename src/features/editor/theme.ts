@@ -43,7 +43,6 @@ export const editorTheme = EditorView.theme({
   ".cm-selectionMatch": { backgroundColor: "var(--code-selection-match)" },
   ".cm-call, .cm-call *": { color: "var(--code) !important" },
   ".cm-executed": { backgroundColor: "var(--code-executed)", transition: "background-color 600ms ease-out" },
-  ".cm-preview": { backgroundColor: "var(--code-preview)" },
   ".cm-lintRange-error": {
     backgroundImage: "none",
     textDecoration: "underline wavy var(--color-danger)",

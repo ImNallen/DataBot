@@ -45,7 +45,6 @@ export const TOKENS = {
   codeExecuted: "--code-executed",
   codeRunTarget: "--code-run-target",
   codeRunTargetBorder: "--code-run-target-border",
-  codePreview: "--code-preview",
 } as const;
 
 export type Token = keyof typeof TOKENS;
@@ -131,7 +130,6 @@ const RECIPES: Record<Appearance, Record<Token, Recipe>> = {
     codeExecuted: glaze(0.16),
     codeRunTarget: glaze(0.15),
     codeRunTargetBorder: glaze(0.35),
-    codePreview: glaze(0.28),
   },
   light: {
     background: seed("background"),
@@ -177,7 +175,6 @@ const RECIPES: Record<Appearance, Record<Token, Recipe>> = {
     codeExecuted: glaze(0.1),
     codeRunTarget: glaze(0.11),
     codeRunTargetBorder: glaze(0.3),
-    codePreview: glaze(0.18),
   },
 };
 

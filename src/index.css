@@ -80,7 +80,6 @@
   --code-executed: rgba(80, 162, 255, 0.13);
   --code-run-target: rgba(80, 162, 255, 0.14);
   --code-run-target-border: rgba(80, 162, 255, 0.35);
-  --code-preview: rgba(80, 162, 255, 0.24);
 }
 
 :root[data-theme="light"] {
@@ -132,7 +131,6 @@
   --code-executed: rgba(37, 99, 235, 0.1);
   --code-run-target: rgba(37, 99, 235, 0.1);
   --code-run-target-border: rgba(37, 99, 235, 0.3);
-  --code-preview: rgba(37, 99, 235, 0.16);
 }
 
 html,
