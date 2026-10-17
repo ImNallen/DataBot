@@ -23,7 +23,7 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 
 ### Query tabs
 
-- Every tab is a query editor. A tab opened from a table also browses that table. Tabs complete table and column names from the live catalog. `⌘↵` or **Run** runs the statement under the cursor or the selection. `Esc` or **Cancel** stops a running query.
+- Every tab is a query editor. A tab opened from a table also browses that table. Tabs complete table and column names from the live catalog. The editor marks the statement `⌘↵` will run with a tint and a bar in the margin. `⌘↵` or **Run** runs the selection as written, or the marked statement when nothing is selected. When a tab holds several statements, `⌘⇧↵` opens a list of them and an **All** row, and highlights in the editor what the row under the pointer or the arrow keys would run. `Enter`, a click, or a statement's number runs it. `Esc` closes the list. `Esc` or **Cancel** stops a running query.
 - Each tab has its own session, so `SET` and temp tables stay with the tab. The connection name in the top bar picks the tab's connection. The **Auto-commit** menu switches the tab between auto-commit and manual-transaction mode. It also shows when a lost connection rolled back the open transaction. Double-click a tab to rename it.
 - In manual mode, **Commit** and **Rollback** appear while a transaction is open, and the tab shows a dot. Closing that tab or disconnecting asks before it rolls back.
 - An error shows its detail, hint, and SQLSTATE, and the editor underlines the error position.
@@ -64,7 +64,8 @@ L1 Data is a desktop IDE for PostgreSQL, built with Tauri 2, Rust, and React. Th
 | `⌘P` | Focus the sidebar search: the tree, or the settings while Settings is open |
 | `⌘,` | Open or close Settings |
 | `⌘W` | Close the tab, or close Settings |
-| `⌘↵` | Run the statement under the cursor or the selection |
+| `⌘↵` | Run the selection, or the marked statement under the cursor |
+| `⌘⇧↵` | Choose which statement to run, or all of them |
 | `Esc` | Cancel the running query |
 | `Enter` | Edit the selected cell in an editable table, or show its full value elsewhere |
 | `F2` | Edit the selected cell |

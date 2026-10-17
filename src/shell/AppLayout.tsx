@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Group, Panel } from "react-resizable-panels";
 import { ConnectionDialog } from "../features/connections/ConnectionDialog";
 import { SqlEditor } from "../features/editor/SqlEditor";
+import { StatementChooser } from "../features/editor/StatementChooser";
 import { HistoryPalette } from "../features/history/HistoryPalette";
 import { ResultsPane } from "../features/results/ResultsPane";
 import { SettingsPage } from "../features/settings/SettingsScreen";
@@ -142,6 +143,7 @@ export function AppLayout() {
       </PixelColumn>
       <HistoryPalette />
       <ConnectionDialog />
+      <StatementChooser />
       <Overlays />
     </div>
   );

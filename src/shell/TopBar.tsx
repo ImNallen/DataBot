@@ -110,7 +110,13 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
             <Kbd className="bg-control text-muted">Esc</Kbd>
           </Button>
         ) : (
-          <Button data-testid="run-btn" variant="primary" className="w-[104px] justify-center pr-2 pl-2.5 font-medium" onClick={() => runActive()}>
+          <Button
+            data-testid="run-btn"
+            variant="primary"
+            title="Run the selection or the marked statement (⌘↵). Choose a statement to run: ⌘⇧↵"
+            className="w-[104px] justify-center pr-2 pl-2.5 font-medium"
+            onClick={() => runActive()}
+          >
             <IconPlayerPlayFilled size={13} className="text-run-icon" />
             Run
             <Kbd className="bg-run-fg/15 text-run-fg/85">⌘↵</Kbd>

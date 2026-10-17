@@ -120,7 +120,7 @@ export function confirmDeleteChat(chat: ChatState): void {
 
 export function runInNewTab(sql: string, db: DatabaseRef | null): void {
   openSqlTab({ db, text: sql });
-  runActive();
+  runActive({ kind: "all" });
 }
 
 export function openInNewTab(sql: string, db: DatabaseRef | null): void {

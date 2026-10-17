@@ -45,7 +45,7 @@ pnpm icons                                 # rewrite src-tauri/icons from src-ta
 
 ```ts
 export async function boot(): Promise<void> {
-  installRunBehavior();                            // ⌘↵, Escape, doc and cursor listeners for every editor
+  installRunBehavior();                            // ⌘↵, ⌘⇧↵, Escape, doc and cursor listeners for every editor
   // Listen first, then snapshot. Every event carries a full entity snapshot with a `rev`,
   // so an event that races the boot snapshot is harmless: the reducer keeps the higher rev.
   await listen<AppEvent>("app-event", (e) => useLive.getState().apply(e.payload));
@@ -62,10 +62,12 @@ export async function boot(): Promise<void> {
 
 ### Call site 2: run the active tab (features/editor/runActions.ts)
 
-`runActive()` runs the active tab through the private `runTab`. A table tab sends `tablePage` only while its editor still holds `browseQuery(schema, table)`. Any other text runs as a script.
+`runActive(script?)` runs the active tab through the private `runTab`. A table tab sends `tablePage` only while its editor still holds `browseQuery(schema, table)`. Any other text runs as a script, with the explicit `RunTarget` when one is given, else the selection or the cursor. History's **Run** and the assistant's **Run in new tab** open a new tab and pass `{ kind: "all" }`, so every statement of the inserted SQL runs.
+
+What `⌘↵` will run is always marked. On each doc or cursor change, debounced 30 ms with one request in flight, the editor calls `script_outline(text, cursor)` and marks the lines of `statements[atCursor]` (`cm-run-target`). A reply is dropped when the doc or the cursor moved meanwhile, and a selection or a browsing table tab clears the mark. `⌘⇧↵` (`chooseAndRun`) asks for the same outline and, when it holds two or more statements, opens the statement chooser (`chooserState.ts`, `StatementChooser.tsx`) with `atCursor` preselected. The highlighted row's ranges show as a `cm-preview` mark. A statement runs as `{ kind: "selection" }` over its range, and **All** as `{ kind: "all" }`. A doc change or a tab switch closes the chooser, since its ranges would be stale. Neither path splits SQL in TypeScript, so the mark and the preselected row always name what a `Cursor` run picks.
 
 ```ts
-async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
+async function runTab(tabId: TabId, target?: PageTarget, script?: RunTarget): Promise<void> {
   // ...queue page requests that arrive mid-run, then ensureConsole(tab)
   let request: RunRequest;
   if (tab.kind === "table" && isBrowsing(tab)) {
@@ -76,7 +78,7 @@ async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
     request = {
       kind: "script",
       text: state.doc.toString(),
-      target: sel.empty ? { kind: "cursor", offset: sel.head } : { kind: "selection", from: sel.from, to: sel.to },
+      target: script ?? (sel.empty ? { kind: "cursor", offset: sel.head } : { kind: "selection", from: sel.from, to: sel.to }),
     };
   }
   const res = await commands.consoleRun(tabId, request);

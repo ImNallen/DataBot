@@ -21,6 +21,7 @@ export const editorTheme = EditorView.theme({
   ".cm-line": { padding: "0 16px 0 18px" },
   ".cm-gutters": { backgroundColor: "var(--color-bg)", color: "var(--color-faint)", border: "none" },
   ".cm-lineNumbers .cm-gutterElement": { minWidth: "30px", padding: "0 0 0 8px", textAlign: "right" },
+  ".cm-run-target": { backgroundColor: "var(--code-run-target)", boxShadow: "inset 2px 0 var(--color-run)" },
   ".cm-activeLine": { backgroundColor: "var(--color-hover)" },
   ".cm-activeLineGutter": { backgroundColor: "var(--color-hover)", color: "var(--color-muted)" },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--color-fg)", borderLeftWidth: "1.5px" },
@@ -31,6 +32,7 @@ export const editorTheme = EditorView.theme({
   ".cm-selectionMatch": { backgroundColor: "var(--code-selection-match)" },
   ".cm-call, .cm-call *": { color: "var(--code) !important" },
   ".cm-executed": { backgroundColor: "var(--code-executed)", transition: "background-color 600ms ease-out" },
+  ".cm-preview": { backgroundColor: "var(--code-preview)" },
   ".cm-lintRange-error": {
     backgroundImage: "none",
     textDecoration: "underline wavy var(--color-danger)",

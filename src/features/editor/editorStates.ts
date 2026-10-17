@@ -57,6 +57,41 @@ const flashField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+const previewEffect = StateEffect.define<DocRange[] | null>();
+const previewMark = Decoration.mark({ class: "cm-preview" });
+
+const previewField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    let next = deco.map(tr.changes);
+    for (const e of tr.effects) if (e.is(previewEffect)) next = Decoration.set((e.value ?? []).map((r) => previewMark.range(r.from, r.to)), true);
+    return next;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+const runTargetEffect = StateEffect.define<DocRange | null>();
+const runTargetLine = Decoration.line({ class: "cm-run-target" });
+
+const runTargetField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    let next = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(runTargetEffect)) continue;
+      const doc = tr.state.doc;
+      const range = e.value;
+      const lines = [];
+      if (range && range.to <= doc.length) {
+        for (let n = doc.lineAt(range.from).number; n <= doc.lineAt(range.to).number; n++) lines.push(runTargetLine.range(doc.line(n).from));
+      }
+      next = Decoration.set(lines);
+    }
+    return next;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
 function qualifiedTables(tables: readonly Completion[]): CompletionSource {
   return ifNotIn(["String", "QuotedIdentifier", "LineComment", "BlockComment"], (ctx) => {
     const word = ctx.matchBefore(/[\w$]+/);
@@ -97,6 +132,8 @@ function createState(text: string): EditorState {
       keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
       sqlConfig.of(sqlLanguage(undefined, [])),
       flashField,
+      previewField,
+      runTargetField,
       editorTheme,
       editorHighlighting,
       functionCallStyle,
@@ -178,6 +215,25 @@ export function configureSql(id: TabId, namespace: SQLNamespace | undefined, tab
 export function flashRanges(id: TabId, ranges: DocRange[]): void {
   updateEditor(id, () => ({ effects: flashEffect.of(ranges) }));
   setTimeout(() => updateEditor(id, () => ({ effects: clearFlash.of(null) })), 700);
+}
+
+/** Marks the statements a chooser row would run and scrolls the first into view; `null` clears the mark. */
+export function previewRanges(id: TabId, ranges: DocRange[] | null): void {
+  const first = ranges?.[0];
+  updateEditor(id, () => ({ effects: first ? [previewEffect.of(ranges), EditorView.scrollIntoView(first.from, { y: "nearest" })] : previewEffect.of(null) }));
+}
+
+/** Marks the lines of the statement ⌘↵ would run. */
+export function showRunTarget(id: TabId, range: DocRange | null): void {
+  updateEditor(id, () => ({ effects: runTargetEffect.of(range) }));
+}
+
+/** The viewport's cursor line (the editor's top when the cursor is off screen) and the editor's visible right edge. */
+export function cursorAnchor(): { right: number; top: number; bottom: number } | null {
+  if (!view) return null;
+  const box = view.scrollDOM.getBoundingClientRect();
+  const at = view.coordsAtPos(view.state.selection.main.head);
+  return { right: box.right, top: at?.top ?? box.top, bottom: at?.bottom ?? box.top };
 }
 
 export function showDiagnostics(id: TabId, diagnostics: Diagnostic[]): void {
