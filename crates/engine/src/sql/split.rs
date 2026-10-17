@@ -17,12 +17,100 @@ pub enum ByteTarget {
     All,
 }
 
+/// Words that open a statement. A blank line before one of them ends the statement before it.
+const STARTERS: &[&str] = &[
+    "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "MERGE", "VALUES", "TABLE", "CREATE", "ALTER", "DROP", "TRUNCATE", "GRANT", "REVOKE",
+    "COMMENT", "BEGIN", "START", "COMMIT", "ROLLBACK", "ABORT", "SAVEPOINT", "RELEASE", "SET", "RESET", "SHOW", "EXPLAIN", "ANALYZE",
+    "VACUUM", "COPY", "CALL", "DO", "LOCK", "REFRESH", "REINDEX", "CLUSTER", "DECLARE", "FETCH", "MOVE", "CLOSE", "PREPARE", "EXECUTE",
+    "DEALLOCATE", "LISTEN", "NOTIFY", "UNLISTEN", "DISCARD", "CHECKPOINT", "LOAD", "SECURITY", "IMPORT", "REASSIGN",
+];
+
+/// Words after which a statement continues on the next non-blank line.
+const CONTINUATIONS: &[&str] = &[
+    "AS", "UNION", "INTERSECT", "EXCEPT", "ALL", "DISTINCT", "AND", "OR", "NOT", "ON", "FOR", "DO", "INSTEAD", "ALSO", "THEN", "ELSE",
+    "WHEN", "IN", "EXISTS", "FROM", "JOIN", "WHERE", "BY", "INTO", "SET", "USING", "TO", "RETURNING", "SELECT", "VALUES", "EXPLAIN",
+    "ANALYZE", "VERBOSE",
+];
+
+/// The keyword that completes a `WITH`, `INSERT`, or `EXPLAIN` prefix.
+const BODIES: &[&str] = &["SELECT", "VALUES", "INSERT", "UPDATE", "DELETE", "MERGE", "TABLE", "DEFAULT"];
+
+fn is_word(list: &[&str], word: &str) -> bool {
+    list.iter().any(|w| w.eq_ignore_ascii_case(word))
+}
+
+#[derive(Clone, Copy)]
+enum Last<'a> {
+    Nothing,
+    Word(&'a str),
+    Punct(u8),
+}
+
+/// What the lexer knows about the statement it is inside.
+struct Stmt<'a> {
+    first: Option<&'a str>,
+    /// False while a `WITH`, `INSERT`, or `EXPLAIN` waits for its body, or an `UPDATE` for its `SET`.
+    complete: bool,
+    parens: usize,
+    body_depth: usize,
+    last: Last<'a>,
+}
+
+impl<'a> Stmt<'a> {
+    fn new() -> Self {
+        Stmt { first: None, complete: false, parens: 0, body_depth: 0, last: Last::Nothing }
+    }
+
+    fn word(&mut self, word: &'a str) {
+        match self.first {
+            None => {
+                self.first = Some(word);
+                self.complete = !is_word(&["WITH", "INSERT", "EXPLAIN", "UPDATE"], word);
+            }
+            Some(first) if self.parens == 0 && !self.complete => {
+                self.complete = if first.eq_ignore_ascii_case("UPDATE") { word.eq_ignore_ascii_case("SET") } else { is_word(BODIES, word) };
+            }
+            Some(_) => {}
+        }
+        if word.eq_ignore_ascii_case("ATOMIC") && matches!(self.last, Last::Word(w) if w.eq_ignore_ascii_case("BEGIN")) {
+            self.body_depth += 1;
+        } else if self.body_depth > 0 && word.eq_ignore_ascii_case("CASE") {
+            self.body_depth += 1;
+        } else if self.body_depth > 0 && word.eq_ignore_ascii_case("END") {
+            self.body_depth -= 1;
+        }
+        self.last = Last::Word(word);
+    }
+
+    fn punct(&mut self, c: u8) {
+        match c {
+            b'(' => self.parens += 1,
+            b')' => self.parens = self.parens.saturating_sub(1),
+            _ => {}
+        }
+        self.last = Last::Punct(c);
+    }
+
+    /// Whether a blank line here may end the statement, given the word that follows the blank line.
+    fn ends_before(&self, next: &str) -> bool {
+        if !is_word(STARTERS, next) {
+            return false;
+        }
+        let ended = match self.last {
+            Last::Nothing => return true, // only whitespace or comments so far, which `push_trimmed` drops
+            Last::Word(w) => !is_word(CONTINUATIONS, w),
+            Last::Punct(c) => !matches!(c, b',' | b'(' | b'.' | b'+' | b'-' | b'*' | b'/' | b'<' | b'>' | b'=' | b'~' | b'!' | b'@' | b'#' | b'%' | b'^' | b'&' | b'|' | b'?'),
+        };
+        ended && self.complete && self.parens == 0 && self.body_depth == 0
+    }
+}
+
+/// Splits on top-level `;`, and on a blank line when the text before it is a complete statement and the next word starts a new one.
 pub fn split_statements(sql: &str) -> Vec<StmtSpan> {
     let bytes = sql.as_bytes();
     let mut spans = Vec::new();
     let mut stmt_start = 0;
-    let mut body_depth = 0usize;
-    let mut last_word: Option<&str> = None;
+    let mut stmt = Stmt::new();
     let mut i = 0;
     while i < bytes.len() {
         let c = bytes[i];
@@ -37,30 +125,69 @@ pub fn split_statements(sql: &str) -> Vec<StmtSpan> {
                 Some(tag_len) => i = skip_dollar_quoted(bytes, i, tag_len),
                 None => i += 1,
             },
-            b';' if body_depth == 0 => {
+            b';' if stmt.body_depth == 0 => {
                 push_trimmed(&mut spans, sql, stmt_start, i);
                 stmt_start = i + 1;
+                stmt = Stmt::new();
                 i += 1;
-                last_word = None;
             }
+            b'\n' => match after_blank_lines(bytes, i) {
+                Some(next) => {
+                    if stmt.ends_before(first_word(sql, next)) {
+                        push_trimmed(&mut spans, sql, stmt_start, i);
+                        stmt_start = next;
+                        stmt = Stmt::new();
+                    }
+                    i = next;
+                }
+                None => i += 1,
+            },
             c if c.is_ascii_alphabetic() || c == b'_' => {
                 let end = word_end(bytes, i);
-                let word = &sql[i..end];
-                if word.eq_ignore_ascii_case("ATOMIC") && last_word.is_some_and(|w| w.eq_ignore_ascii_case("BEGIN")) {
-                    body_depth += 1;
-                } else if body_depth > 0 && word.eq_ignore_ascii_case("CASE") {
-                    body_depth += 1;
-                } else if body_depth > 0 && word.eq_ignore_ascii_case("END") {
-                    body_depth -= 1;
-                }
-                last_word = Some(word);
+                stmt.word(&sql[i..end]);
                 i = end;
             }
-            _ => i += 1,
+            c if c.is_ascii_whitespace() => i += 1,
+            c => {
+                stmt.punct(c);
+                i += 1;
+            }
         }
     }
     push_trimmed(&mut spans, sql, stmt_start, bytes.len());
     spans
+}
+
+/// With a newline at `i`, the start of the next non-blank line when at least one blank line follows.
+fn after_blank_lines(bytes: &[u8], i: usize) -> Option<usize> {
+    let mut j = i + 1;
+    let mut blank = false;
+    loop {
+        while j < bytes.len() && bytes[j] != b'\n' && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] == b'\n' {
+            blank = true;
+            j += 1;
+        } else {
+            return blank.then_some(j);
+        }
+    }
+}
+
+/// The first word at or after `i`, past whitespace and comments. Empty when none follows.
+fn first_word(sql: &str, mut i: usize) -> &str {
+    let bytes = sql.as_bytes();
+    while i < bytes.len() {
+        match bytes[i] {
+            b'-' if bytes.get(i + 1) == Some(&b'-') => i = sql[i..].find('\n').map_or(bytes.len(), |n| i + n),
+            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i),
+            c if c.is_ascii_whitespace() => i += 1,
+            c if c.is_ascii_alphabetic() || c == b'_' => return &sql[i..word_end(bytes, i)],
+            _ => return "",
+        }
+    }
+    ""
 }
 
 pub fn pick(spans: &[StmtSpan], sql: &str, target: ByteTarget) -> Vec<StmtSpan> {
@@ -245,6 +372,63 @@ mod tests {
     #[test]
     fn plain_begin_still_splits() {
         assert_eq!(texts("begin; insert into t values (1); commit"), vec!["begin", "insert into t values (1)", "commit"]);
+    }
+
+    const USER_DOC: &str = "SELECT * FROM public.addresses\nWHERE id > 5\nAND id < 10\nORDER BY id DESC\n\nselect * from public.categories";
+
+    #[test]
+    fn a_blank_line_before_a_statement_starter_splits() {
+        assert_eq!(
+            texts(USER_DOC),
+            vec!["SELECT * FROM public.addresses\nWHERE id > 5\nAND id < 10\nORDER BY id DESC", "select * from public.categories"]
+        );
+        assert_eq!(texts("select 1\n\nselect 2"), vec!["select 1", "select 2"]);
+        assert_eq!(texts("select 1\n  \n\t\nselect 2"), vec!["select 1", "select 2"]);
+        assert_eq!(texts("select 1\nselect 2"), vec!["select 1\nselect 2"], "only a blank line or a semicolon splits");
+        assert_eq!(texts("select 1;\n\nselect 2\n\nselect 3"), vec!["select 1", "select 2", "select 3"]);
+        assert_eq!(texts("select 1 -- note\n\n-- header\nselect 2"), vec!["select 1 -- note", "-- header\nselect 2"]);
+        assert_eq!(texts("select 1\n\nfrom t"), vec!["select 1\n\nfrom t"], "the next word must start a statement");
+    }
+
+    #[test]
+    fn a_blank_line_inside_an_unfinished_statement_keeps_it_whole() {
+        for sql in [
+            "WITH x AS (select 1)\n\nselect * from x",
+            "with a as (select 1),\n\nb as (select 2)\n\nselect * from a, b",
+            "insert into t (a)\n\nselect 1",
+            "insert into t (a)\n\nvalues (1)",
+            "select 1\nunion\n\nselect 2",
+            "select 1 union all\n\nselect 2",
+            "create view v as\n\nselect 1",
+            "explain (analyze)\n\nselect 1",
+            "explain\n\nselect 1",
+            "update t\n\nset a = 1",
+            "select case when x then 1\n\nelse 2\n\nend from t",
+            "select (\n\nselect 1)",
+            "declare c cursor for\n\nselect 1",
+            "select a,\n\nb from t",
+            "select 1 +\n\nselect 2",
+            "create function f() returns int begin atomic\n\nselect 1;\n\nend",
+        ] {
+            assert_eq!(texts(sql), vec![sql], "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn blank_lines_inside_quotes_and_comments_do_not_split() {
+        assert_eq!(texts("select '\n\nselect 2'"), vec!["select '\n\nselect 2'"]);
+        assert_eq!(texts("select $$\n\nselect$$"), vec!["select $$\n\nselect$$"]);
+        assert_eq!(texts("/*\n\nselect 1 */ select 2"), vec!["/*\n\nselect 1 */ select 2"]);
+        assert_eq!(texts("-- c\n\nselect 1"), vec!["select 1"]);
+    }
+
+    #[test]
+    fn cursor_in_the_users_doc_picks_one_query() {
+        let spans = split_statements(USER_DOC);
+        let line6 = USER_DOC.rfind("select").unwrap() + 3;
+        let at = |off: usize| pick(&spans, USER_DOC, ByteTarget::Cursor(off)).iter().map(|s| s.text(USER_DOC)).collect::<Vec<_>>();
+        assert_eq!(at(line6), vec!["select * from public.categories"]);
+        assert_eq!(at(USER_DOC.find("WHERE").unwrap()), vec!["SELECT * FROM public.addresses\nWHERE id > 5\nAND id < 10\nORDER BY id DESC"]);
     }
 
     #[test]

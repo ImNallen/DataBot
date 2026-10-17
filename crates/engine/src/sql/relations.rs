@@ -543,7 +543,7 @@ mod tests {
         for sql in ["select 1", "  -- note\n select * from orders;", "WITH x AS (select 1) select * from x", "(select 1) union (select 2)", "table orders", "values (1), (2)", "show search_path", "explain select 1", "explain (analyze false) delete from t", "explain analyze select pg_sleep(1)"] {
             assert!(is_read_statement(sql), "{sql}");
         }
-        for sql in ["delete from t", "insert into t values (1)", "update t set a = 1", "with x as (delete from t returning *) select * from x", "explain analyze delete from t", "select 1; select 2", "commit", "set transaction_read_only = off", "copy orders to stdout", "fetch 1 from c", "", "-- only a comment", "create table t (id int)", "truncate t", "do $$ begin end $$"] {
+        for sql in ["delete from t", "insert into t values (1)", "update t set a = 1", "with x as (delete from t returning *) select * from x", "explain analyze delete from t", "select 1; select 2", "select 1\n\nselect 2", "commit", "set transaction_read_only = off", "copy orders to stdout", "fetch 1 from c", "", "-- only a comment", "create table t (id int)", "truncate t", "do $$ begin end $$"] {
             assert!(!is_read_statement(sql), "{sql}");
         }
     }

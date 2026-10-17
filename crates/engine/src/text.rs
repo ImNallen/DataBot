@@ -266,6 +266,13 @@ mod tests {
     }
 
     #[test]
+    fn script_outline_splits_the_users_doc_at_its_blank_line() {
+        let text = "SELECT * FROM public.addresses\nWHERE id > 5\nAND id < 10\nORDER BY id DESC\n\nselect * from public.categories";
+        assert_eq!(script_outline(text, DocOffset(80)), ScriptOutline { statements: vec![r(0, 72), r(74, 105)], at_cursor: Some(1) });
+        assert_eq!(script_outline(text, DocOffset(35)).at_cursor, Some(0));
+    }
+
+    #[test]
     fn script_outline_of_a_doc_without_statements_is_empty() {
         let none = ScriptOutline { statements: vec![], at_cursor: None };
         assert_eq!(script_outline("", DocOffset(0)), none);
