@@ -5,7 +5,7 @@ import { SidebarToggle, windowEdgeInset, windowLeadingInset } from "../../shell/
 import { useWorkspace, type Screen } from "../../state/workspace";
 import { cx } from "../../ui/primitives";
 import { parseQuery } from "../../ui/textMatch";
-import { SearchResults, SectionBody } from "./sections";
+import { SECTION_ACTIONS, SearchResults, SectionBody } from "./sections";
 import { filterSettings, sectionLabel } from "./settingsIndex";
 
 /** Escape clears a settings search, back to the section it started on, and otherwise leaves settings. */
@@ -29,6 +29,7 @@ export function SettingsPage({ hosted, screen }: { hosted: HostedWindow | null; 
   const tokens = parseQuery(screen.query);
   const matches = tokens.length > 0 ? filterSettings(tokens) : null;
   const sidebar = useWorkspace((s) => s.layout.sidebar);
+  const Action = matches ? undefined : SECTION_ACTIONS[screen.section];
   return (
     <div data-testid="settings-page" className="flex min-h-0 flex-1 flex-col">
       <header
@@ -41,6 +42,7 @@ export function SettingsPage({ hosted, screen }: { hosted: HostedWindow | null; 
           <span className="text-faint">/</span>
           <span className="truncate font-medium text-fg">{matches ? "Search results" : sectionLabel(screen.section)}</span>
         </h1>
+        {Action && <Action />}
         {hosted?.chrome === "custom" && <WindowControls hosted={hosted} />}
       </header>
       <div className="min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable_both-edges]">

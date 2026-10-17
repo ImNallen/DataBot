@@ -17,6 +17,7 @@
   --text-ui-13: calc(13px * var(--ui-scale));
   --text-ui-13\.5: calc(13.5px * var(--ui-scale));
   --text-ui-14: calc(14px * var(--ui-scale));
+  --text-ui-26: calc(26px * var(--ui-scale));
   --text-code: var(--code-size);
   --text-code-sm: calc(var(--code-size) - 1px);
 
@@ -52,6 +53,7 @@
   --color-handle-hover: #4a4a4a;
   --color-backdrop: #1f1f1f;
   --color-claude: #d97757;
+  --color-codex: #6f8fdc;
 }
 
 :root {
@@ -110,6 +112,7 @@
   --color-handle-hover: #a0a0a6;
   --color-backdrop: #a0a0a6;
   --color-claude: #c6613f;
+  --color-codex: #3f62bf;
 
   --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.12);
   --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.12);
@@ -154,6 +157,10 @@ textarea,
 .selectable {
   user-select: text;
   -webkit-user-select: text;
+}
+
+@utility limit-stripes {
+  background-image: repeating-linear-gradient(-45deg, transparent 0 5px, color-mix(in srgb, var(--color-fg) 7%, transparent) 5px 7px);
 }
 
 @layer base {
