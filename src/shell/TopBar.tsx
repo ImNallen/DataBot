@@ -1,7 +1,7 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { IconChevronDown, IconPlayerPlayFilled, IconPlayerStopFilled } from "@tabler/icons-react";
 import { ConnectionColorDot } from "../features/connections/connectionColors";
-import { cancelActive, endTransaction, runActive, setTabMode, setTabTarget } from "../features/editor/runActions";
+import { cancelActive, endTransaction, runOrChoose, setTabMode, setTabTarget } from "../features/editor/runActions";
 import type { TxnMode } from "../ipc/bindings";
 import { homeDb } from "../state/dbKey";
 import { useLive } from "../state/live";
@@ -110,7 +110,13 @@ export function TopBar({ hosted }: { hosted: HostedWindow | null }) {
             <Kbd className="bg-control text-muted">Esc</Kbd>
           </Button>
         ) : (
-          <Button data-testid="run-btn" variant="primary" className="w-[104px] justify-center pr-2 pl-2.5 font-medium" onClick={() => runActive()}>
+          <Button
+            data-testid="run-btn"
+            variant="primary"
+            title="Run the selection or the marked statement (⌘↵). On a blank line, or with ⌘⇧↵, choose which statement to run."
+            className="w-[104px] justify-center pr-2 pl-2.5 font-medium"
+            onClick={() => void runOrChoose()}
+          >
             <IconPlayerPlayFilled size={13} className="text-run-icon" />
             Run
             <Kbd className="bg-run-fg/15 text-run-fg/85">⌘↵</Kbd>

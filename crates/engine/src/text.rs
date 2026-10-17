@@ -1,7 +1,7 @@
 use tokio_postgres::types::{Kind, Type};
 
-use crate::model::{CellWrite, ColumnFilter, DocOffset, DocRange, FilterOp, PgTypeRef, TableQuery, TypeCategory};
-use crate::sql::{DmlVerb, StmtKind, StmtSpan};
+use crate::model::{CellWrite, ColumnFilter, DocOffset, DocRange, FilterOp, PgTypeRef, ScriptOutline, TableQuery, TypeCategory};
+use crate::sql::{self, ByteTarget, DmlVerb, StmtKind, StmtSpan};
 
 pub struct OffsetMap<'a> {
     text: &'a str,
@@ -43,6 +43,17 @@ impl<'a> OffsetMap<'a> {
             .nth((n.max(1) - 1) as usize)
             .map_or(stmt.end, |(b, _)| stmt.start + b);
         self.to_utf16(byte)
+    }
+}
+
+/// `at_cursor` comes from `sql::pick`, so it names the statement a `Cursor` run would execute.
+pub fn script_outline(text: &str, cursor: DocOffset) -> ScriptOutline {
+    let map = OffsetMap::new(text);
+    let spans = sql::split_statements(text);
+    let picked = sql::pick(&spans, text, ByteTarget::Cursor(map.from_utf16(cursor)));
+    ScriptOutline {
+        statements: spans.iter().map(|s| map.range(s)).collect(),
+        at_cursor: picked.first().and_then(|p| spans.iter().position(|s| s == p)).and_then(|i| u16::try_from(i).ok()),
     }
 }
 
@@ -234,6 +245,45 @@ pub fn delete_sql(schema: &str, table: &str, key: &[CellWrite]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn r(from: u32, to: u32) -> DocRange {
+        DocRange { from: DocOffset(from), to: DocOffset(to) }
+    }
+
+    #[test]
+    fn script_outline_lists_every_statement_and_preselects_the_one_under_the_cursor() {
+        let text = "select 1 as one;\nselect * from public.orders limit 3;\nselect 'third' as three;";
+        assert_eq!(
+            script_outline(text, DocOffset(30)),
+            ScriptOutline { statements: vec![r(0, 15), r(17, 52), r(54, 77)], at_cursor: Some(1) }
+        );
+    }
+
+    #[test]
+    fn script_outline_at_trailing_whitespace_picks_the_previous_statement() {
+        let text = "select 1;   \n\nselect 2";
+        assert_eq!(script_outline(text, DocOffset(11)), ScriptOutline { statements: vec![r(0, 8), r(14, 22)], at_cursor: Some(0) });
+    }
+
+    #[test]
+    fn script_outline_splits_the_users_doc_at_its_blank_line() {
+        let text = "SELECT * FROM public.addresses\nWHERE id > 5\nAND id < 10\nORDER BY id DESC\n\nselect * from public.categories";
+        assert_eq!(script_outline(text, DocOffset(80)), ScriptOutline { statements: vec![r(0, 72), r(74, 105)], at_cursor: Some(1) });
+        assert_eq!(script_outline(text, DocOffset(35)).at_cursor, Some(0));
+    }
+
+    #[test]
+    fn script_outline_of_a_doc_without_statements_is_empty() {
+        let none = ScriptOutline { statements: vec![], at_cursor: None };
+        assert_eq!(script_outline("", DocOffset(0)), none);
+        assert_eq!(script_outline("  -- nothing\n/* here */\n", DocOffset(5)), none);
+    }
+
+    #[test]
+    fn script_outline_ranges_and_cursor_are_utf16() {
+        let text = "-- 😀é\nselect 1;\nselect 2;";
+        assert_eq!(script_outline(text, DocOffset(18)), ScriptOutline { statements: vec![r(0, 15), r(17, 25)], at_cursor: Some(1) });
+    }
 
     #[test]
     fn utf16_offsets_round_trip_past_emoji_and_cjk() {

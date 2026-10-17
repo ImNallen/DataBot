@@ -32,6 +32,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ipc::relation_detail,
             ipc::exact_row_count,
             ipc::console_configure,
+            ipc::script_outline,
             ipc::console_run,
             ipc::console_cancel,
             ipc::console_commit,
@@ -377,7 +378,7 @@ mod tests {
             }
             checked += 1;
         }
-        assert_eq!(checked, 15, "the sync commands in ipc.rs");
+        assert_eq!(checked, 16, "the sync commands in ipc.rs");
     }
 
     #[test]

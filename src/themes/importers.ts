@@ -25,7 +25,7 @@ export function readJsonc(text: string): Parsed<unknown> {
 }
 
 // Overlay tokens are painted over other colours, so they keep their alpha; every other token is opaque.
-const TRANSLUCENT = new Set<Token>(["codeSelectionMatch", "codeSearchMatch", "codeSearchCurrent", "codeExecuted"]);
+const TRANSLUCENT = new Set<Token>(["codeSelectionMatch", "codeSearchMatch", "codeSearchCurrent", "codeExecuted", "codeRunTarget", "codeRunTargetBorder"]);
 
 function tokenColor(token: Token, value: unknown, background: string): string | null {
   const color = typeof value === "string" ? parseHex(value) : null;

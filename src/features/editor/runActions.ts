@@ -5,6 +5,7 @@ import {
   type ConsoleConfig,
   type DatabaseRef,
   type RunRequest,
+  type RunTarget,
   type Settings,
   type TabId,
   type TableQuery,
@@ -19,6 +20,7 @@ import { isRunning } from "../../state/status";
 import { pendingCount, toChanges, useTableEdits, type TableEdits } from "../../state/tableEdits";
 import { EMPTY_QUERY, isTableTab, nextUntitled, tabTarget, useWorkspace, type ConsoleTarget, type RelationRef, type Tab, type TableTab } from "../../state/workspace";
 import {
+  cursorAnchor,
   cursorOf,
   dropEditor,
   editorStateOf,
@@ -26,8 +28,10 @@ import {
   installEditorBehavior,
   seedEditor,
   showDiagnostics,
+  showRunTarget,
   textOf,
 } from "./editorStates";
+import { openChooser } from "./chooserState";
 import { sqlIdent } from "./sqlIdent";
 
 const ws = () => useWorkspace.getState();
@@ -73,7 +77,7 @@ type PageTarget = { page: number; exactRowCount?: number };
 // run to finish, and the latest one wins. It runs only as a page load, never as the editor's script.
 const queuedPages = new Map<TabId, PageTarget>();
 
-async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
+async function runTab(tabId: TabId, target?: PageTarget, script?: RunTarget): Promise<void> {
   const tab = ws().tabs[tabId];
   if (!tab) return;
   if (target && !isBrowsing(tab)) return;
@@ -95,7 +99,7 @@ async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
     request = {
       kind: "script",
       text,
-      target: sel.empty ? { kind: "cursor", offset: sel.head } : { kind: "selection", from: sel.from, to: sel.to },
+      target: script ?? (sel.empty ? { kind: "cursor", offset: sel.head } : { kind: "selection", from: sel.from, to: sel.to }),
     };
     showDiagnostics(tabId, []);
   }
@@ -114,9 +118,34 @@ async function runTab(tabId: TabId, target?: PageTarget): Promise<void> {
   }
 }
 
-export function runActive(): void {
+/** Runs the selection or the statement at the cursor, or `script` when given. A browsing table tab loads its page. */
+export function runActive(script?: RunTarget): void {
   const id = ws().active;
-  if (id) void runTab(id);
+  if (id) void runTab(id, undefined, script);
+}
+
+/**
+ * Runs the selection or the statement at the cursor. With no statement at the cursor (a blank line), or with `ask` and several
+ * statements, it opens the chooser instead.
+ */
+export async function runOrChoose(ask = false): Promise<void> {
+  const id = ws().active;
+  const tab = id ? ws().tabs[id] : undefined;
+  if (!id || !tab) return;
+  const state = editorStateOf(id);
+  const sel = state.selection.main;
+  if (isBrowsing(tab) || !sel.empty) return runActive();
+  if (isRunning(useLive.getState().consoles[id]) || !(await ensureConsole(tab))) return;
+  const text = state.doc.toString();
+  const outline = await commands.scriptOutline(text, sel.head);
+  const now = editorStateOf(id);
+  if (ws().active !== id || now.doc !== state.doc || !now.selection.main.empty || now.selection.main.head !== sel.head) return;
+  const { statements, atCursor } = outline;
+  if (statements.length === 0 || (atCursor !== null && (!ask || statements.length < 2))) return runTab(id, undefined, { kind: "cursor", offset: sel.head });
+  const anchor = cursorAnchor();
+  if (!anchor) return;
+  const above = statements.findLastIndex((r) => r.to <= sel.head);
+  openChooser({ tabId: id, text, statements, active: { kind: "statement", index: atCursor ?? Math.max(above, 0) }, anchor });
 }
 
 export function cancelActive(): boolean {
@@ -349,6 +378,46 @@ export function onEditorDocChanged(listener: () => void): () => void {
   return () => docListeners.delete(listener);
 }
 
+let markTimer: ReturnType<typeof setTimeout> | undefined;
+let marking = false;
+let markAgain = false;
+
+function refreshRunMark(): void {
+  clearTimeout(markTimer);
+  markTimer = setTimeout(() => void markRunTarget(), 30);
+}
+
+// One outline request at a time; changes made while it is out run one more pass when it returns.
+async function markRunTarget(): Promise<void> {
+  if (marking) {
+    markAgain = true;
+    return;
+  }
+  marking = true;
+  try {
+    do {
+      markAgain = false;
+      await markOnce();
+    } while (markAgain);
+  } finally {
+    marking = false;
+  }
+}
+
+async function markOnce(): Promise<void> {
+  const id = ws().active;
+  const tab = id ? ws().tabs[id] : undefined;
+  if (!id || !tab) return;
+  const state = editorStateOf(id);
+  const sel = state.selection.main;
+  if (isBrowsing(tab) || !sel.empty) return showRunTarget(id, null);
+  const outline = await commands.scriptOutline(state.doc.toString(), sel.head);
+  const now = editorStateOf(id);
+  // A stale reply is dropped: the change that made it stale already scheduled a newer pass.
+  if (ws().active !== id || now.doc !== state.doc || !now.selection.main.empty || now.selection.main.head !== sel.head) return;
+  showRunTarget(id, outline.atCursor === null ? null : (outline.statements[outline.atCursor] ?? null));
+}
+
 function runQueuedPages(s: ReturnType<typeof useLive.getState>) {
   for (const [tabId, target] of queuedPages) {
     if (isRunning(s.consoles[tabId])) continue;
@@ -360,16 +429,23 @@ function runQueuedPages(s: ReturnType<typeof useLive.getState>) {
 export function installRunBehavior(): void {
   useLive.subscribe(showRunErrors);
   useLive.subscribe(runQueuedPages);
+  useWorkspace.subscribe((s, prev) => {
+    if (s.active !== prev.active) refreshRunMark();
+  });
   installEditorBehavior([
     Prec.highest(
       keymap.of([
-        { key: "Mod-Enter", run: () => (runActive(), true) },
+        { key: "Mod-Enter", run: () => (void runOrChoose(), true) },
+        { key: "Mod-Shift-Enter", run: () => (void runOrChoose(true), true) },
         { key: "Escape", run: () => cancelActive() },
       ]),
     ),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) for (const l of docListeners) l();
-      if (u.docChanged || u.selectionSet) ws().setCursor(cursorOf(u.state));
+      if (u.docChanged || u.selectionSet) {
+        ws().setCursor(cursorOf(u.state));
+        refreshRunMark();
+      }
     }),
   ]);
 }

@@ -293,6 +293,7 @@ mod tests {
         assert!(vetted("select 1;\nselect 2"));
         assert!(!vetted("select 1; delete from orders"));
         assert!(!vetted("with x as (delete from t returning *) select * from x"));
+        assert!(!vetted("with x as (delete from t returning *)\n\nselect * from x"), "a blank line inside a CTE does not split it into a clear read");
         assert!(!vetted("select pg_terminate_backend(1)"), "a read calling an unvetted function gets no one-click Run");
         assert!(!vetted("select * into backup from orders"));
         assert!(!vetted(r#"select U&"pg\005fcancel_backend"(0)"#));

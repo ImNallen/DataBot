@@ -97,6 +97,12 @@ pub async fn console_configure(engine: State<'_, Arc<Engine>>, tab_id: TabId, co
 
 #[tauri::command]
 #[specta::specta]
+pub fn script_outline(engine: State<'_, Arc<Engine>>, text: String, cursor: DocOffset) -> ScriptOutline {
+    engine.script_outline(&text, cursor)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn console_run(engine: State<'_, Arc<Engine>>, tab_id: TabId, request: RunRequest) -> Result<RunAccepted, RunError> {
     engine.console_run(tab_id, request).await
 }

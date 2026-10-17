@@ -12,7 +12,7 @@ import { PostgreSQL, sql, type SQLNamespace } from "@codemirror/lang-sql";
 import { bracketMatching, indentOnInput } from "@codemirror/language";
 import { setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
-import { Compartment, EditorState, StateEffect, StateField, type Extension, type TransactionSpec } from "@codemirror/state";
+import { Compartment, countColumn, EditorState, StateEffect, StateField, type Extension, type TransactionSpec } from "@codemirror/state";
 import {
   Decoration,
   drawSelection,
@@ -20,11 +20,13 @@ import {
   highlightActiveLine,
   highlightActiveLineGutter,
   keymap,
+  layer,
   lineNumbers,
   type DecorationSet,
+  type LayerMarker,
 } from "@codemirror/view";
 import type { DocRange, TabId } from "../../ipc/bindings";
-import { editorHighlighting, editorTheme, functionCallStyle } from "./theme";
+import { editorHighlighting, editorTheme, functionCallStyle, LINE_PADDING_LEFT } from "./theme";
 
 const states = new Map<TabId, EditorState>();
 let view: EditorView | null = null;
@@ -56,6 +58,105 @@ const flashField = StateField.define<DecorationSet>({
   },
   provide: (f) => EditorView.decorations.from(f),
 });
+
+const previewEffect = StateEffect.define<DocRange[] | null>();
+
+// The chooser closes on any edit, so its ranges never need mapping.
+const previewField = StateField.define<readonly DocRange[]>({
+  create: () => [],
+  update(ranges, tr) {
+    let next = tr.docChanged ? [] : ranges;
+    for (const e of tr.effects) if (e.is(previewEffect)) next = (e.value ?? []).filter((r) => r.from < r.to && r.to <= tr.state.doc.length);
+    return next;
+  },
+});
+
+const runTargetEffect = StateEffect.define<DocRange | null>();
+
+// With a selection, ⌘↵ runs the selection, so the mark goes the moment one exists and never paints over it.
+const runTargetField = StateField.define<DocRange | null>({
+  create: () => null,
+  update(range, tr) {
+    if (!tr.state.selection.main.empty) return null;
+    let next = range;
+    if (range && tr.docChanged) {
+      const mapped = { from: tr.changes.mapPos(range.from, 1), to: tr.changes.mapPos(range.to, -1) };
+      next = mapped.from < mapped.to ? mapped : null;
+    }
+    for (const e of tr.effects) {
+      if (e.is(runTargetEffect)) next = e.value && e.value.from < e.value.to && e.value.to <= tr.state.doc.length ? e.value : null;
+    }
+    return next;
+  },
+});
+
+class StatementBox implements LayerMarker {
+  constructor(
+    readonly left: number,
+    readonly top: number,
+    readonly width: number,
+    readonly height: number,
+  ) {}
+  draw(): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "cm-run-target";
+    this.update(el);
+    return el;
+  }
+  update(el: HTMLElement): boolean {
+    el.style.left = `${this.left}px`;
+    el.style.top = `${this.top}px`;
+    el.style.width = `${this.width}px`;
+    el.style.height = `${this.height}px`;
+    return true;
+  }
+  eq(o: StatementBox): boolean {
+    return o.left === this.left && o.top === this.top && o.width === this.width && o.height === this.height;
+  }
+}
+
+/**
+ * One rounded box behind a statement, as wide as its longest line. Width comes from columns, not drawn lines, so it holds
+ * still while lines scroll in and out of the viewport, and it stops at the scroller's right edge so a very long line cannot
+ * turn the whole editor into tint.
+ */
+function statementBox(v: EditorView, range: DocRange): StatementBox {
+  const { doc, tabSize } = v.state;
+  const first = doc.lineAt(range.from);
+  const last = doc.lineAt(range.to);
+  const startCol = first.number === last.number ? countColumn(first.text, tabSize, range.from - first.from) : 0;
+  let endCol = 0;
+  for (let n = first.number; n <= last.number; n++) {
+    const line = doc.line(n);
+    endCol = Math.max(endCol, countColumn(line.text, tabSize, Math.min(line.to, range.to) - line.from));
+  }
+  const scroller = v.scrollDOM.getBoundingClientRect();
+  const textLeft = v.contentDOM.getBoundingClientRect().left - scroller.left + v.scrollDOM.scrollLeft + LINE_PADDING_LEFT;
+  const docTop = v.documentTop - scroller.top + v.scrollDOM.scrollTop;
+  const left = textLeft + startCol * v.defaultCharacterWidth - 6;
+  const right = Math.min(textLeft + endCol * v.defaultCharacterWidth + 8, v.scrollDOM.clientWidth - 8);
+  const top = docTop + v.lineBlockAt(range.from).top;
+  const bottom = docTop + v.lineBlockAt(range.to).bottom;
+  return new StatementBox(left, top, Math.max(right - left, 0), bottom - top);
+}
+
+// While the chooser previews a row, its statements take the box's place, so only what would run is boxed.
+function statementBoxes(v: EditorView): readonly LayerMarker[] {
+  const preview = v.state.field(previewField);
+  const target = v.state.field(runTargetField);
+  return (preview.length ? preview : target ? [target] : []).map((r) => statementBox(v, r));
+}
+
+const runTargetLayer = layer({
+  above: false,
+  class: "cm-runTargetLayer",
+  markers: statementBoxes,
+  update: (u) =>
+    u.geometryChanged || u.startState.field(runTargetField) !== u.state.field(runTargetField) || u.startState.field(previewField) !== u.state.field(previewField),
+});
+
+// The selection layer paints behind the text, so the active line's background would hide it.
+const selectingClass = EditorView.editorAttributes.of((v) => (v.state.selection.main.empty ? null : { class: "cm-selecting" }));
 
 function qualifiedTables(tables: readonly Completion[]): CompletionSource {
   return ifNotIn(["String", "QuotedIdentifier", "LineComment", "BlockComment"], (ctx) => {
@@ -97,6 +198,10 @@ function createState(text: string): EditorState {
       keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
       sqlConfig.of(sqlLanguage(undefined, [])),
       flashField,
+      previewField,
+      runTargetField,
+      runTargetLayer,
+      selectingClass,
       editorTheme,
       editorHighlighting,
       functionCallStyle,
@@ -180,8 +285,31 @@ export function flashRanges(id: TabId, ranges: DocRange[]): void {
   setTimeout(() => updateEditor(id, () => ({ effects: clearFlash.of(null) })), 700);
 }
 
+/** Boxes the statements a chooser row would run in place of the run box, and scrolls the first into view; `null` clears them. */
+export function previewRanges(id: TabId, ranges: DocRange[] | null): void {
+  const first = ranges?.[0];
+  updateEditor(id, () => ({ effects: first ? [previewEffect.of(ranges), EditorView.scrollIntoView(first.from, { y: "nearest" })] : previewEffect.of(null) }));
+}
+
+/** Draws a box behind the statement ⌘↵ would run. */
+export function showRunTarget(id: TabId, range: DocRange | null): void {
+  updateEditor(id, () => ({ effects: runTargetEffect.of(range) }));
+}
+
+/** The viewport's cursor line (the editor's top when the cursor is off screen) and the editor's visible right edge. */
+export function cursorAnchor(): { right: number; top: number; bottom: number } | null {
+  if (!view) return null;
+  const box = view.scrollDOM.getBoundingClientRect();
+  const at = view.coordsAtPos(view.state.selection.main.head);
+  return { right: box.right, top: at?.top ?? box.top, bottom: at?.bottom ?? box.top };
+}
+
 export function showDiagnostics(id: TabId, diagnostics: Diagnostic[]): void {
   updateEditor(id, (state) => setDiagnostics(state, diagnostics));
+}
+
+export function moveCursor(id: TabId, pos: number): void {
+  updateEditor(id, (state) => ({ selection: { anchor: Math.min(pos, state.doc.length) }, scrollIntoView: true }));
 }
 
 export function insertAtCursor(id: TabId, text: string): void {
