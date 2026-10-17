@@ -135,7 +135,8 @@ export async function chooseAndRun(): Promise<void> {
   if (isRunning(useLive.getState().consoles[id]) || !(await ensureConsole(tab))) return;
   const text = state.doc.toString();
   const outline = await commands.scriptOutline(text, sel.head);
-  if (ws().active !== id || editorStateOf(id).doc !== state.doc) return;
+  const now = editorStateOf(id);
+  if (ws().active !== id || now.doc !== state.doc || !now.selection.main.empty || now.selection.main.head !== sel.head) return;
   if (outline.statements.length < 2) return runTab(id, undefined, { kind: "cursor", offset: sel.head });
   const anchor = cursorAnchor();
   if (!anchor) return;
