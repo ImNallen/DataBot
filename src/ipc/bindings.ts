@@ -41,6 +41,7 @@ export const commands = {
 	assistantApprove: (chatId: ChatId, approval: ApprovalId, decision: Decision) => typedError<null, ApproveError>(__TAURI_INVOKE("assistant_approve", { chatId, approval, decision })),
 	assistantDelete: (chatId: ChatId) => __TAURI_INVOKE<void>("assistant_delete", { chatId }),
 	providerRefresh: () => __TAURI_INVOKE<void>("provider_refresh"),
+	usageLimits: () => __TAURI_INVOKE<LimitsReport>("usage_limits"),
 };
 
 /* Types */
@@ -612,6 +613,37 @@ export type Layout = {
 	assistantChat: ChatId | null,
 };
 
+export type LimitLevel = "Normal" | "Low" | "Exhausted";
+
+/**  Where a set of subscription limits comes from. */
+export type LimitSource = "Claude" | "Codex";
+
+export type LimitWindow = {
+	/**  Stable within a source: "session", "weekly_all", "weekly_scoped:Opus", "primary". */
+	id: string,
+	/**  "Session", "Weekly", "Weekly · Opus". */
+	label: string,
+	/**  Remaining, 0..=100. */
+	leftPercent: number,
+	resetsAtMs: number | null,
+	level: LimitLevel,
+};
+
+export type LimitsOutcome = 
+/**  `plan` is the short tier the header shows after the name: "Max", "ChatGPT Pro". */
+{ kind: "Ready"; plan: string | null; windows: LimitWindow[] } | 
+/**  Signed in with no subscription limits: an API key, Bedrock, Vertex. */
+{ kind: "NoLimits"; plan: string | null } | { kind: "SignedOut"; signInCommand: string } | { kind: "NotFound"; binary: string } | 
+/**  The CLI started but the exchange failed, timed out, or returned a shape we cannot read. */
+{ kind: "Failed"; message: string };
+
+export type LimitsReport = {
+	/**  When the slower read finished. */
+	checkedAtMs: number,
+	/**  One per `LimitSource::ALL`, in that order. */
+	sources: SourceLimits[],
+};
+
 /**  A model as its provider names it on its command line (`opus`). Valid only against the last probe. */
 export type ModelId = string;
 
@@ -887,6 +919,13 @@ export type Settings = {
 	providers: ProviderConfig[],
 	/**  Seconds between background provider status checks; 0 turns them off. */
 	providerHealthCheckSecs: number,
+};
+
+export type SourceLimits = {
+	source: LimitSource,
+	/**  The Claude provider's display name, or "Codex". */
+	name: string,
+	outcome: LimitsOutcome,
 };
 
 export type SslMode = "Disable" | "Prefer" | "Require" | "VerifyCa" | "VerifyFull";
