@@ -3,10 +3,10 @@ use std::time::Duration;
 use futures_util::future::join_all;
 
 use super::agent::StartError;
-use super::{HostEnv, claude, codex, provider};
+use super::{HostEnv, claude, codex};
 use crate::Shared;
 use crate::console::now_ms;
-use crate::model::{LimitLevel, LimitSource, LimitsOutcome, LimitsReport, ProbeOutcome, ProviderKind, SourceLimits, default_config};
+use crate::model::{LimitLevel, LimitSource, LimitsOutcome, LimitsReport, ProviderKind, SourceLimits, default_config};
 
 const LIMITS_TIMEOUT: Duration = Duration::from_secs(8);
 const LOW_AT_LEFT: u8 = 20;
@@ -26,26 +26,12 @@ impl Shared {
         };
         let read = async {
             match source {
-                LimitSource::Claude => match claude::read_limits(self, &cfg, host).await {
-                    Ok(usage) => {
-                        let probe = self.providers.entries.lock().unwrap().get(&ProviderKind::Claude).and_then(|e| e.outcome.clone());
-                        claude_outcome(usage, probe.as_ref(), &provider(ProviderKind::Claude).info().sign_in_command)
-                    }
-                    Err(outcome) => outcome,
-                },
+                LimitSource::Claude => claude::read_limits(self, &cfg, host).await,
                 LimitSource::Codex => codex::read_limits(self, host).await,
             }
         };
         let outcome = tokio::time::timeout(LIMITS_TIMEOUT, read).await.unwrap_or_else(|_| LimitsOutcome::Failed { message: format!("no answer within {} s", LIMITS_TIMEOUT.as_secs()) });
         SourceLimits { source, name, outcome }
-    }
-}
-
-fn claude_outcome(usage: claude::ClaudeUsage, probe: Option<&ProbeOutcome>, sign_in_command: &str) -> LimitsOutcome {
-    match usage {
-        claude::ClaudeUsage::Limited { plan, windows } => LimitsOutcome::Ready { plan, windows },
-        claude::ClaudeUsage::NoRateLimits { .. } if matches!(probe, Some(ProbeOutcome::SignedOut { .. })) => LimitsOutcome::SignedOut { sign_in_command: sign_in_command.to_owned() },
-        claude::ClaudeUsage::NoRateLimits { plan } => LimitsOutcome::NoLimits { plan },
     }
 }
 
@@ -93,17 +79,5 @@ mod tests {
     fn windows_are_named_by_their_length() {
         let labels: Vec<String> = [300, 10080, 1440, 120, 4320, 90].into_iter().map(window_label_for_minutes).collect();
         assert_eq!(labels, ["Session", "Weekly", "Daily", "2-hour", "3-day", "90-minute"]);
-    }
-
-    #[test]
-    fn no_windows_read_as_signed_out_only_when_the_probe_says_so() {
-        let usage = || claude::ClaudeUsage::NoRateLimits { plan: None };
-        let signed_out = ProbeOutcome::SignedOut { version: "2.1.301".into() };
-        assert_eq!(claude_outcome(usage(), Some(&signed_out), "claude auth login"), LimitsOutcome::SignedOut { sign_in_command: "claude auth login".into() });
-        assert_eq!(claude_outcome(usage(), None, "claude auth login"), LimitsOutcome::NoLimits { plan: None });
-        let ready = ProbeOutcome::Ready { version: "2.1.301".into(), plan: Some("API key".into()), models: Vec::new() };
-        assert_eq!(claude_outcome(usage(), Some(&ready), "claude auth login"), LimitsOutcome::NoLimits { plan: None });
-        let windows = claude::ClaudeUsage::Limited { plan: Some("Max".into()), windows: Vec::new() };
-        assert_eq!(claude_outcome(windows, Some(&signed_out), ""), LimitsOutcome::Ready { plan: Some("Max".into()), windows: Vec::new() }, "windows win over a stale probe");
     }
 }

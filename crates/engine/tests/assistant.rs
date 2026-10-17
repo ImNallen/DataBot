@@ -260,6 +260,12 @@ async fn usage_limits_ask_claude_without_an_initialize_and_find_no_codex_on_an_e
     h.configure_provider(|p| p.enabled = false);
     let off = h.engine.usage_limits().await;
     assert!(matches!(&off.sources[0].outcome, LimitsOutcome::Ready { windows, .. } if windows.len() == 3), "a disabled assistant still shows the account's limits: {off:?}");
+
+    let signed_out = h.dir.path().join("signed-out");
+    std::fs::create_dir_all(&signed_out).unwrap();
+    h.configure_provider(|p| p.config_dir = signed_out.display().to_string());
+    let out = h.engine.usage_limits().await;
+    assert_eq!(out.sources[0].outcome, LimitsOutcome::SignedOut { sign_in_command: "claude auth login".into() }, "a disabled provider is never probed, so the read asks auth status itself");
 }
 
 #[tokio::test]

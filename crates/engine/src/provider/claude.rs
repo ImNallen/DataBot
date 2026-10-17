@@ -11,6 +11,8 @@ use crate::model::{AgentError, Decision, EffortId, EffortOption, LimitWindow, Li
 
 pub(crate) struct Claude;
 
+const SIGN_IN_COMMAND: &str = "claude auth login";
+
 const SERVER: &str = "l1";
 const TOOL_PREFIX: &str = "mcp__l1__";
 const VERSION_TIMEOUT: Duration = Duration::from_secs(4);
@@ -60,7 +62,7 @@ impl Provider for Claude {
             default_binary: "claude".into(),
             config_env: "CLAUDE_CONFIG_DIR".into(),
             config_dir_default: "~/.claude".into(),
-            sign_in_command: "claude auth login".into(),
+            sign_in_command: SIGN_IN_COMMAND.into(),
             owned_flags: ENGINE_FLAGS.iter().map(|f| (*f).to_owned()).collect(),
         }
     }
@@ -601,15 +603,30 @@ fn usage_window(entry: &Value) -> Option<LimitWindow> {
     Some(LimitWindow { id, label, left_percent, resets_at_ms, level: limits::level(left_percent, entry["severity"].as_str()) })
 }
 
-pub(crate) async fn read_limits(shared: &Shared, cfg: &ProviderConfig, host: &HostEnv) -> Result<ClaudeUsage, LimitsOutcome> {
-    let spec = Claude.launch(cfg, host, &SessionStart { model: None, effort: None, resume: None }).map_err(|e| match e {
-        AgentError::NotFound { binary } => LimitsOutcome::NotFound { binary },
-        other => limits::start_failed(agent::StartError::Reported(other)),
-    })?;
-    match agent::exchange(shared, &spec, UsageExchange).await {
-        Ok(Ok(usage)) => Ok(usage),
-        Ok(Err(message)) => Err(LimitsOutcome::Failed { message }),
-        Err(e) => Err(limits::start_failed(e)),
+pub(crate) async fn read_limits(shared: &Shared, cfg: &ProviderConfig, host: &HostEnv) -> LimitsOutcome {
+    let spec = match Claude.launch(cfg, host, &SessionStart { model: None, effort: None, resume: None }) {
+        Ok(spec) => spec,
+        Err(AgentError::NotFound { binary }) => return LimitsOutcome::NotFound { binary },
+        Err(other) => return limits::start_failed(agent::StartError::Reported(other)),
+    };
+    let usage = match agent::exchange(shared, &spec, UsageExchange).await {
+        Ok(Ok(usage)) => usage,
+        Ok(Err(message)) => return LimitsOutcome::Failed { message },
+        Err(e) => return limits::start_failed(e),
+    };
+    let signed_in = match &usage {
+        ClaudeUsage::Limited { .. } => None,
+        ClaudeUsage::NoRateLimits { .. } => quick_probe(cfg, host).await.ok().map(|quick| quick.signed_in),
+    };
+    usage_outcome(usage, signed_in)
+}
+
+/// `get_usage` answers a signed-out CLI and an API-key sign-in alike, so `auth status` decides.
+fn usage_outcome(usage: ClaudeUsage, signed_in: Option<bool>) -> LimitsOutcome {
+    match usage {
+        ClaudeUsage::Limited { plan, windows } => LimitsOutcome::Ready { plan, windows },
+        ClaudeUsage::NoRateLimits { .. } if signed_in == Some(false) => LimitsOutcome::SignedOut { sign_in_command: SIGN_IN_COMMAND.into() },
+        ClaudeUsage::NoRateLimits { plan } => LimitsOutcome::NoLimits { plan },
     }
 }
 
@@ -908,6 +925,16 @@ mod tests {
         let unavailable = json!({ "subscription_type": "pro", "rate_limits_available": false, "rate_limits": { "limits": [] } });
         assert_eq!(parse_usage(&unavailable), Ok(ClaudeUsage::NoRateLimits { plan: Some("Pro".into()) }));
         assert_eq!(parse_usage(&json!({ "rate_limits_available": true, "rate_limits": {} })), Err("get_usage answered with no rate_limits.limits list".into()));
+    }
+
+    #[test]
+    fn no_rate_limits_read_as_signed_out_only_when_auth_status_says_so() {
+        let none = || ClaudeUsage::NoRateLimits { plan: None };
+        assert_eq!(usage_outcome(none(), Some(false)), LimitsOutcome::SignedOut { sign_in_command: "claude auth login".into() });
+        assert_eq!(usage_outcome(none(), Some(true)), LimitsOutcome::NoLimits { plan: None });
+        assert_eq!(usage_outcome(none(), None), LimitsOutcome::NoLimits { plan: None }, "an auth status that failed claims nothing");
+        let limited = ClaudeUsage::Limited { plan: Some("Max".into()), windows: Vec::new() };
+        assert_eq!(usage_outcome(limited, None), LimitsOutcome::Ready { plan: Some("Max".into()), windows: Vec::new() });
     }
 
     #[test]
