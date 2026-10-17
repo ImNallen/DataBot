@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{AgentEvent, BlockKey, BoxFuture, Codec, Handshake, HostEnv, LaunchSpec, ModelResult, Open, Provider, Quick, ReplyTo, SessionStart, Step};
-use crate::model::{AgentError, Decision, EffortId, EffortOption, ModelId, ModelOption, ProbeOutcome, ProviderConfig, ProviderInfo, ToolCallId, TurnOutcome};
+use super::agent::{Exchange, Exchanged};
+use super::{AgentEvent, BlockKey, BoxFuture, Codec, Handshake, HostEnv, LaunchSpec, ModelResult, Open, Provider, Quick, ReplyTo, SessionStart, Step, agent, capitalize, limits};
+use crate::Shared;
+use crate::model::{AgentError, Decision, EffortId, EffortOption, LimitWindow, LimitsOutcome, ModelId, ModelOption, ProbeOutcome, ProviderConfig, ProviderInfo, ToolCallId, TurnOutcome};
 
 pub(crate) struct Claude;
 
@@ -89,7 +90,7 @@ impl Provider for Claude {
     }
 
     fn launch(&self, cfg: &ProviderConfig, host: &HostEnv, start: &SessionStart) -> Result<LaunchSpec, AgentError> {
-        let program = resolve_binary(cfg, host).map_err(|binary| AgentError::NotFound { binary })?;
+        let program = host.resolve(&cfg.binary_path, "claude").map_err(|binary| AgentError::NotFound { binary })?;
         let (env_set, env_remove) = env(cfg, host, std::env::vars_os());
         Ok(LaunchSpec { program, args: argv(start, &parse_launch_args(&cfg.launch_args)), env_set, env_remove, cwd: host.cwd.clone() })
     }
@@ -99,33 +100,8 @@ impl Provider for Claude {
     }
 }
 
-fn resolve_binary(cfg: &ProviderConfig, host: &HostEnv) -> Result<PathBuf, String> {
-    let name = cfg.binary_path.trim();
-    let name = if name.is_empty() { "claude" } else { name };
-    if name.contains('/') || name.starts_with('~') {
-        let path = host.expand_home(name);
-        let path = if path.is_absolute() { path } else { std::env::current_dir().map(|cwd| cwd.join(&path)).unwrap_or(path) };
-        return if is_executable(&path) { Ok(path) } else { Err(path.display().to_string()) };
-    }
-    let dirs = host.dirs();
-    dirs.iter().map(|d| d.join(name)).find(|p| is_executable(p)).ok_or_else(|| format!("{name} on PATH ({})", dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(":")))
-}
-
-fn is_executable(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else { return false };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.is_file() && meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        meta.is_file()
-    }
-}
-
 async fn quick_probe(cfg: &ProviderConfig, host: &HostEnv) -> Result<Quick, ProbeOutcome> {
-    let program = resolve_binary(cfg, host).map_err(|binary| ProbeOutcome::NotFound { binary })?;
+    let program = host.resolve(&cfg.binary_path, "claude").map_err(|binary| ProbeOutcome::NotFound { binary })?;
     let (env_set, env_remove) = env(cfg, host, std::env::vars_os());
     let run = |args: &'static [&'static str], limit: Duration| {
         let mut command = tokio::process::Command::new(&program);
@@ -212,10 +188,7 @@ fn effort_label(id: &str) -> String {
         "high" => "High".into(),
         "xhigh" => "Extra high".into(),
         "max" => "Max".into(),
-        other => {
-            let mut chars = other.chars();
-            chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
-        }
+        other => capitalize(other),
     }
 }
 
@@ -574,9 +547,76 @@ impl Codec for ClaudeCodec {
     }
 }
 
+const USAGE_REQUEST_ID: &str = "l1-usage";
+
+pub(crate) struct UsageExchange;
+
+impl Exchange for UsageExchange {
+    type Output = Result<ClaudeUsage, String>;
+
+    fn open(&mut self) -> Vec<String> {
+        vec![json!({ "type": "control_request", "request_id": USAGE_REQUEST_ID, "request": { "subtype": "get_usage", "skip_behaviors": true } }).to_string()]
+    }
+
+    fn read(&mut self, line: &str) -> Exchanged<Self::Output> {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return Exchanged::Skip };
+        let response = &v["response"];
+        if v["type"] != "control_response" || response["request_id"] != USAGE_REQUEST_ID {
+            return Exchanged::Skip;
+        }
+        Exchanged::Done(if response["subtype"] == "success" { parse_usage(&response["response"]) } else { Err(response["error"].as_str().unwrap_or("get_usage failed").to_owned()) })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum ClaudeUsage {
+    Limited { plan: Option<String>, windows: Vec<LimitWindow> },
+    NoRateLimits { plan: Option<String> },
+}
+
+pub(crate) fn parse_usage(response: &Value) -> Result<ClaudeUsage, String> {
+    let plan = plan_label(response["subscription_type"].as_str(), None, None).map(|p| p.strip_prefix("Claude ").map(str::to_owned).unwrap_or(p));
+    let rate_limits = &response["rate_limits"];
+    if response["rate_limits_available"] != true || rate_limits.is_null() {
+        return Ok(ClaudeUsage::NoRateLimits { plan });
+    }
+    let entries = rate_limits["limits"].as_array().ok_or("get_usage answered with no rate_limits.limits list")?;
+    Ok(ClaudeUsage::Limited { plan, windows: entries.iter().filter_map(usage_window).collect() })
+}
+
+fn usage_window(entry: &Value) -> Option<LimitWindow> {
+    let left_percent = 100 - entry["percent"].as_f64()?.clamp(0.0, 100.0).round() as u8;
+    let kind = entry["kind"].as_str().unwrap_or_default();
+    let scope = entry["scope"]["model"]["display_name"].as_str();
+    let base = match kind {
+        "session" => "Session".to_owned(),
+        "weekly_all" | "weekly_scoped" => "Weekly".to_owned(),
+        _ => capitalize(entry["group"].as_str().unwrap_or(kind)),
+    };
+    let (id, label) = match scope {
+        Some(scope) => (format!("{kind}:{scope}"), format!("{base} · {scope}")),
+        None => (kind.to_owned(), base),
+    };
+    let resets_at_ms = entry["resets_at"].as_str().and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok()).map(|at| at.timestamp_millis());
+    Some(LimitWindow { id, label, left_percent, resets_at_ms, level: limits::level(left_percent, entry["severity"].as_str()) })
+}
+
+pub(crate) async fn read_limits(shared: &Shared, cfg: &ProviderConfig, host: &HostEnv) -> Result<ClaudeUsage, LimitsOutcome> {
+    let spec = Claude.launch(cfg, host, &SessionStart { model: None, effort: None, resume: None }).map_err(|e| match e {
+        AgentError::NotFound { binary } => LimitsOutcome::NotFound { binary },
+        other => limits::start_failed(agent::StartError::Reported(other)),
+    })?;
+    match agent::exchange(shared, &spec, UsageExchange).await {
+        Ok(Ok(usage)) => Ok(usage),
+        Ok(Err(message)) => Err(LimitsOutcome::Failed { message }),
+        Err(e) => Err(limits::start_failed(e)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::LimitLevel;
     use crate::provider::ToolSpec;
 
     const INITIALIZE: &str = include_str!("../../tests/fixtures/claude/initialize.jsonl");
@@ -837,6 +877,64 @@ mod tests {
         assert_eq!(codec.read(&subagent.to_string()), Step::default(), "a subagent's text is not the reply");
     }
 
+    const USAGE: &str = include_str!("../../tests/fixtures/claude/usage.jsonl");
+    const USAGE_SIGNED_OUT: &str = include_str!("../../tests/fixtures/claude/usage-signed-out.jsonl");
+
+    #[test]
+    fn the_usage_request_is_one_get_usage_control_request() {
+        assert_eq!(UsageExchange.open().iter().map(|l| json(l)).collect::<Vec<_>>(), [json!({ "type": "control_request", "request_id": "l1-usage", "request": { "subtype": "get_usage", "skip_behaviors": true } })]);
+    }
+
+    #[test]
+    fn the_captured_usage_reads_three_windows_from_the_limits_list_alone() {
+        let Exchanged::Done(Ok(usage)) = UsageExchange.read(USAGE.trim()) else { panic!("the captured reply is the answer") };
+        let window = |id: &str, label: &str, left_percent: u8, resets_at_ms: i64| LimitWindow { id: id.into(), label: label.into(), left_percent, resets_at_ms: Some(resets_at_ms), level: LimitLevel::Normal };
+        assert_eq!(
+            usage,
+            ClaudeUsage::Limited {
+                plan: Some("Max".into()),
+                windows: vec![
+                    window("session", "Session", 92, 1_792_198_799_595),
+                    window("weekly_all", "Weekly", 98, 1_792_774_799_595),
+                    window("weekly_scoped:Fable", "Weekly · Fable", 98, 1_792_774_799_595),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn signed_out_the_reply_succeeds_with_no_rate_limits() {
+        assert_eq!(UsageExchange.read(USAGE_SIGNED_OUT.trim()), Exchanged::Done(Ok(ClaudeUsage::NoRateLimits { plan: None })));
+        let unavailable = json!({ "subscription_type": "pro", "rate_limits_available": false, "rate_limits": { "limits": [] } });
+        assert_eq!(parse_usage(&unavailable), Ok(ClaudeUsage::NoRateLimits { plan: Some("Pro".into()) }));
+        assert_eq!(parse_usage(&json!({ "rate_limits_available": true, "rate_limits": {} })), Err("get_usage answered with no rate_limits.limits list".into()));
+    }
+
+    #[test]
+    fn a_window_clamps_used_percent_names_an_unknown_kind_by_group_and_needs_a_percent() {
+        let reply = json!({ "subscription_type": "max", "rate_limits_available": true, "rate_limits": { "limits": [
+            { "kind": "session", "group": "session", "percent": 140, "severity": "critical", "resets_at": "2026-10-17T01:00:00+00:00", "scope": null },
+            { "kind": "monthly_scoped", "group": "monthly", "percent": 85.4, "severity": "warning", "resets_at": null, "scope": { "model": { "display_name": "Opus" } } },
+            { "kind": "weekly_all", "group": "weekly", "percent": null, "severity": "normal" },
+        ] } });
+        let Ok(ClaudeUsage::Limited { windows, .. }) = parse_usage(&reply) else { panic!("the reply has limits") };
+        assert_eq!(
+            windows,
+            [
+                LimitWindow { id: "session".into(), label: "Session".into(), left_percent: 0, resets_at_ms: Some(1_792_198_800_000), level: LimitLevel::Exhausted },
+                LimitWindow { id: "monthly_scoped:Opus".into(), label: "Monthly · Opus".into(), left_percent: 15, resets_at_ms: None, level: LimitLevel::Low },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_usage_exchange_skips_other_frames_and_reports_an_error_reply() {
+        assert_eq!(UsageExchange.read(r#"{"type":"system","subtype":"init"}"#), Exchanged::Skip);
+        assert_eq!(UsageExchange.read(r#"{"type":"control_response","response":{"subtype":"success","request_id":"req_1","response":{}}}"#), Exchanged::Skip);
+        assert_eq!(UsageExchange.read("not json"), Exchanged::Skip);
+        assert_eq!(UsageExchange.read(r#"{"type":"control_response","response":{"subtype":"error","request_id":"l1-usage","error":"Unknown subtype"}}"#), Exchanged::Done(Err("Unknown subtype".into())));
+    }
+
     #[test]
     fn versions_and_auth_status_parse_from_the_captured_outputs() {
         assert_eq!(parse_version("2.1.301 (Claude Code)\n").as_deref(), Some("2.1.301"));
@@ -926,13 +1024,12 @@ mod tests {
         let claude = bin.join("claude");
         std::fs::write(&claude, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let host = HostEnv { path: std::env::join_paths([bin.clone(), PathBuf::from("/nonexistent")]).unwrap(), home: dir.path().to_owned(), cwd: dir.path().join("assistant") };
-        let cfg = |binary: &str| ProviderConfig { provider: crate::model::ProviderKind::Claude, enabled: true, display_name: "Claude".into(), binary_path: binary.into(), config_dir: String::new(), launch_args: String::new() };
-        assert_eq!(resolve_binary(&cfg(""), &host).unwrap(), claude);
-        assert_eq!(resolve_binary(&cfg("~/bin/claude"), &host).unwrap(), claude);
-        assert_eq!(resolve_binary(&cfg("/nope"), &host).unwrap_err(), "/nope");
-        assert_eq!(resolve_binary(&cfg("missing"), &host).unwrap_err(), format!("missing on PATH ({}:/nonexistent)", bin.display()));
+        let host = HostEnv { path: std::env::join_paths([bin.clone(), std::path::PathBuf::from("/nonexistent")]).unwrap(), home: dir.path().to_owned(), cwd: dir.path().join("assistant") };
+        assert_eq!(host.resolve("", "claude").unwrap(), claude);
+        assert_eq!(host.resolve("~/bin/claude", "claude").unwrap(), claude);
+        assert_eq!(host.resolve("/nope", "claude").unwrap_err(), "/nope");
+        assert_eq!(host.resolve("missing", "claude").unwrap_err(), format!("missing on PATH ({}:/nonexistent)", bin.display()));
         let here = std::env::current_dir().unwrap();
-        assert_eq!(resolve_binary(&cfg("nope/claude"), &host).unwrap_err(), here.join("nope/claude").display().to_string(), "a relative path is taken against the engine's own directory");
+        assert_eq!(host.resolve("nope/claude", "claude").unwrap_err(), here.join("nope/claude").display().to_string(), "a relative path is taken against the engine's own directory");
     }
 }

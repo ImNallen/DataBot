@@ -1281,6 +1281,12 @@ impl Engine {
         self.shared.probe_all(ProbeDepth::Full);
     }
 
+    /// Asks the Claude and Codex CLIs for the subscription limits left, each bounded by 8 s.
+    /// The children sit in the process groups that quit kills.
+    pub async fn usage_limits(&self) -> LimitsReport {
+        self.shared.read_limits().await
+    }
+
     /// Stops every assistant turn, then kills any agent process still alive. The shell calls it
     /// on quit. It returns within `SHUTDOWN_BOUND`, so the shell's own bound must be larger.
     pub async fn shutdown(&self) {

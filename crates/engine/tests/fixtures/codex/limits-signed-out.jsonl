@@ -1,0 +1,4 @@
+{"id":0,"result":{"userAgent":"l1data/0.163.0 (Mac OS 27.0.1; arm64) unknown (l1data; 0.0.0)","codexHome":"/Users/user/.codex","platformFamily":"unix","platformOs":"macos"}}
+{"method":"remoteControl/status/changed","params":{"status":"disabled","serverName":"host.local","installationId":"00000000-0000-4000-8000-000000000000","environmentId":null},"emittedAtMs":1792197577117}
+{"error":{"code":-32600,"message":"codex account authentication required to read rate limits"},"id":2}
+{"id":1,"result":{"account":null,"requiresOpenaiAuth":true,"workspaceRouting":null}}
