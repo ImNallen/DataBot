@@ -308,6 +308,10 @@ export function showDiagnostics(id: TabId, diagnostics: Diagnostic[]): void {
   updateEditor(id, (state) => setDiagnostics(state, diagnostics));
 }
 
+export function moveCursor(id: TabId, pos: number): void {
+  updateEditor(id, (state) => ({ selection: { anchor: Math.min(pos, state.doc.length) }, scrollIntoView: true }));
+}
+
 export function insertAtCursor(id: TabId, text: string): void {
   updateEditor(id, (state) => {
     const { from, to } = state.selection.main;

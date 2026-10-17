@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode 
 import { createPortal } from "react-dom";
 import { useWorkspace } from "../../state/workspace";
 import { MENU_ITEM, MENU_PANEL, cx } from "../../ui/primitives";
+import { moveCursor } from "./editorStates";
 import { onEditorDocChanged, runActive } from "./runActions";
 import {
   choiceTarget,
@@ -66,6 +67,8 @@ function ChooserPanel({ chooser }: { chooser: OpenChooser }) {
 
   const run = (choice: Choice) => {
     closeChooser();
+    const chosen = choice.kind === "statement" ? statements[choice.index] : undefined;
+    if (chosen) moveCursor(chooser.tabId, chosen.to);
     runActive(choiceTarget(statements, choice));
   };
 
