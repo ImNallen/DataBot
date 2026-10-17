@@ -201,10 +201,14 @@ pub fn pick(spans: &[StmtSpan], sql: &str, target: ByteTarget) -> Vec<StmtSpan> 
             })
             .collect(),
         ByteTarget::Selection { from, .. } => pick(spans, sql, ByteTarget::Cursor(from)),
+        // A cursor between statements picks one only on a line that statement shares; a blank line picks nothing.
         ByteTarget::Cursor(off) => {
+            let line_start = sql[..off].rfind('\n').map_or(0, |n| n + 1);
+            let line_end = sql[off..].find('\n').map_or(sql.len(), |n| off + n);
+            let on_line = |s: &&StmtSpan| s.start <= line_end && terminator_end(sql, s) >= line_start;
             let under = spans.iter().find(|s| s.start <= off && off <= terminator_end(sql, s));
-            let previous = || spans.iter().rev().find(|s| s.end <= off);
-            let next = || spans.iter().find(|s| s.start > off);
+            let previous = || spans.iter().rev().filter(on_line).find(|s| s.end <= off);
+            let next = || spans.iter().filter(on_line).find(|s| s.start > off);
             under.or_else(previous).or_else(next).into_iter().copied().collect()
         }
     }
@@ -432,23 +436,33 @@ mod tests {
     }
 
     #[test]
-    fn cursor_picks_the_statement_under_it_or_the_previous_one() {
-        let sql = "select 1;\n\nselect 2;\n\n";
+    fn cursor_picks_the_statement_under_it_or_on_its_line() {
+        let sql = "select 1;  \n\nselect 2; -- note\n-- alone\n";
         let spans = split_statements(sql);
         let at = |off: usize| pick(&spans, sql, ByteTarget::Cursor(off)).iter().map(|s| s.text(sql)).collect::<Vec<_>>();
         assert_eq!(at(0), vec!["select 1"]);
         assert_eq!(at(8), vec!["select 1"]);
-        assert_eq!(at(10), vec!["select 1"]);
-        assert_eq!(at(13), vec!["select 2"]);
-        assert_eq!(at(sql.len()), vec!["select 2"]);
+        assert_eq!(at(11), vec!["select 1"], "trailing spaces after the semicolon");
+        assert_eq!(at(sql.find("note").unwrap()), vec!["select 2"], "a comment on the statement's line");
+        assert_eq!(texts_at(sql, &spans, 12), Vec::<&str>::new(), "the blank line between them");
+        assert_eq!(texts_at(sql, &spans, sql.find("alone").unwrap()), Vec::<&str>::new(), "a comment-only line");
+        assert_eq!(texts_at(sql, &spans, sql.len()), Vec::<&str>::new(), "the empty last line");
     }
 
     #[test]
-    fn cursor_before_everything_picks_the_first_statement() {
+    fn cursor_on_a_blank_line_picks_nothing_unless_a_statement_spans_it() {
         let sql = "\n\n  select 1";
         let spans = split_statements(sql);
-        assert_eq!(pick(&spans, sql, ByteTarget::Cursor(0)), vec![spans[0]]);
+        assert!(pick(&spans, sql, ByteTarget::Cursor(0)).is_empty());
+        assert_eq!(pick(&spans, sql, ByteTarget::Cursor(2)), vec![spans[0]], "the statement's own indentation");
+        let with = "with x as (select 1)\n\nselect * from x";
+        let spans = split_statements(with);
+        assert_eq!(texts_at(with, &spans, with.find('\n').unwrap() + 1), vec![with], "a blank line inside one statement");
         assert!(pick(&[], "", ByteTarget::Cursor(0)).is_empty());
+    }
+
+    fn texts_at<'a>(sql: &'a str, spans: &[StmtSpan], off: usize) -> Vec<&'a str> {
+        pick(spans, sql, ByteTarget::Cursor(off)).iter().map(|s| s.text(sql)).collect()
     }
 
     #[test]

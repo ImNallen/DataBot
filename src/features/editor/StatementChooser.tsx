@@ -7,6 +7,7 @@ import { onEditorDocChanged, runActive } from "./runActions";
 import {
   choiceTarget,
   closeChooser,
+  hasAllRow,
   highlightChoice,
   moveChoice,
   startLines,
@@ -127,14 +128,18 @@ function ChooserPanel({ chooser }: { chooser: OpenChooser }) {
           </>,
         ),
       )}
-      <div role="separator" className="my-1 h-px bg-control" />
-      {row(
-        { kind: "all" },
-        "statement-choice-all",
+      {hasAllRow(statements.length) && (
         <>
-          <span className="w-4 shrink-0" />
-          {`All ${statements.length} statements`}
-        </>,
+          <div role="separator" className="my-1 h-px bg-control" />
+          {row(
+            { kind: "all" },
+            "statement-choice-all",
+            <>
+              <span className="w-4 shrink-0" />
+              {`All ${statements.length} statements`}
+            </>,
+          )}
+        </>
       )}
     </div>
   );

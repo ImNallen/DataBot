@@ -29,6 +29,9 @@ it("moves through the statements and then All, wrapping at both ends", () => {
   expect(moveChoice(second, 3, "Home")).toEqual({ kind: "statement", index: 0 });
   expect(moveChoice(second, 3, "End")).toEqual({ kind: "all" });
   expect(moveChoice(second, 3, "x")).toBeNull();
+  const only = { kind: "statement", index: 0 } as const;
+  expect(moveChoice(only, 1, "ArrowDown")).toEqual(only);
+  expect(moveChoice(only, 1, "End")).toEqual(only);
 });
 
 it("runs a chosen statement as its range and All as the whole script", () => {

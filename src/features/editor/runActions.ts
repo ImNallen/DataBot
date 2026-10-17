@@ -124,8 +124,11 @@ export function runActive(script?: RunTarget): void {
   if (id) void runTab(id, undefined, script);
 }
 
-/** Asks which statement to run when the script holds several and nothing is selected; otherwise runs like `runActive`. */
-export async function chooseAndRun(): Promise<void> {
+/**
+ * Runs the selection or the statement at the cursor. With no statement at the cursor (a blank line), or with `ask` and several
+ * statements, it opens the chooser instead.
+ */
+export async function runOrChoose(ask = false): Promise<void> {
   const id = ws().active;
   const tab = id ? ws().tabs[id] : undefined;
   if (!id || !tab) return;
@@ -137,10 +140,12 @@ export async function chooseAndRun(): Promise<void> {
   const outline = await commands.scriptOutline(text, sel.head);
   const now = editorStateOf(id);
   if (ws().active !== id || now.doc !== state.doc || !now.selection.main.empty || now.selection.main.head !== sel.head) return;
-  if (outline.statements.length < 2) return runTab(id, undefined, { kind: "cursor", offset: sel.head });
+  const { statements, atCursor } = outline;
+  if (statements.length === 0 || (atCursor !== null && (!ask || statements.length < 2))) return runTab(id, undefined, { kind: "cursor", offset: sel.head });
   const anchor = cursorAnchor();
   if (!anchor) return;
-  openChooser({ tabId: id, text, statements: outline.statements, active: { kind: "statement", index: outline.atCursor ?? 0 }, anchor });
+  const above = statements.findLastIndex((r) => r.to <= sel.head);
+  openChooser({ tabId: id, text, statements, active: { kind: "statement", index: atCursor ?? Math.max(above, 0) }, anchor });
 }
 
 export function cancelActive(): boolean {
@@ -430,8 +435,8 @@ export function installRunBehavior(): void {
   installEditorBehavior([
     Prec.highest(
       keymap.of([
-        { key: "Mod-Enter", run: () => (runActive(), true) },
-        { key: "Mod-Shift-Enter", run: () => (void chooseAndRun(), true) },
+        { key: "Mod-Enter", run: () => (void runOrChoose(), true) },
+        { key: "Mod-Shift-Enter", run: () => (void runOrChoose(true), true) },
         { key: "Escape", run: () => cancelActive() },
       ]),
     ),

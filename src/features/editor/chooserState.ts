@@ -21,11 +21,14 @@ export function choiceTarget(statements: DocRange[], choice: Choice): RunTarget 
   return range ? { kind: "selection", from: range.from, to: range.to } : { kind: "all" };
 }
 
-/** The chooser's rows are the statements, then "All"; arrows wrap. */
+/** One statement or more get the "All" row only from two up. */
+export const hasAllRow = (count: number) => count > 1;
+
+/** The chooser's rows are the statements, then "All" when there are several; arrows wrap. */
 export function moveChoice(active: Choice, count: number, key: string): Choice | null {
-  const rows = count + 1;
+  const rows = hasAllRow(count) ? count + 1 : count;
   const at = active.kind === "all" ? count : active.index;
-  const to = { ArrowDown: (at + 1) % rows, ArrowUp: (at + rows - 1) % rows, Home: 0, End: count }[key];
+  const to = { ArrowDown: (at + 1) % rows, ArrowUp: (at + rows - 1) % rows, Home: 0, End: rows - 1 }[key];
   if (to === undefined) return null;
   return to === count ? { kind: "all" } : { kind: "statement", index: to };
 }
