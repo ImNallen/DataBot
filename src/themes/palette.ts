@@ -128,7 +128,7 @@ const RECIPES: Record<Appearance, Record<Token, Recipe>> = {
     codeSearchMatch: fixed("#ffb9002e"),
     codeSearchCurrent: fixed("#ffb90066"),
     codeExecuted: glaze(0.16),
-    codeRunTarget: glaze(0.09),
+    codeRunTarget: glaze(0.15),
     codePreview: glaze(0.28),
   },
   light: {
@@ -173,7 +173,7 @@ const RECIPES: Record<Appearance, Record<Token, Recipe>> = {
     codeSearchMatch: fixed("#ffb9004d"),
     codeSearchCurrent: fixed("#ffa0008c"),
     codeExecuted: glaze(0.1),
-    codeRunTarget: glaze(0.07),
+    codeRunTarget: glaze(0.11),
     codePreview: glaze(0.18),
   },
 };

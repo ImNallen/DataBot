@@ -71,26 +71,26 @@ const previewField = StateField.define<DecorationSet>({
 });
 
 const runTargetEffect = StateEffect.define<DocRange | null>();
-const runTargetLine = Decoration.line({ class: "cm-run-target" });
+const runTargetMark = Decoration.mark({ class: "cm-run-target" });
 
+// With a selection, ⌘↵ runs the selection, so the mark goes the moment one exists and never paints over it.
 const runTargetField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(deco, tr) {
+    if (!tr.state.selection.main.empty) return Decoration.none;
     let next = deco.map(tr.changes);
     for (const e of tr.effects) {
       if (!e.is(runTargetEffect)) continue;
-      const doc = tr.state.doc;
       const range = e.value;
-      const lines = [];
-      if (range && range.to <= doc.length) {
-        for (let n = doc.lineAt(range.from).number; n <= doc.lineAt(range.to).number; n++) lines.push(runTargetLine.range(doc.line(n).from));
-      }
-      next = Decoration.set(lines);
+      next = range && range.from < range.to && range.to <= tr.state.doc.length ? Decoration.set(runTargetMark.range(range.from, range.to)) : Decoration.none;
     }
     return next;
   },
   provide: (f) => EditorView.decorations.from(f),
 });
+
+// The selection layer paints behind the text, so the active line's background would hide it.
+const selectingClass = EditorView.editorAttributes.of((v) => (v.state.selection.main.empty ? null : { class: "cm-selecting" }));
 
 function qualifiedTables(tables: readonly Completion[]): CompletionSource {
   return ifNotIn(["String", "QuotedIdentifier", "LineComment", "BlockComment"], (ctx) => {
@@ -134,6 +134,7 @@ function createState(text: string): EditorState {
       flashField,
       previewField,
       runTargetField,
+      selectingClass,
       editorTheme,
       editorHighlighting,
       functionCallStyle,
@@ -223,7 +224,7 @@ export function previewRanges(id: TabId, ranges: DocRange[] | null): void {
   updateEditor(id, () => ({ effects: first ? [previewEffect.of(ranges), EditorView.scrollIntoView(first.from, { y: "nearest" })] : previewEffect.of(null) }));
 }
 
-/** Marks the lines of the statement ⌘↵ would run. */
+/** Marks the text of the statement ⌘↵ would run. */
 export function showRunTarget(id: TabId, range: DocRange | null): void {
   updateEditor(id, () => ({ effects: runTargetEffect.of(range) }));
 }

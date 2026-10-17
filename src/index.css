@@ -78,7 +78,7 @@
   --code-search-match: rgba(255, 185, 0, 0.18);
   --code-search-current: rgba(255, 185, 0, 0.4);
   --code-executed: rgba(80, 162, 255, 0.13);
-  --code-run-target: rgba(80, 162, 255, 0.08);
+  --code-run-target: rgba(80, 162, 255, 0.14);
   --code-preview: rgba(80, 162, 255, 0.24);
 }
 
@@ -129,7 +129,7 @@
   --code-search-match: rgba(255, 185, 0, 0.3);
   --code-search-current: rgba(255, 160, 0, 0.55);
   --code-executed: rgba(37, 99, 235, 0.1);
-  --code-run-target: rgba(37, 99, 235, 0.06);
+  --code-run-target: rgba(37, 99, 235, 0.1);
   --code-preview: rgba(37, 99, 235, 0.16);
 }
 
