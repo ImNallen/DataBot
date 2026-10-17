@@ -44,6 +44,7 @@ export const TOKENS = {
   codeSearchCurrent: "--code-search-current",
   codeExecuted: "--code-executed",
   codeRunTarget: "--code-run-target",
+  codeRunTargetBorder: "--code-run-target-border",
   codePreview: "--code-preview",
 } as const;
 
@@ -129,6 +130,7 @@ const RECIPES: Record<Appearance, Record<Token, Recipe>> = {
     codeSearchCurrent: fixed("#ffb90066"),
     codeExecuted: glaze(0.16),
     codeRunTarget: glaze(0.15),
+    codeRunTargetBorder: glaze(0.35),
     codePreview: glaze(0.28),
   },
   light: {
@@ -174,6 +176,7 @@ const RECIPES: Record<Appearance, Record<Token, Recipe>> = {
     codeSearchCurrent: fixed("#ffa0008c"),
     codeExecuted: glaze(0.1),
     codeRunTarget: glaze(0.11),
+    codeRunTargetBorder: glaze(0.3),
     codePreview: glaze(0.18),
   },
 };

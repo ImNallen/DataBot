@@ -13,18 +13,28 @@ const panelControl = {
   verticalAlign: "middle",
 };
 
+export const LINE_PADDING_LEFT = 18;
+
 export const editorTheme = EditorView.theme({
   "&": { height: "100%", backgroundColor: "var(--color-bg)", color: "var(--code)", fontSize: "var(--code-size)" },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": { fontFamily: "var(--code-font)", lineHeight: "var(--code-line-height)", overflow: "auto" },
   ".cm-content": { padding: "12px 0 24px", caretColor: "var(--color-fg)" },
-  ".cm-line": { padding: "0 16px 0 18px" },
+  ".cm-line": { padding: `0 16px 0 ${LINE_PADDING_LEFT}px` },
   ".cm-gutters": { backgroundColor: "var(--color-bg)", color: "var(--color-faint)", border: "none" },
   ".cm-lineNumbers .cm-gutterElement": { minWidth: "30px", padding: "0 0 0 8px", textAlign: "right" },
-  ".cm-run-target": { backgroundColor: "var(--code-run-target)", borderRadius: "2px" },
-  ".cm-activeLine": { backgroundColor: "var(--color-hover)" },
+  // The run mark's box sits behind the text, so the active line lets it show through. fg at 5.5% over bg reads as --color-hover.
+  ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--color-fg) 5.5%, transparent)" },
   "&.cm-selecting .cm-activeLine": { backgroundColor: "transparent" },
   ".cm-activeLineGutter": { backgroundColor: "var(--color-hover)", color: "var(--color-muted)" },
+  ".cm-run-target": {
+    position: "absolute",
+    pointerEvents: "none",
+    boxSizing: "border-box",
+    backgroundColor: "var(--code-run-target)",
+    border: "1px solid var(--code-run-target-border)",
+    borderRadius: "6px",
+  },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--color-fg)", borderLeftWidth: "1.5px" },
   "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
     backgroundColor: "var(--code-selection) !important",

@@ -12,7 +12,7 @@ import { PostgreSQL, sql, type SQLNamespace } from "@codemirror/lang-sql";
 import { bracketMatching, indentOnInput } from "@codemirror/language";
 import { setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
-import { Compartment, EditorState, StateEffect, StateField, type Extension, type TransactionSpec } from "@codemirror/state";
+import { Compartment, countColumn, EditorState, StateEffect, StateField, type Extension, type TransactionSpec } from "@codemirror/state";
 import {
   Decoration,
   drawSelection,
@@ -20,11 +20,13 @@ import {
   highlightActiveLine,
   highlightActiveLineGutter,
   keymap,
+  layer,
   lineNumbers,
   type DecorationSet,
+  type LayerMarker,
 } from "@codemirror/view";
 import type { DocRange, TabId } from "../../ipc/bindings";
-import { editorHighlighting, editorTheme, functionCallStyle } from "./theme";
+import { editorHighlighting, editorTheme, functionCallStyle, LINE_PADDING_LEFT } from "./theme";
 
 const states = new Map<TabId, EditorState>();
 let view: EditorView | null = null;
@@ -71,22 +73,81 @@ const previewField = StateField.define<DecorationSet>({
 });
 
 const runTargetEffect = StateEffect.define<DocRange | null>();
-const runTargetMark = Decoration.mark({ class: "cm-run-target" });
 
 // With a selection, ⌘↵ runs the selection, so the mark goes the moment one exists and never paints over it.
-const runTargetField = StateField.define<DecorationSet>({
-  create: () => Decoration.none,
-  update(deco, tr) {
-    if (!tr.state.selection.main.empty) return Decoration.none;
-    let next = deco.map(tr.changes);
+const runTargetField = StateField.define<DocRange | null>({
+  create: () => null,
+  update(range, tr) {
+    if (!tr.state.selection.main.empty) return null;
+    let next = range;
+    if (range && tr.docChanged) {
+      const mapped = { from: tr.changes.mapPos(range.from, 1), to: tr.changes.mapPos(range.to, -1) };
+      next = mapped.from < mapped.to ? mapped : null;
+    }
     for (const e of tr.effects) {
-      if (!e.is(runTargetEffect)) continue;
-      const range = e.value;
-      next = range && range.from < range.to && range.to <= tr.state.doc.length ? Decoration.set(runTargetMark.range(range.from, range.to)) : Decoration.none;
+      if (e.is(runTargetEffect)) next = e.value && e.value.from < e.value.to && e.value.to <= tr.state.doc.length ? e.value : null;
     }
     return next;
   },
-  provide: (f) => EditorView.decorations.from(f),
+});
+
+class RunTargetBox implements LayerMarker {
+  constructor(
+    readonly left: number,
+    readonly top: number,
+    readonly width: number,
+    readonly height: number,
+  ) {}
+  draw(): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "cm-run-target";
+    this.update(el);
+    return el;
+  }
+  update(el: HTMLElement): boolean {
+    el.style.left = `${this.left}px`;
+    el.style.top = `${this.top}px`;
+    el.style.width = `${this.width}px`;
+    el.style.height = `${this.height}px`;
+    return true;
+  }
+  eq(o: RunTargetBox): boolean {
+    return o.left === this.left && o.top === this.top && o.width === this.width && o.height === this.height;
+  }
+}
+
+/**
+ * One rounded box behind the statement, as wide as its longest line. Width comes from columns, not drawn lines, so it holds
+ * still while lines scroll in and out of the viewport, and it stops at the scroller's right edge so a very long line cannot
+ * turn the whole editor into tint.
+ */
+function runTargetBox(v: EditorView): readonly LayerMarker[] {
+  const range = v.state.field(runTargetField);
+  if (!range) return [];
+  const { doc, tabSize } = v.state;
+  const first = doc.lineAt(range.from);
+  const last = doc.lineAt(range.to);
+  const startCol = first.number === last.number ? countColumn(first.text, tabSize, range.from - first.from) : 0;
+  let endCol = 0;
+  for (let n = first.number; n <= last.number; n++) {
+    const line = doc.line(n);
+    endCol = Math.max(endCol, countColumn(line.text, tabSize, Math.min(line.to, range.to) - line.from));
+  }
+  const scroller = v.scrollDOM.getBoundingClientRect();
+  const textLeft = v.contentDOM.getBoundingClientRect().left - scroller.left + v.scrollDOM.scrollLeft + LINE_PADDING_LEFT;
+  const docTop = v.documentTop - scroller.top + v.scrollDOM.scrollTop;
+  const left = textLeft + startCol * v.defaultCharacterWidth - 6;
+  const right = Math.min(textLeft + endCol * v.defaultCharacterWidth + 8, v.scrollDOM.clientWidth - 8);
+  const top = docTop + v.lineBlockAt(range.from).top;
+  const bottom = docTop + v.lineBlockAt(range.to).bottom;
+  return [new RunTargetBox(left, top, Math.max(right - left, 0), bottom - top)];
+}
+
+const runTargetLayer = layer({
+  above: false,
+  class: "cm-runTargetLayer",
+  markers: runTargetBox,
+  update: (u) => u.geometryChanged || u.startState.field(runTargetField) !== u.state.field(runTargetField),
 });
 
 // The selection layer paints behind the text, so the active line's background would hide it.
@@ -134,6 +195,7 @@ function createState(text: string): EditorState {
       flashField,
       previewField,
       runTargetField,
+      runTargetLayer,
       selectingClass,
       editorTheme,
       editorHighlighting,
@@ -224,7 +286,7 @@ export function previewRanges(id: TabId, ranges: DocRange[] | null): void {
   updateEditor(id, () => ({ effects: first ? [previewEffect.of(ranges), EditorView.scrollIntoView(first.from, { y: "nearest" })] : previewEffect.of(null) }));
 }
 
-/** Marks the text of the statement ⌘↵ would run. */
+/** Draws a box behind the statement ⌘↵ would run. */
 export function showRunTarget(id: TabId, range: DocRange | null): void {
   updateEditor(id, () => ({ effects: runTargetEffect.of(range) }));
 }
