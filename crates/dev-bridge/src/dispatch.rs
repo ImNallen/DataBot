@@ -135,6 +135,7 @@ routes! { e;
     assistant_approve(chat_id: ChatId, approval: ApprovalId, decision: Decision) => e.assistant_approve(chat_id, approval, decision);
     assistant_delete(chat_id: ChatId) => { e.assistant_delete(chat_id).await; ok(()) };
     provider_refresh() => { e.provider_refresh(); ok(()) };
+    usage_limits() => ok(e.usage_limits().await);
 }
 
 #[cfg(test)]

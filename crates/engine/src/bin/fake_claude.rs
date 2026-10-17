@@ -17,8 +17,8 @@ fn main() {
         println!("{VERSION}");
         return;
     }
+    let signed_out = std::env::var("CLAUDE_CONFIG_DIR").is_ok_and(|d| d.trim_end_matches('/').ends_with("signed-out"));
     if args == ["auth", "status"] {
-        let signed_out = std::env::var("CLAUDE_CONFIG_DIR").is_ok_and(|d| d.trim_end_matches('/').ends_with("signed-out"));
         let status = if signed_out {
             json!({ "loggedIn": false, "authMethod": "none", "apiProvider": "firstParty" })
         } else {
@@ -40,10 +40,6 @@ fn main() {
             eprintln!("fake-claude: no session store");
             std::process::exit(1);
         }
-        ("signed-out-start", _) => {
-            println!("{}", json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 0, "session_id": "", "errors": [], "result": "Not logged in · Please run /login", "result_index": 0 }));
-            std::process::exit(1);
-        }
         _ => {}
     }
     let resumed = resume.is_some();
@@ -51,9 +47,37 @@ fn main() {
     let model = value_of("--model").unwrap_or_else(|| "claude-opus-5-5".into());
     let sql = value_of("--fake-sql").unwrap_or_else(|| "select count(*) from orders".into());
     let linger = Duration::from_millis(value_of("--fake-linger-ms").and_then(|v| v.parse().ok()).unwrap_or(0));
-    let mut cli = Cli { stdin: stdin_lines(), backlog: VecDeque::new(), log, session_id, resumed, model, sql, linger, next_id: 0 };
+    let signed_out = signed_out || scenario == "signed-out-start";
+    let mut cli = Cli { stdin: stdin_lines(), backlog: VecDeque::new(), log, session_id, resumed, model, sql, linger, signed_out, next_id: 0 };
+    if scenario == "signed-out-start" {
+        cli.read_line();
+        println!("{}", json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 0, "session_id": "", "errors": [], "result": "Not logged in · Please run /login", "result_index": 0 }));
+        std::process::exit(1);
+    }
     cli.handshake();
     cli.run(&scenario);
+}
+
+fn usage(request_id: &Value, signed_out: bool) -> Value {
+    let reply = if signed_out {
+        json!({ "subscription_type": null, "rate_limits_available": false, "rate_limits": null, "behaviors": null })
+    } else {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let at = |secs: i64| {
+            let t = chrono::DateTime::from_timestamp(now + secs, 0).unwrap_or_default().naive_utc();
+            format!("{}T{}+00:00", t.date(), t.time())
+        };
+        let (session, weekly) = (at(86 * 60), at((3 * 24 + 4) * 3600));
+        json!({ "subscription_type": "max", "rate_limits_available": true, "rate_limits": {
+            "five_hour": { "utilization": 90, "resets_at": session }, "seven_day": { "utilization": 60, "resets_at": weekly }, "seven_day_opus": null, "iguana_necktie": null,
+            "limits": [
+                { "kind": "session", "group": "session", "percent": 90, "severity": "warning", "resets_at": session, "scope": null, "is_active": true },
+                { "kind": "weekly_all", "group": "weekly", "percent": 60, "severity": "normal", "resets_at": weekly, "scope": null, "is_active": false },
+                { "kind": "weekly_scoped", "group": "weekly", "percent": 62, "severity": "normal", "resets_at": weekly, "scope": { "model": { "id": null, "display_name": "Opus" }, "surface": null }, "is_active": false },
+            ],
+        }, "behaviors": null })
+    };
+    json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": reply } })
 }
 
 fn session_lost(id: &str) -> ! {
@@ -106,6 +130,7 @@ struct Cli {
     model: String,
     sql: String,
     linger: Duration,
+    signed_out: bool,
     next_id: u64,
 }
 
@@ -116,9 +141,14 @@ impl Cli {
         let _ = out.flush();
     }
 
-    fn parse(&mut self, line: String) -> Value {
+    fn parse_or_answer_usage(&mut self, line: String) -> Option<Value> {
         self.log.write("stdin", &line);
-        serde_json::from_str(&line).unwrap_or(Value::Null)
+        let v: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+        if v["request"]["subtype"] == "get_usage" {
+            self.send(usage(&v["request_id"], self.signed_out));
+            return None;
+        }
+        Some(v)
     }
 
     fn poll_line(&mut self, wait: Duration) -> Option<Value> {
@@ -126,7 +156,7 @@ impl Cli {
             return Some(v);
         }
         match self.stdin.recv_timeout(wait) {
-            Ok(Stdin::Line(line)) => Some(self.parse(line)),
+            Ok(Stdin::Line(line)) => self.parse_or_answer_usage(line),
             Ok(Stdin::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => self.exit_on_eof(),
             Err(mpsc::RecvTimeoutError::Timeout) => None,
         }
@@ -153,9 +183,15 @@ impl Cli {
     }
 
     fn read_line(&mut self) -> Value {
-        match self.stdin.recv() {
-            Ok(Stdin::Line(line)) => self.parse(line),
-            Ok(Stdin::Eof) | Err(_) => self.exit_on_eof(),
+        loop {
+            match self.stdin.recv() {
+                Ok(Stdin::Line(line)) => {
+                    if let Some(v) = self.parse_or_answer_usage(line) {
+                        return v;
+                    }
+                }
+                Ok(Stdin::Eof) | Err(_) => self.exit_on_eof(),
+            }
         }
     }
 

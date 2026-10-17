@@ -1,4 +1,4 @@
-import { IconAdjustmentsHorizontal, IconClock, IconPlus } from "@tabler/icons-react";
+import { IconAdjustmentsHorizontal, IconChartBar, IconClock, IconPlus } from "@tabler/icons-react";
 import { useMemo } from "react";
 import { useCatalog } from "../../state/catalog";
 import { useLive } from "../../state/live";
@@ -90,6 +90,9 @@ function WorkspaceSidebarBody() {
           onClick={() => openSettings()}
         >
           <IconAdjustmentsHorizontal size={16} />
+        </IconButton>
+        <IconButton data-testid="open-usage" aria-label="Usage" title="Usage" onClick={() => openSettings("usage")}>
+          <IconChartBar size={16} />
         </IconButton>
         <IconButton
           data-testid="open-history"

@@ -1,10 +1,12 @@
 pub(crate) mod agent;
 pub(crate) mod claude;
+pub(crate) mod codex;
+pub(crate) mod limits;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -190,6 +192,36 @@ impl HostEnv {
             None => PathBuf::from(path),
         }
     }
+
+    pub(crate) fn resolve(&self, configured: &str, default: &str) -> Result<PathBuf, String> {
+        let name = configured.trim();
+        let name = if name.is_empty() { default } else { name };
+        if name.contains('/') || name.starts_with('~') {
+            let path = self.expand_home(name);
+            let path = if path.is_absolute() { path } else { std::env::current_dir().map(|cwd| cwd.join(&path)).unwrap_or(path) };
+            return if is_executable(&path) { Ok(path) } else { Err(path.display().to_string()) };
+        }
+        let dirs = self.dirs();
+        dirs.iter().map(|d| d.join(name)).find(|p| is_executable(p)).ok_or_else(|| format!("{name} on PATH ({})", dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(":")))
+    }
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
+}
+
+pub(crate) fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
 }
 
 async fn login_shell_path() -> Option<OsString> {

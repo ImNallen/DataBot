@@ -1,5 +1,6 @@
+import { IconBrandOpenai } from "@tabler/icons-react";
 import type { ComponentType } from "react";
-import type { ProviderKind } from "../../ipc/bindings";
+import type { LimitSource, ProviderKind } from "../../ipc/bindings";
 import { cx } from "../../ui/primitives";
 
 type MarkProps = { size?: number; className?: string };
@@ -22,4 +23,10 @@ function ClaudeMark({ size = 16, className }: MarkProps) {
   );
 }
 
+function CodexMark({ size = 16, className }: MarkProps) {
+  return <IconBrandOpenai size={size} aria-hidden className={cx("shrink-0 text-codex", className)} />;
+}
+
 export const PROVIDER_ICONS = { Claude: ClaudeMark } satisfies Record<ProviderKind, ComponentType<MarkProps>>;
+
+export const SOURCE_ICONS = { Claude: ClaudeMark, Codex: CodexMark } satisfies Record<LimitSource, ComponentType<MarkProps>>;

@@ -1,7 +1,7 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
-import type { CustomTheme, ProviderState, Settings } from "../../ipc/bindings";
+import type { CustomTheme, LimitsReport, ProviderState, Settings } from "../../ipc/bindings";
 import { AppLayout } from "../../shell/AppLayout";
 import { clampWidth } from "../../shell/PixelColumn";
 import { startAppearance } from "../../shell/appearance";
@@ -14,9 +14,11 @@ import { chooseDensity, chooseFont, previewPanelMotion, savePanelMotion } from "
 import { addCustomThemes, chooseColorScheme, chooseThemes, deleteCustomTheme } from "./themeActions";
 import { parseQuery } from "../../ui/textMatch";
 import { filterSettings, type SettingsSectionId } from "./settingsIndex";
+import { useLimits } from "./useLimits";
 
 const initial = { ...useWorkspace.getInitialState() };
 const initialLive = { ...useLive.getInitialState() };
+const initialLimits = { ...useLimits.getInitialState() };
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -24,6 +26,7 @@ afterEach(() => {
   Object.assign(useWorkspace.getInitialState(), initial);
   useWorkspace.setState(useWorkspace.getInitialState(), true);
   Object.assign(useLive.getInitialState(), initialLive);
+  Object.assign(useLimits.getInitialState(), initialLimits);
 });
 
 // Static rendering reads zustand's server snapshot, which is the store's initial state, so setState can't reach it.
@@ -119,6 +122,8 @@ it.each([
   ["claude config", ["providerList"]],
   ["health", ["providerHealthCheck"]],
   ["advanced", ["providerHealthCheck"]],
+  ["quota", ["usageLimits"]],
+  ["codex", ["providerList", "usageLimits"]],
   ["zzqx", []],
 ])("filters %j to %j by label, section, group, and keywords", (query, ids) => {
   expect(matching(query)).toEqual(ids);
@@ -138,6 +143,7 @@ it("lists every setting in registry order for an empty query", () => {
     "stopOnError",
     "providerList",
     "providerHealthCheck",
+    "usageLimits",
   ]);
 });
 
@@ -186,6 +192,7 @@ it("says when no setting matches, and shows the section with every nav entry onc
     ["appearance", "Appearance", false],
     ["queries", "Queries", true],
     ["providers", "Providers", false],
+    ["usage", "Usage", false],
   ]);
   expect(blank).not.toContain('data-testid="settings-search-hint"');
 });
@@ -489,4 +496,92 @@ it("says Checking while a probe runs and keeps the last outcome on the provider'
   expect([byTestId(html, "providers-checked"), byTestId(html, "provider-status-Claude")]).toEqual(["Checking…", "Not found"]);
   expect(html).not.toContain('data-testid="provider-version-Claude"');
   expect(resetTag(html)).toContain('disabled=""');
+});
+
+const NOW = Date.UTC(2026, 9, 17, 12, 0, 0);
+const MIN = 60_000;
+
+const LIMITS: LimitsReport = {
+  checkedAtMs: NOW - 2 * MIN,
+  sources: [
+    {
+      source: "Claude",
+      name: "Claude",
+      outcome: {
+        kind: "Ready",
+        plan: "Max",
+        windows: [
+          { id: "session", label: "Session", leftPercent: 10, resetsAtMs: NOW + 86 * MIN, level: "Low" },
+          { id: "weekly_all", label: "Weekly", leftPercent: 40, resetsAtMs: NOW + (3 * 24 + 4) * 60 * MIN, level: "Normal" },
+          { id: "weekly_scoped:Opus", label: "Weekly · Opus", leftPercent: 0, resetsAtMs: null, level: "Exhausted" },
+        ],
+      },
+    },
+    { source: "Codex", name: "Codex", outcome: { kind: "NotFound", binary: "codex on PATH (/usr/bin)" } },
+  ],
+};
+
+function renderUsage(limits: { report: LimitsReport | null; loading?: boolean; error?: string | null }, query = "") {
+  vi.useFakeTimers({ now: NOW });
+  Object.assign(useLimits.getInitialState(), { loading: false, error: null, ...limits });
+  return render(settingsOpen("usage", query));
+}
+
+const has = (html: string, testId: string) => html.includes(`data-testid="${testId}"`);
+const testIds = (html: string, prefix: string) => [...html.matchAll(new RegExp(`data-testid="(${prefix}[^"]*)"`, "g"))].map(([, id]) => id);
+const between = (html: string, from: string, to: string) => {
+  const start = html.indexOf(`data-testid="${from}"`);
+  const end = html.lastIndexOf("<", html.indexOf(`data-testid="${to}"`));
+  return text(html.slice(start, end).replace(/^[^>]*>/, ""));
+};
+
+it("draws a card per window with what is left, the warning, and the countdown, and a missing CLI as one quiet header", () => {
+  const html = renderUsage({ report: LIMITS });
+  expect(breadcrumb(html)).toBe("Settings / Usage");
+  expect(byTestId(html, "usage-checked")).toBe("Checked 2m ago");
+  expect(html).toMatch(/data-testid="usage-refresh"(?![^>]*disabled)/);
+  expect(testIds(html, "limit-")).toEqual(["limit-Claude-session", "limit-Claude-weekly_all", "limit-Claude-weekly_scoped:Opus"]);
+  expect(between(html, "limit-Claude-session", "limit-Claude-weekly_all")).toBe("Session 10% left Running low 10% 1h 26m");
+  expect(between(html, "limit-Claude-weekly_all", "limit-Claude-weekly_scoped:Opus")).toBe("Weekly 40% left 40% 3d 4h");
+  expect(between(html, "limit-Claude-weekly_scoped:Opus", "usage-source-Codex")).toBe("Weekly · Opus 0% left Limit reached 0%");
+  expect(html).toMatch(/role="meter" aria-label="Session left" aria-valuenow="10" aria-valuemin="0" aria-valuemax="100"/);
+  expect(text(html)).toContain("Claude · Max");
+  expect(byTestId(html, "usage-missing-Codex")).toBe("· not installed");
+  expect(text(html)).toContain("Limits come from each provider&#x27;s own account and reset on its schedule.");
+});
+
+it("says how to sign in, that a sign-in has no limits, and a failed read with a retry", () => {
+  const report: LimitsReport = {
+    checkedAtMs: NOW,
+    sources: [
+      { source: "Claude", name: "Work Claude", outcome: { kind: "SignedOut", signInCommand: "claude auth login" } },
+      { source: "Codex", name: "Codex", outcome: { kind: "Failed", message: "exited with code 1: boom" } },
+    ],
+  };
+  const html = renderUsage({ report });
+  expect(byTestId(html, "usage-note-Claude")).toBe("Signed out. Run claude auth login in a terminal.");
+  expect(text(/data-testid="usage-failed-Codex"[^>]*>(.*?)<\/div>/.exec(html)?.[1])).toBe("exited with code 1: boom Try again");
+  const noLimits = renderUsage({ report: { checkedAtMs: NOW, sources: [{ source: "Claude", name: "Claude", outcome: { kind: "NoLimits", plan: null } }] } });
+  expect(byTestId(noLimits, "usage-note-Claude")).toBe("No subscription limits on this sign-in.");
+});
+
+it("shows a skeleton and Checking before the first report, and keeps the last report on screen during a refresh", () => {
+  const first = renderUsage({ report: null, loading: true });
+  expect([has(first, "usage-loading"), byTestId(first, "usage-checked")]).toEqual([true, "Checking…"]);
+  expect(first).toMatch(/data-testid="usage-refresh"[^>]*disabled=""/);
+  const again = renderUsage({ report: LIMITS, loading: true });
+  expect([has(again, "usage-loading"), has(again, "limit-Claude-session"), byTestId(again, "usage-checked")]).toEqual([false, true, "Checking…"]);
+  const failed = renderUsage({ report: null, error: "IPC down" });
+  expect([has(failed, "usage-loading"), byTestId(failed, "usage-error")]).toEqual([false, "IPC down"]);
+});
+
+it("puts the refresh in the page header only while no settings search is set", () => {
+  expect(has(renderUsage({ report: LIMITS }, "quota"), "usage-refresh")).toBe(false);
+  expect(has(renderUsage({ report: LIMITS }), "usage-refresh")).toBe(true);
+  expect(has(render(settingsOpen("providers")), "usage-refresh")).toBe(false);
+});
+
+it("puts the Usage button between Settings and Query history in the sidebar's bottom bar", () => {
+  const html = render({ screen: { kind: "workspace" } });
+  expect(testIds(html, "open-")).toEqual(["open-settings", "open-usage", "open-history"]);
 });

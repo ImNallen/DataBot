@@ -60,6 +60,18 @@ export const SETTINGS_INDEX = [
       { id: "providerHealthCheck", label: "Health check interval", group: "Advanced", keywords: "refresh status version models background interval seconds" },
     ],
   },
+  {
+    id: "usage",
+    label: "Usage",
+    settings: [
+      {
+        id: "usageLimits",
+        label: "Limits",
+        group: null,
+        keywords: "usage limits quota rate remaining subscription session weekly reset claude codex chatgpt plan",
+      },
+    ],
+  },
 ] as const satisfies readonly IndexedSection[];
 
 export type SettingsSectionId = (typeof SETTINGS_INDEX)[number]["id"];

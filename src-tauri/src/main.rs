@@ -54,6 +54,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ipc::assistant_approve,
             ipc::assistant_delete,
             ipc::provider_refresh,
+            ipc::usage_limits,
         ])
         .typ::<AppEvent>()
         .dangerously_cast_bigints_to_number()

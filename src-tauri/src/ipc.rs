@@ -233,3 +233,9 @@ pub async fn assistant_delete(app: AppHandle, chat_id: ChatId) {
 pub fn provider_refresh(engine: State<'_, Arc<Engine>>) {
     engine.provider_refresh()
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn usage_limits(app: AppHandle) -> LimitsReport {
+    app.state::<Arc<Engine>>().usage_limits().await
+}

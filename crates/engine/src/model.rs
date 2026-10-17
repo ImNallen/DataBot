@@ -1517,6 +1517,68 @@ pub struct EffortOption {
     pub label: String,
 }
 
+/// Where a set of subscription limits comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+pub enum LimitSource {
+    Claude,
+    Codex,
+}
+
+impl LimitSource {
+    pub const ALL: [LimitSource; 2] = [LimitSource::Claude, LimitSource::Codex];
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LimitsReport {
+    /// When the slower read finished.
+    pub checked_at_ms: i64,
+    /// One per `LimitSource::ALL`, in that order.
+    pub sources: Vec<SourceLimits>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceLimits {
+    pub source: LimitSource,
+    /// The Claude provider's display name, or "Codex".
+    pub name: String,
+    pub outcome: LimitsOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum LimitsOutcome {
+    /// `plan` is the short tier the header shows after the name: "Max", "ChatGPT Pro".
+    Ready { plan: Option<String>, windows: Vec<LimitWindow> },
+    /// Signed in with no subscription limits: an API key, Bedrock, Vertex.
+    NoLimits { plan: Option<String> },
+    SignedOut { sign_in_command: String },
+    NotFound { binary: String },
+    /// The CLI started but the exchange failed, timed out, or returned a shape we cannot read.
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LimitWindow {
+    /// Stable within a source: "session", "weekly_all", "weekly_scoped:Opus", "primary".
+    pub id: String,
+    /// "Session", "Weekly", "Weekly · Opus".
+    pub label: String,
+    /// Remaining, 0..=100.
+    pub left_percent: u8,
+    pub resets_at_ms: Option<i64>,
+    pub level: LimitLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum LimitLevel {
+    Normal,
+    Low,
+    Exhausted,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub enum Permission {
     /// Every `run_query` waits for Run or Deny.

@@ -42,6 +42,11 @@ impl ProcessGroups {
 
 pub(crate) struct Agent {
     pub codec: Box<dyn Codec>,
+    pipes: Pipes,
+    pending: VecDeque<AgentEvent>,
+}
+
+pub(crate) struct Pipes {
     child: Child,
     /// The child's process group, which equals its pid: `process_group(0)` at spawn.
     pgid: i32,
@@ -49,8 +54,8 @@ pub(crate) struct Agent {
     stdin: Option<ChildStdin>,
     lines: mpsc::Receiver<Line>,
     outbox: Vec<u8>,
-    pending: VecDeque<AgentEvent>,
     stderr: Arc<Mutex<String>>,
+    stderr_drained: Option<tokio::task::JoinHandle<()>>,
     eof: bool,
 }
 
@@ -86,11 +91,8 @@ impl std::fmt::Display for StartError {
     }
 }
 
-impl Agent {
-    /// Spawns `spec`, writes `codec.open()`, and waits for `AgentEvent::Ready`. Lines that arrive
-    /// before it go through the codec like any other; the CLI sent its first MCP message 4 ms
-    /// before answering `initialize`, so the reader never waits on a request the host has in flight.
-    pub(crate) async fn start(shared: &Shared, spec: LaunchSpec, codec: Box<dyn Codec>) -> Result<(Agent, Handshake), StartError> {
+impl Pipes {
+    fn spawn(shared: &Shared, spec: &LaunchSpec) -> Result<Pipes, StartError> {
         // Spawning into a missing directory fails with the same NotFound as a missing binary.
         if !spec.cwd.is_dir() {
             return Err(StartError::Exited { code: None, detail: format!("the assistant's working directory {} is missing", spec.cwd.display()) });
@@ -135,7 +137,7 @@ impl Agent {
         });
         let stderr = Arc::new(Mutex::new(String::new()));
         let tail = stderr.clone();
-        shared.spawn(async move {
+        let stderr_drained = shared.spawn(async move {
             let mut reader = stderr_pipe;
             let mut chunk = [0u8; 4096];
             while let Ok(n) = reader.read(&mut chunk).await
@@ -150,11 +152,105 @@ impl Agent {
                 }
             }
         });
-        let mut agent = Agent { codec, child, pgid, groups: shared.process_groups.clone(), stdin: Some(stdin), lines, outbox: Vec::new(), pending: VecDeque::new(), stderr, eof: false };
+        Ok(Pipes { child, pgid, groups: shared.process_groups.clone(), stdin: Some(stdin), lines, outbox: Vec::new(), stderr, stderr_drained: Some(stderr_drained), eof: false })
+    }
+
+    async fn line(&mut self) -> Option<String> {
+        if self.eof {
+            return None;
+        }
+        match self.lines.recv().await {
+            Some(Line::Out(line)) => Some(line),
+            Some(Line::Eof) | None => {
+                self.eof = true;
+                None
+            }
+        }
+    }
+
+    async fn write(&mut self, lines: Vec<String>) -> std::io::Result<()> {
+        self.queue(lines);
+        self.flush().await
+    }
+
+    fn queue(&mut self, lines: Vec<String>) {
+        for line in lines {
+            self.outbox.extend_from_slice(line.as_bytes());
+            self.outbox.push(b'\n');
+        }
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        if self.outbox.is_empty() {
+            return Ok(());
+        }
+        let stdin = self.stdin.as_mut().expect("only `close` takes stdin, and it consumes the pipes");
+        while !self.outbox.is_empty() {
+            let written = stdin.write(&self.outbox).await?;
+            if written == 0 {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            self.outbox.drain(..written);
+        }
+        stdin.flush().await
+    }
+
+    fn stderr_tail(&self) -> String {
+        self.stderr.lock().unwrap().clone()
+    }
+
+    fn failure_detail(&self, fallback: &str) -> String {
+        let tail = self.stderr_tail();
+        if tail.trim().is_empty() { fallback.to_owned() } else { tail }
+    }
+
+    async fn exited(&mut self, fallback: &str) -> StartError {
+        let code = self.exit_code().await;
+        StartError::Exited { code, detail: self.failure_detail(fallback) }
+    }
+
+    /// Also waits for the stderr reader to reach the end, so the tail read next is the whole of
+    /// it: a child already dead when a write fails is reaped without a yield to that reader.
+    async fn exit_code(&mut self) -> Option<i32> {
+        let status = tokio::time::timeout(EXIT_CODE_WAIT, self.child.wait()).await.ok().and_then(Result::ok)?;
+        self.groups.remove(self.pgid);
+        if let Some(drained) = self.stderr_drained.take() {
+            let _ = tokio::time::timeout(EXIT_CODE_WAIT, drained).await;
+        }
+        status.code()
+    }
+
+    async fn close(mut self) {
+        drop(self.stdin.take());
+        if tokio::time::timeout(CLOSE_GRACE, self.child.wait()).await.is_err() {
+            if self.groups.remove(self.pgid) {
+                kill_group(self.pgid);
+            }
+            // The group kill also reaches the child's descendants; this reaches the child on every platform.
+            let _ = self.child.start_kill();
+            let _ = self.child.wait().await;
+        }
+        self.groups.remove(self.pgid);
+    }
+}
+
+impl Drop for Pipes {
+    fn drop(&mut self) {
+        if self.groups.remove(self.pgid) {
+            kill_group(self.pgid);
+        }
+    }
+}
+
+impl Agent {
+    /// Spawns `spec`, writes `codec.open()`, and waits for `AgentEvent::Ready`. Lines that arrive
+    /// before it go through the codec like any other; the CLI sent its first MCP message 4 ms
+    /// before answering `initialize`, so the reader never waits on a request the host has in flight.
+    pub(crate) async fn start(shared: &Shared, spec: LaunchSpec, codec: Box<dyn Codec>) -> Result<(Agent, Handshake), StartError> {
+        let mut agent = Agent { codec, pipes: Pipes::spawn(shared, &spec)?, pending: VecDeque::new() };
         let open = agent.codec.open();
         if let Err(e) = agent.write(open).await {
-            let code = agent.exit_code().await;
-            return Err(StartError::Exited { code, detail: agent.failure_detail(&e.to_string()) });
+            return Err(agent.pipes.exited(&e.to_string()).await);
         }
         let mut early = VecDeque::new();
         let ready = tokio::time::timeout(READY_TIMEOUT, async {
@@ -162,16 +258,15 @@ impl Agent {
                 match agent.next().await {
                     Next::Event(AgentEvent::Ready(handshake)) => return Ok(handshake),
                     Next::Event(AgentEvent::TurnEnded(TurnOutcome::Failed { error })) => {
-                        let _ = agent.exit_code().await;
+                        let _ = agent.pipes.exit_code().await;
                         return Err(StartError::Reported(error));
                     }
                     Next::Event(other) => early.push_back(other),
                     Next::Flush => {}
-                    Next::Eof { code } => return Err(StartError::Exited { code, detail: agent.failure_detail("") }),
+                    Next::Eof { code } => return Err(StartError::Exited { code, detail: agent.pipes.failure_detail("") }),
                 }
                 if let Err(e) = agent.flush().await {
-                    let code = agent.exit_code().await;
-                    return Err(StartError::Exited { code, detail: agent.failure_detail(&e.to_string()) });
+                    return Err(agent.pipes.exited(&e.to_string()).await);
                 }
             }
         })
@@ -187,91 +282,68 @@ impl Agent {
         }
     }
 
-    fn failure_detail(&self, fallback: &str) -> String {
-        let tail = self.stderr_tail();
-        if tail.trim().is_empty() { fallback.to_owned() } else { tail }
-    }
-
     pub(crate) async fn next(&mut self) -> Next {
         loop {
             if let Some(event) = self.pending.pop_front() {
                 return Next::Event(event);
             }
-            if self.eof {
-                return Next::Eof { code: self.exit_code().await };
-            }
-            match self.lines.recv().await {
-                Some(Line::Out(line)) => {
-                    let step = self.codec.read(&line);
-                    let answered = !step.replies.is_empty();
-                    self.queue(step.replies);
-                    self.pending.extend(step.events);
-                    if answered && self.pending.is_empty() {
-                        return Next::Flush;
-                    }
-                }
-                Some(Line::Eof) | None => self.eof = true,
+            let Some(line) = self.pipes.line().await else { return Next::Eof { code: self.pipes.exit_code().await } };
+            let step = self.codec.read(&line);
+            let answered = !step.replies.is_empty();
+            self.pipes.queue(step.replies);
+            self.pending.extend(step.events);
+            if answered && self.pending.is_empty() {
+                return Next::Flush;
             }
         }
     }
 
     pub(crate) async fn write(&mut self, lines: Vec<String>) -> std::io::Result<()> {
-        self.queue(lines);
-        self.flush().await
-    }
-
-    fn queue(&mut self, lines: Vec<String>) {
-        for line in lines {
-            self.outbox.extend_from_slice(line.as_bytes());
-            self.outbox.push(b'\n');
-        }
+        self.pipes.write(lines).await
     }
 
     pub(crate) async fn flush(&mut self) -> std::io::Result<()> {
-        if self.outbox.is_empty() {
-            return Ok(());
-        }
-        let stdin = self.stdin.as_mut().expect("only `close` takes stdin, and it consumes the agent");
-        while !self.outbox.is_empty() {
-            let written = stdin.write(&self.outbox).await?;
-            if written == 0 {
-                return Err(std::io::ErrorKind::WriteZero.into());
-            }
-            self.outbox.drain(..written);
-        }
-        stdin.flush().await
+        self.pipes.flush().await
     }
 
     pub(crate) fn stderr_tail(&self) -> String {
-        self.stderr.lock().unwrap().clone()
+        self.pipes.stderr_tail()
     }
 
-    async fn exit_code(&mut self) -> Option<i32> {
-        let status = tokio::time::timeout(EXIT_CODE_WAIT, self.child.wait()).await.ok().and_then(Result::ok)?;
-        self.groups.remove(self.pgid);
-        status.code()
-    }
-
-    pub(crate) async fn close(mut self) {
-        drop(self.stdin.take());
-        if tokio::time::timeout(CLOSE_GRACE, self.child.wait()).await.is_err() {
-            if self.groups.remove(self.pgid) {
-                kill_group(self.pgid);
-            }
-            // The group kill also reaches the child's descendants; this reaches the child on every platform.
-            let _ = self.child.start_kill();
-            let _ = self.child.wait().await;
-        }
-        self.groups.remove(self.pgid);
+    pub(crate) async fn close(self) {
+        self.pipes.close().await
     }
 }
 
-impl Drop for Agent {
-    fn drop(&mut self) {
-        if self.groups.remove(self.pgid) {
-            kill_group(self.pgid);
+pub(crate) trait Exchange: Send {
+    type Output: Send;
+    fn open(&mut self) -> Vec<String>;
+    fn read(&mut self, line: &str) -> Exchanged<Self::Output>;
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum Exchanged<T> {
+    Skip,
+    Send(Vec<String>),
+    Done(T),
+}
+
+pub(crate) async fn exchange<E: Exchange>(shared: &Shared, spec: &LaunchSpec, mut script: E) -> Result<E::Output, StartError> {
+    let mut pipes = Pipes::spawn(shared, spec)?;
+    let mut send = script.open();
+    let out = loop {
+        if let Err(e) = pipes.write(std::mem::take(&mut send)).await {
+            break Err(pipes.exited(&e.to_string()).await);
         }
-    }
+        let Some(line) = pipes.line().await else { break Err(pipes.exited("").await) };
+        match script.read(&line) {
+            Exchanged::Skip => {}
+            Exchanged::Send(lines) => send = lines,
+            Exchanged::Done(out) => break Ok(out),
+        }
+    };
+    shared.spawn(pipes.close());
+    out
 }
 
 #[cfg(unix)]
@@ -381,11 +453,24 @@ mod tests {
         let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(MemoryKeyStore::default()), agent_path: AgentPath::Fixed("".into()) }).await.unwrap();
         let spec = LaunchSpec { program: "sh".into(), args: vec!["-c".into(), "echo ready; exec sleep 60".into()], env_set: Vec::new(), env_remove: Vec::new(), cwd: std::env::temp_dir() };
         let (agent, _) = Agent::start(&engine.shared, spec, Box::new(LineCodec)).await.unwrap();
-        let pid = agent.pgid;
-        assert!(agent.groups.remove(pid), "the group was registered at spawn");
+        let pid = agent.pipes.pgid;
+        assert!(agent.pipes.groups.remove(pid), "the group was registered at spawn");
         tokio::time::timeout(CLOSE_GRACE + Duration::from_secs(3), agent.close()).await.expect("close waited on a child that nothing killed");
         // SAFETY: signal 0 only asks whether the process exists.
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "process {pid} outlived close");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_write_to_a_child_that_already_died_reports_its_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(MemoryKeyStore::default()), agent_path: AgentPath::Fixed("".into()) }).await.unwrap();
+        let spec = LaunchSpec { program: "sh".into(), args: vec!["-c".into(), "echo 'No conversation found' >&2; exit 1".into()], env_set: Vec::new(), env_remove: Vec::new(), cwd: std::env::temp_dir() };
+        let mut pipes = Pipes::spawn(&engine.shared, &spec).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let broken = pipes.write(vec!["initialize".into()]).await.expect_err("the child is gone");
+        let StartError::Exited { code, detail } = pipes.exited(&broken.to_string()).await else { unreachable!() };
+        assert_eq!((code, detail.trim_end()), (Some(1), "No conversation found"));
     }
 
     #[tokio::test]
@@ -400,12 +485,12 @@ mod tests {
         assert!(cancelled > 0, "no next was pending, so none was cancelled");
 
         let payload: Vec<String> = (0..100).map(|i| format!("{i:03}{}", "x".repeat(4096))).collect();
-        agent.queue(payload.clone());
+        agent.pipes.queue(payload.clone());
         let mut flush = Box::pin(agent.flush());
         assert!(poll_once(&mut flush).is_pending(), "the pipe took 400 KB at once, so no write was cancelled");
         drop(flush);
         agent.flush().await.unwrap();
-        drop(agent.stdin.take());
+        drop(agent.pipes.stdin.take());
         let echoed = tokio::time::timeout(Duration::from_secs(10), texts_until(&mut agent, &mut cancelled, payload.len())).await.expect("cat echoed every line");
         assert_eq!(echoed, payload);
 
