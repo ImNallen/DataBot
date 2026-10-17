@@ -55,6 +55,7 @@ pub(crate) struct Pipes {
     lines: mpsc::Receiver<Line>,
     outbox: Vec<u8>,
     stderr: Arc<Mutex<String>>,
+    stderr_drained: Option<tokio::task::JoinHandle<()>>,
     eof: bool,
 }
 
@@ -136,7 +137,7 @@ impl Pipes {
         });
         let stderr = Arc::new(Mutex::new(String::new()));
         let tail = stderr.clone();
-        shared.spawn(async move {
+        let stderr_drained = shared.spawn(async move {
             let mut reader = stderr_pipe;
             let mut chunk = [0u8; 4096];
             while let Ok(n) = reader.read(&mut chunk).await
@@ -151,7 +152,7 @@ impl Pipes {
                 }
             }
         });
-        Ok(Pipes { child, pgid, groups: shared.process_groups.clone(), stdin: Some(stdin), lines, outbox: Vec::new(), stderr, eof: false })
+        Ok(Pipes { child, pgid, groups: shared.process_groups.clone(), stdin: Some(stdin), lines, outbox: Vec::new(), stderr, stderr_drained: Some(stderr_drained), eof: false })
     }
 
     async fn line(&mut self) -> Option<String> {
@@ -208,9 +209,14 @@ impl Pipes {
         StartError::Exited { code, detail: self.failure_detail(fallback) }
     }
 
+    /// Also waits for the stderr reader to reach the end, so the tail read next is the whole of
+    /// it: a child already dead when a write fails is reaped without a yield to that reader.
     async fn exit_code(&mut self) -> Option<i32> {
         let status = tokio::time::timeout(EXIT_CODE_WAIT, self.child.wait()).await.ok().and_then(Result::ok)?;
         self.groups.remove(self.pgid);
+        if let Some(drained) = self.stderr_drained.take() {
+            let _ = tokio::time::timeout(EXIT_CODE_WAIT, drained).await;
+        }
         status.code()
     }
 
@@ -452,6 +458,19 @@ mod tests {
         tokio::time::timeout(CLOSE_GRACE + Duration::from_secs(3), agent.close()).await.expect("close waited on a child that nothing killed");
         // SAFETY: signal 0 only asks whether the process exists.
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "process {pid} outlived close");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_write_to_a_child_that_already_died_reports_its_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(EngineConfig { data_dir: dir.path().to_owned(), keys: Arc::new(MemoryKeyStore::default()), agent_path: AgentPath::Fixed("".into()) }).await.unwrap();
+        let spec = LaunchSpec { program: "sh".into(), args: vec!["-c".into(), "echo 'No conversation found' >&2; exit 1".into()], env_set: Vec::new(), env_remove: Vec::new(), cwd: std::env::temp_dir() };
+        let mut pipes = Pipes::spawn(&engine.shared, &spec).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let broken = pipes.write(vec!["initialize".into()]).await.expect_err("the child is gone");
+        let StartError::Exited { code, detail } = pipes.exited(&broken.to_string()).await else { unreachable!() };
+        assert_eq!((code, detail.trim_end()), (Some(1), "No conversation found"));
     }
 
     #[tokio::test]
