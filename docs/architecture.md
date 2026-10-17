@@ -525,6 +525,7 @@ Each command is one line delegating to `Engine`. tauri-specta uses `ErrorHandlin
 | `relation_detail` | `DatabaseRef, oid: u32` | `Result<RelationDetail, DetailError>` | Defaults, keys, indexes, and triggers of one relation, read on that database's metadata session with OID-scoped queries. Carries the catalog version it is at least as new as. `Gone` when the OID names no relation. |
 | `exact_row_count` | `DatabaseRef, schema: String, table: String, TableQuery` | `Result<u64, CountError>` | `count(*)` with the query's filters, on that database's metadata session. The pager's Last button calls it. |
 | `console_configure` | `TabId, ConsoleConfig` | `Result<ConsoleState, ConfigureError>` | Upsert. `TransactionOpen` if mode, connection, or database change with a live txn. A connection or database change resets the session. A schema change issues `SET search_path` (applied on next run if busy). |
+| `script_outline` | `text: String, cursor: DocOffset` | `ScriptOutline` | The UTF-16 range of each statement `split_statements` finds, and `atCursor`, the index of the one `pick` returns for a `Cursor` run at `cursor` (`null` only when there are none). The editor's run mark and the statement chooser call it, so neither splits SQL in TypeScript. Pure and sync, and it never touches the runtime. |
 | `console_run` | `TabId, RunRequest` | `Result<RunAccepted, RunError>` | Returns once statements are picked. Progress arrives as events. `BadFilter` when a table page's SQL isn't one statement. |
 | `console_cancel` | `TabId` | `()` | Idempotent. Sets the stop flag and sends `CancelRequest`. |
 | `console_commit` | `TabId` | `Result<(), TxnError>` | `Busy`, `NoTransaction`. Commit in `Aborted` reports `RolledBack`. |
@@ -573,6 +574,9 @@ pub enum FilterOp { Eq, Ne, Lt, Le, Gt, Ge, Contains, StartsWith, IsNull, NotNul
 pub enum RunTarget { Cursor { offset: DocOffset }, Selection { from: DocOffset, to: DocOffset }, All, }
 #[derive(Serialize, Type)]
 pub struct RunAccepted { pub run_id: RunId, pub statements: Vec<DocRange> }
+/// The statements of a script and the index of the one a `Cursor` run at the given offset would pick.
+#[derive(Serialize, Type)]
+pub struct ScriptOutline { pub statements: Vec<DocRange>, pub at_cursor: Option<u16> }
 #[derive(Serialize, Type)]
 #[serde(tag = "kind")]
 pub enum RunError {
@@ -644,6 +648,7 @@ impl Engine {
     pub async fn exact_row_count(&self, db: DatabaseRef, schema: String, table: String, query: TableQuery) -> Result<u64, CountError>;
 
     pub async fn console_configure(&self, tab: TabId, c: ConsoleConfig) -> Result<ConsoleState, ConfigureError>;
+    pub fn script_outline(&self, text: &str, cursor: DocOffset) -> ScriptOutline;     // pure; the run mark and the chooser
     pub async fn console_run(&self, tab: TabId, r: RunRequest) -> Result<RunAccepted, RunError>;
     pub async fn console_cancel(&self, tab: TabId);
     pub async fn console_commit(&self, tab: TabId) -> Result<(), TxnError>;

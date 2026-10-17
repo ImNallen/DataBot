@@ -19,6 +19,7 @@ export const commands = {
 	relationDetail: (db: DatabaseRef, oid: number) => typedError<RelationDetail, DetailError>(__TAURI_INVOKE("relation_detail", { db, oid })),
 	exactRowCount: (db: DatabaseRef, schema: string, table: string, query: TableQuery) => typedError<number, CountError>(__TAURI_INVOKE("exact_row_count", { db, schema, table, query })),
 	consoleConfigure: (tabId: TabId, config: ConsoleConfig) => typedError<ConsoleState, ConfigureError>(__TAURI_INVOKE("console_configure", { tabId, config })),
+	scriptOutline: (text: string, cursor: DocOffset) => __TAURI_INVOKE<ScriptOutline>("script_outline", { text, cursor }),
 	consoleRun: (tabId: TabId, request: RunRequest) => typedError<RunAccepted, RunError>(__TAURI_INVOKE("console_run", { tabId, request })),
 	consoleCancel: (tabId: TabId) => __TAURI_INVOKE<void>("console_cancel", { tabId }),
 	consoleCommit: (tabId: TabId) => typedError<null, TxnError>(__TAURI_INVOKE("console_commit", { tabId })),
@@ -867,6 +868,12 @@ export type SchemaInfo = {
 	tableCount: number,
 	relations: Relation[],
 	functions: FunctionInfo[],
+};
+
+/**  The statements of a script and the one a run at the cursor would pick. */
+export type ScriptOutline = {
+	statements: DocRange[],
+	atCursor: number | null,
 };
 
 export type SendError = { kind: "Busy" } | { kind: "EmptyMessage" } | { kind: "ProviderOff"; provider: ProviderKind } | 

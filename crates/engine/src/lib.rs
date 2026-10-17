@@ -714,6 +714,11 @@ impl Engine {
         draft_from_url(url, "")
     }
 
+    /// The statement chooser and the editor's run mark. Pure, so the sync command never needs the runtime.
+    pub fn script_outline(&self, text: &str, cursor: DocOffset) -> ScriptOutline {
+        text::script_outline(text, cursor)
+    }
+
     pub async fn test_connection(&self, d: ConnectionDraft) -> Result<ServerInfo, ConnectError> {
         let s = &self.shared;
         let password = match (&d.password, d.id) {

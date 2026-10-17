@@ -561,6 +561,14 @@ pub struct RunAccepted {
     pub statements: Vec<DocRange>,
 }
 
+/// The statements of a script and the one a run at the cursor would pick.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptOutline {
+    pub statements: Vec<DocRange>,
+    pub at_cursor: Option<u16>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultRef {
